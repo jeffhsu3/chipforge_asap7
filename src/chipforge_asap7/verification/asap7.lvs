@@ -1,0 +1,231 @@
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Research-grade KLayout LVS/PEX preparation deck for the public ASAP7 kit.
+# ASAP7's released proprietary Calibre/xACT decks are not redistributed.
+# FinFET extraction is explicit: every FIN x uncut-GATE intersection is a
+# one-fin MOS4 channel.  Do not use this deck as a foundry sign-off claim.
+
+if $input
+  if $topcell
+    source($input, $topcell)
+  else
+    source($input)
+  end
+end
+
+report_lvs($report || "asap7.lvsdb.gz")
+schematic($schematic) if $schematic
+target_netlist($target_netlist || "asap7_extracted.spice")
+
+$run_mode == "flat" ? flat : deep
+threads(($thr || 4).to_i)
+verbose(($verbose || "false").to_s.downcase == "true")
+
+# Public ASAP7 GDS map (drawing datatype 0; pin text datatype 251).
+nwell = input(1, 0)
+fin = input(2, 0)
+gate = input(7, 0)
+gcut = input(10, 0)
+active = input(11, 0)
+nselect = input(12, 0)
+pselect = input(13, 0)
+lig = input(16, 0)
+lisd = input(17, 0)
+v0 = input(18, 0)
+m1 = input(19, 0)
+m1_text = labels(19, 251)
+m2 = input(20, 0)
+m2_text = labels(20, 251)
+v1 = input(21, 0)
+v2 = input(25, 0)
+m3 = input(30, 0)
+m3_text = labels(30, 251)
+v3 = input(35, 0)
+m4 = input(40, 0)
+m4_text = labels(40, 251)
+v4 = input(45, 0)
+m5 = input(50, 0)
+m5_text = labels(50, 251)
+v5 = input(55, 0)
+m6 = input(60, 0)
+m6_text = labels(60, 251)
+v6 = input(65, 0)
+m7 = input(70, 0)
+m7_text = labels(70, 251)
+v7 = input(75, 0)
+m8 = input(80, 0)
+m8_text = labels(80, 251)
+v8 = input(85, 0)
+sdt = input(88, 0)
+m9 = input(90, 0)
+m9_text = labels(90, 251)
+v9 = input(95, 0)
+slvt = input(97, 0)
+lvt = input(98, 0)
+boundary = input(100, 0)
+sramvt = input(110, 0)
+
+# GCUT is a real removal operation.  ACTIVE selects the electrically active
+# fins from the continuous manufacturing FIN grid.
+gate_con = gate - gcut
+active_fin = active & fin
+# ASAP7 has no drawn p-substrate layer.  The public cells and this package's
+# generators carry a BOUNDARY rectangle, which supplies a finite substrate
+# region that can physically connect PSELECT taps to MOS bulk terminals.
+pwell = boundary - nwell
+nactive = active_fin & nselect - nwell
+pactive = active_fin & pselect & nwell
+ptap = active & pselect - nwell
+ntap = active & nselect & nwell
+
+ngate_all = nactive & gate_con
+pgate_all = pactive & gate_con
+
+ngate_lvt = ngate_all & lvt
+pgate_lvt = pgate_all & lvt
+ngate_slvt = ngate_all & slvt
+pgate_slvt = pgate_all & slvt
+ngate_sram = ngate_all & sramvt
+pgate_sram = pgate_all & sramvt
+ngate_rvt = ngate_all - lvt - slvt - sramvt
+pgate_rvt = pgate_all - lvt - slvt - sramvt
+
+nsd = nactive - ngate_all
+psd = pactive - pgate_all
+
+# Split SDT contacts for KPEX device-terminal attribution, and preserve a
+# merged local-interconnect layer for distributed-R extraction.
+sdt_n = sdt & (nsd + ptap)
+sdt_p = sdt & (psd + ntap)
+local_con = lig + lisd
+gate_lig_link = gate_con & lig
+v0_local = v0 & local_con
+
+# KPEX recovers these names from the LVSDB.  Layers must be named before
+# extract_devices registers its terminal views (KLayout does not permit a
+# registered layer to be renamed later).
+all_layer_names = %w(
+  nwell fin gate gcut active nselect pselect sdt lig lisd v0 m1 m1_text
+  m2 m2_text v1 v2 m3 m3_text v3 m4 m4_text v4 m5 m5_text v5
+  m6 m6_text v6 m7 m7_text v7 m8 m8_text v8 m9 m9_text slvt lvt
+  sramvt boundary gate_con active_fin pwell nactive pactive ptap ntap
+  ngate_all pgate_all ngate_lvt pgate_lvt ngate_slvt pgate_slvt
+  ngate_sram pgate_sram ngate_rvt pgate_rvt nsd psd sdt_n sdt_p
+  local_con gate_lig_link v0_local
+)
+if self.respond_to?(:name)
+  all_layer_names.each { |layer_name| name(eval(layer_name), layer_name) }
+end
+
+# KLayout's MOS4 extractor creates a separate device for every disconnected
+# 7 nm FIN stripe.  tG points at the complete uncut gate conductor, so LIG can
+# attach above/below the channel without becoming part of the measured width.
+extract_devices(mos4("nmos_rvt"), {
+  "SD" => nsd, "G" => ngate_rvt, "tS" => nsd, "tD" => nsd,
+  "tG" => gate_con, "W" => pwell
+})
+extract_devices(mos4("pmos_rvt"), {
+  "SD" => psd, "G" => pgate_rvt, "tS" => psd, "tD" => psd,
+  "tG" => gate_con, "W" => nwell
+})
+extract_devices(mos4("nmos_lvt"), {
+  "SD" => nsd, "G" => ngate_lvt, "tS" => nsd, "tD" => nsd,
+  "tG" => gate_con, "W" => pwell
+})
+extract_devices(mos4("pmos_lvt"), {
+  "SD" => psd, "G" => pgate_lvt, "tS" => psd, "tD" => psd,
+  "tG" => gate_con, "W" => nwell
+})
+extract_devices(mos4("nmos_slvt"), {
+  "SD" => nsd, "G" => ngate_slvt, "tS" => nsd, "tD" => nsd,
+  "tG" => gate_con, "W" => pwell
+})
+extract_devices(mos4("pmos_slvt"), {
+  "SD" => psd, "G" => pgate_slvt, "tS" => psd, "tD" => psd,
+  "tG" => gate_con, "W" => nwell
+})
+extract_devices(mos4("nmos_sram"), {
+  "SD" => nsd, "G" => ngate_sram, "tS" => nsd, "tD" => nsd,
+  "tG" => gate_con, "W" => pwell
+})
+extract_devices(mos4("pmos_sram"), {
+  "SD" => psd, "G" => pgate_sram, "tS" => psd, "tD" => psd,
+  "tG" => gate_con, "W" => nwell
+})
+
+# Device/body and local-interconnect connectivity.
+connect(pwell, ptap)
+connect(nwell, ntap)
+# Standard cells rely on periodic tap cells rather than carrying a body tap in
+# every logic cell.  Tie the continuous well/substrate regions to the released
+# CDL's conventional rails only when that library mode is explicitly enabled.
+if ($tie_standard_cell_bodies || "false").to_s.downcase == "true"
+  connect_global(pwell, "VSS")
+  connect_global(nwell, "VDD")
+  connect_implicit("VSS")
+  connect_implicit("VDD")
+end
+connect(nsd, sdt_n)
+connect(ptap, sdt_n)
+connect(psd, sdt_p)
+connect(ntap, sdt_p)
+connect(sdt_n, local_con)
+connect(sdt_p, local_con)
+connect(gate_con, gate_lig_link)
+connect(gate_lig_link, local_con)
+connect(v0_local, local_con)
+connect(v0_local, m1)
+
+# BEOL connectivity.  ASAP7 has no V1: V1 is M1-M2, while the public names
+# V2..V9 follow their upper metal number.
+connect(m1, v1)
+connect(v1, m2)
+connect(m2, v2)
+connect(v2, m3)
+connect(m3, v3)
+connect(v3, m4)
+connect(m4, v4)
+connect(v4, m5)
+connect(m5, v5)
+connect(v5, m6)
+connect(m6, v6)
+connect(v6, m7)
+connect(m7, v7)
+connect(v7, m8)
+connect(m8, v8)
+connect(v8, m9)
+
+# Labels both name nets and become top-level pins.  The technology protobuf
+# treats the containing drawing polygon as the pin region.
+connect(m1, m1_text)
+connect(m2, m2_text)
+connect(m3, m3_text)
+connect(m4, m4_text)
+connect(m5, m5_text)
+connect(m6, m6_text)
+connect(m7, m7_text)
+connect(m8, m8_text)
+connect(m9, m9_text)
+
+netlist
+align if $schematic
+
+# Width is the drawn FIN stripe width, not a BSIM-CMG width.  Tight tolerance
+# catches a missing/extra fin because each stripe is a distinct unit device.
+%w(nmos_rvt pmos_rvt nmos_lvt pmos_lvt nmos_slvt pmos_slvt nmos_sram pmos_sram).each do |model|
+  tolerance(model, "L", :absolute => 0.5.nm, :relative => 0.001)
+  tolerance(model, "W", :absolute => 0.5.nm, :relative => 0.001)
+end
+
+netlist.make_top_level_pins if ($top_lvl_pins || "true").to_s.downcase == "true"
+
+do_compare = ($compare || "true").to_s.downcase == "true" && $schematic
+if do_compare
+  if compare
+    puts "LVS completed successfully: circuits match"
+  else
+    puts "LVS completed: circuits do not match"
+  end
+else
+  puts "LVS connectivity extraction completed (comparison disabled)"
+end
