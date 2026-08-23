@@ -327,8 +327,13 @@ uv sync --extra gds --extra pex
 # FasterCap is LGPL-2.1 and built from its three pinned upstream repositories.
 # System prerequisites: cmake, g++, git, wxWidgets development headers, Eigen.
 scripts/build_fastercap.sh build/fastercap
-export FASTERCAP_EXE=$PWD/build/fastercap/build/FasterCap
 ```
+
+`find_fastercap` picks up that build location on its own, along with
+`FasterCap` on `PATH` and `/opt/FasterCap/FasterCap`; set `FASTERCAP_EXE` only
+to point at a solver somewhere else. `tests/test_pex.py` runs the real
+field-solve regression whenever it finds one, and `ASAP7_REQUIRE_TOOLS=1`
+turns "not built" into a failure rather than a skip.
 
 Run a custom cell:
 

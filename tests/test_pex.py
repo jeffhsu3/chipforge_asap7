@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 from pathlib import Path
 
 import gdspy
@@ -18,6 +17,7 @@ from chipforge_asap7.verification.lvs import (
 from chipforge_asap7.verification.pex import (
     add_distributed_resistance,
     add_maxwell_capacitance,
+    find_fastercap,
     normalize_unit_finfet_netlist,
     reference_subcircuit_pins,
     reorder_subcircuit_pins,
@@ -30,9 +30,15 @@ from chipforge_asap7.verification.stack import (
 )
 
 HAVE_KPEX = importlib.util.find_spec("klayout_pex") is not None
-KLAYOUT = shutil.which("klayout")
-FASTERCAP = os.environ.get("FASTERCAP_EXE")
 FASTERCAP_LIBRARY = os.environ.get("FASTERCAP_LIBRARY_DIR")
+
+
+def _fastercap() -> Path | None:
+    """The field solver `run_open_pex` would use, without the exception."""
+    try:
+        return find_fastercap()
+    except FileNotFoundError:
+        return None
 
 
 def test_unit_finfet_normalization_is_runnable_spice():
@@ -96,11 +102,8 @@ def test_maxwell_matrix_is_lumped_without_losing_substrate_capacitance():
     assert sum(item["capacitance_farad"] for item in records) == pytest.approx(8e-15)
 
 
-@pytest.mark.skipif(
-    not HAVE_KPEX or KLAYOUT is None,
-    reason="KLayout and KPEX are required",
-)
-def test_kpex_resistance_reconnects_device_terminals(tmp_path: Path):
+@pytest.mark.skipif(not HAVE_KPEX, reason="KPEX is not installed")
+def test_kpex_resistance_reconnects_device_terminals(tmp_path: Path, require_klayout):
     import klayout.db as kdb
     from klayout_pex.klayout.lvsdb_extractor import KLayoutExtractionContext
     from klayout_pex.rcx25.r.r_extractor import RExtractor
@@ -145,11 +148,15 @@ def test_kpex_resistance_reconnects_device_terminals(tmp_path: Path):
     assert device.net_for_terminal("B").expanded_name() == "B"
 
 
-@pytest.mark.skipif(
-    not HAVE_KPEX or KLAYOUT is None or not FASTERCAP,
-    reason="set FASTERCAP_EXE to run the real field-solver regression",
-)
-def test_complete_open_pex_with_fastercap_when_configured(tmp_path: Path):
+@pytest.mark.skipif(not HAVE_KPEX, reason="KPEX is not installed")
+def test_complete_open_pex_with_fastercap_when_configured(
+    tmp_path: Path, external_tool, require_klayout
+):
+    fastercap = _fastercap()
+    external_tool(
+        fastercap is not None,
+        "FasterCap is not built (set FASTERCAP_EXE, or run scripts/build_fastercap.sh)",
+    )
     spec = FinFETSpec()
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     gdspy.current_library = library
@@ -164,7 +171,7 @@ def test_complete_open_pex_with_fastercap_when_configured(tmp_path: Path):
         reference,
         tmp_path / "pex",
         cell_name=spec.cell_name,
-        fastercap=FASTERCAP,
+        fastercap=fastercap,
         fastercap_library_dir=FASTERCAP_LIBRARY,
         substrate_net="B",
         capacitance_mesh_area_um2=4.0,

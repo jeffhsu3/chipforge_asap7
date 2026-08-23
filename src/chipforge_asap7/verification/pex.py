@@ -87,6 +87,12 @@ def find_fastercap(executable: str | Path | None = None) -> Path:
         shutil.which("FasterCap"),
         shutil.which("fastercap"),
         Path("/opt/FasterCap/FasterCap"),
+        # Where `scripts/build_fastercap.sh` leaves it, and where this
+        # workspace's out-of-tree build puts it.  Same reason `find_klayout`
+        # carries a workspace path: a solver that is present should be used,
+        # not skipped because an environment variable was not exported.
+        Path("build/fastercap/build/FasterCap"),
+        Path.home() / "iv4/repos/build/FasterCap",
     ]
     for candidate in candidates:
         if not candidate:
