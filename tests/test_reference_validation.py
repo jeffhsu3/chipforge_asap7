@@ -163,3 +163,135 @@ def test_generated_finfet_stack_matches_released_invxp33_dimensions(
     assert {b[3] - b[1] for b in our_fins} == {FIN_WIDTH}
     assert our_fins[0][1] == ACTIVE_ENC
     assert our_fins[1][1] - our_fins[0][1] == FIN_PITCH
+
+
+# ── Dimensional correlation against the released decoder inverter ─────────────
+#
+# `dec_inv_62f_halved_AND` is the only tapless, stacked-band, shared-diffusion
+# cell in the released collateral, and the one
+# `chipforge_asap7.devices.inverter` is modelled on.  Comparing against it is
+# what pins the band arithmetic and the abutting placement to something ASU
+# actually taped out rather than to numbers this package chose.
+_SRAM_CELL = "dec_inv_62f_halved_AND"
+
+
+def test_generated_inverter_matches_the_released_decoder_inverter(
+    external_tool, released_sram_gds: Path, boxes_on
+):
+    """Diffusion, implant, wells and contacts, shape for shape.
+
+    Every layer here has to match exactly.  The three that do not are checked
+    separately below, because each is a deliberate difference rather than a
+    drift: the fin grid, the gate stripes and the gate cuts.
+    """
+    from chipforge_asap7.devices import InverterSpec, build_inverter
+    from chipforge_asap7.layout import LAYERS
+
+    external_tool(
+        released_sram_gds.is_file(),
+        "the public ASAP7 SRAM release is not available",
+    )
+    spec = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
+    cell = build_inverter(spec)
+
+    def released(name: str):
+        return sorted(
+            set(
+                _released_boxes(
+                    released_sram_gds,
+                    _SRAM_CELL,
+                    LAYERS[name]["layer"],
+                    LAYERS[name]["datatype"],
+                )
+            )
+        )
+
+    def ours(name: str):
+        return sorted({tuple(round(v) for v in box) for box in boxes_on(cell, name)})
+
+    assert (spec.width, spec.height) == (162, 1890)
+    for name in ("ACTIVE", "SDT", "LISD", "NWELL", "BOUNDARY"):
+        assert ours(name) == released(name), name
+
+    # The gate contact: a 22 nm LIG pad on the poly at each n/p seam.  Ours is
+    # a strap across every active finger rather than a single pad -- see
+    # `test_inverter.test_every_active_finger_reaches_the_input_strap` -- so
+    # only its height and its Y are comparable.
+    ref_lig = released("LIG")
+    our_lig = ours("LIG")
+    assert len(our_lig) == len(ref_lig) == len(spec.rows)
+    for ref, got in zip(ref_lig, our_lig):
+        assert (got[1], got[3]) == (ref[1], ref[3])
+        assert got[0] <= ref[0] and got[2] >= ref[2]
+
+    # Implant tiles the same bands; the released cell is a nanometre
+    # asymmetric at its own edges, ours is not.
+    for name in ("NSELECT", "PSELECT"):
+        assert sorted((b[1], b[3]) for b in ours(name)) == sorted(
+            (b[1], b[3]) for b in released(name)
+        ), name
+
+    # Contacts: same columns, same rows, except that the released cell places
+    # its topmost band's via row 3 nm off the ACTIVE edge where its other
+    # three bands sit flush.  Ours are flush throughout.
+    ref_v0 = released("V0")
+    our_v0 = ours("V0")
+    assert len(our_v0) == len(ref_v0)
+    assert {b[0] for b in our_v0} == {b[0] for b in ref_v0}
+    assert sum(a != b for a, b in zip(sorted(our_v0), sorted(ref_v0))) == 3
+
+
+def test_our_inverter_diverges_from_the_released_cell_only_where_intended(
+    external_tool, released_sram_gds: Path, boxes_on
+):
+    """Three deliberate differences, each of which the released cell needs.
+
+    They are asserted rather than tolerated so that a fourth one cannot appear
+    silently.
+    """
+    from chipforge_asap7.devices import InverterSpec, build_inverter
+    from chipforge_asap7.layout import LAYERS
+
+    external_tool(
+        released_sram_gds.is_file(),
+        "the public ASAP7 SRAM release is not available",
+    )
+    spec = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
+    cell = build_inverter(spec)
+
+    def released(name: str):
+        return sorted(
+            set(
+                _released_boxes(
+                    released_sram_gds,
+                    _SRAM_CELL,
+                    LAYERS[name]["layer"],
+                    LAYERS[name]["datatype"],
+                )
+            )
+        )
+
+    def ours(name: str):
+        return sorted({tuple(round(v) for v in box) for box in boxes_on(cell, name)})
+
+    # 1. FIN.  The released grid stops at the tile edge, leaving its own
+    #    8 nm ACTIVE overhang uncovered -- an ACTIVE.FIN.EX.1 the neighbour
+    #    happens to fix.  Ours runs past the overhang so the cell stands alone.
+    ref_fin, our_fin = released("FIN"), ours("FIN")
+    assert len(our_fin) == len(ref_fin)
+    assert [(b[1], b[3]) for b in our_fin] == [(b[1], b[3]) for b in ref_fin]
+    assert our_fin[0][0] < ref_fin[0][0] and our_fin[0][2] > ref_fin[0][2]
+
+    # 2. GATE.  The released cell splits each stripe at the row boundary, with
+    #    an 11 nm overlap that makes it one net anyway.  One stripe is simpler
+    #    and identical electrically.
+    ref_gate, our_gate = released("GATE"), ours("GATE")
+    assert len(our_gate) * 2 == len(ref_gate)
+    assert {(b[0], b[2]) for b in our_gate} == {(b[0], b[2]) for b in ref_gate}
+    assert all(b[1] < 0 and b[3] > spec.height for b in our_gate)
+
+    # 3. GCUT.  The released cell cuts only at the top, because its poly runs
+    #    on into the bank below it.  A cell that has to be correct on its own
+    #    cuts both ends.
+    assert [(b[1] + b[3]) // 2 for b in ours("GATE_CUT")] == [0, spec.height]
+    assert len(released("GATE_CUT")) == 1

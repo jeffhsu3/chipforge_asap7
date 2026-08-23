@@ -164,6 +164,71 @@ GCUT, traces LI/V0/M1 connectivity, proves D/G/S/B are separate, and checks the
 physical channel count. The public educational runset is the DRC authority for
 this project; it is not a claim of commercial foundry sign-off.
 
+### Stacked-band inverter
+
+`build_finfet` draws one transistor as a self-contained island: its own body
+tap, a dummy gate on each side, ACTIVE inset for a full 46 nm select
+enclosure, and a routing band above the channel for gate access. That is the
+right shape for a device you place and check on its own. It is the wrong shape
+for a dense peripheral cell, and the released ASAP7 SRAM says so —
+`dec_inv_62f_halved_AND` in `asap7_sram_0p0/gds/srambank_32b.gds` is built the
+other way round, and `InverterSpec` reproduces it:
+
+```python
+from chipforge_asap7.devices import InverterSpec, build_inverter, build_inverter_row
+
+spec = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
+spec.cell_name            # "inv_fin_18n18p_13n13p_2f"
+spec.width, spec.height   # (162, 1890) nm -- the released tile, exactly
+spec.row_ys               # (0, 1080, 1890): three rails, two standard-cell rows
+spec.pull_down_fins       # 62  (the "62f" the released cell is named after)
+spec.drc_verifiable       # False -- 13- and 18-fin bands are past the deck's list
+
+row = build_inverter_row(spec, 4)   # the four wordline drivers, as ASU place them
+spec.row_placements(4)    # ((0, False), (216, True), (216, False), (432, True))
+```
+
+Four transistor bands stacked on one continuous poly and one output strap:
+an 18-fin nFET, an 18-fin pFET, then a flipped row with a 13-fin pFET and a
+13-fin nFET. Rows alternate orientation the way standard-cell rows do, so
+every rail lies between two bands of one polarity and carries one supply. The
+output crosses a rail on M1→M2→M3→M2→M1, because M1 owns that track; folding
+past two fingers gives a row two drain columns, which are tied on M2.
+
+Each band is a `FinFETSpec`, and `build_device_band` — factored out of
+`build_finfet` — draws the diffusion stack the two have in common: one
+fin-quantized ACTIVE rectangle and a 24 nm SDT + LISD bar per column. Taps,
+vias, straps, rails, implant and cuts stay with each caller, because that is
+exactly where an isolated tile and an abutting array cell disagree.
+
+`abut=True` (the default) is the released array style: ACTIVE and implant
+overhang the tile so neighbours merge into one diffusion strip, and each tile
+draws one more gate than it owns. `row_placements` mirrors alternate
+instances so that extra gate lands on its neighbour's outermost finger and its
+outer source column on the neighbour's — `count` tiles become one continuous
+54 nm array with `count` independent inputs and outputs. A tile holding half of
+every finger pair is what "halved" means in the released cell's name.
+`abut=False` draws a self-contained island instead: its own dummy gates, no
+overhang, and a full select enclosure.
+
+Neither style carries a body tap — the released cell has none either, because
+logic cells rely on periodic tap rows. So the cell cannot satisfy `ACTIVE.LUP.1`
+alone, and an abutting one is 37 nm short of `NSELECT/PSELECT/WELL.ACTIVE.EN.1`
+at the two *outer* edges of a row. `tests/test_inverter_drc.py` asserts the
+exact residual category set for each style rather than waiving them, and pins
+the interior down a different way: a four-wide row reports the same violation
+*count* as a single tile, which it could not if abutment left any gap.
+`tests/test_inverter_lvs.py` extracts rows of one, two and four instances and
+matches them against a reference of that many independent inverters — the check
+that every shared edge gate really became its neighbour's finger, and that no
+two drivers share an output. `tests/test_reference_validation.py` compares the
+drawn ACTIVE, SDT, LISD, NWELL and BOUNDARY against the released cell shape for
+shape, and asserts the three places the two deliberately differ.
+
+```bash
+uv run asap7-inverter --rows 18:18,13:13 --fingers 2 --out build/inv.gds
+```
+
 ### Parametric sense amplifier
 
 `SenseAmpSpec` builds the same 16-transistor differential latch used by the

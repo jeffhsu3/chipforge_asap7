@@ -52,6 +52,7 @@ FIN/ACTIVE/GATE channel intersection.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -87,7 +88,9 @@ __all__ = [
     "TAP_ACTIVE_WIDTH",
     "TAP_COLUMN_WIDTH",
     "V0_LISD_ENCLOSURE",
+    "VT_LAYERS",
     "FinFETSpec",
+    "build_device_band",
     "build_finfet",
     "nmos_fin",
     "pmos_fin",
@@ -147,7 +150,13 @@ M1_MIN_SPACE = 18  # M1.S.1, both edges > 36 nm
 V0_LISD_ENCLOSURE = 3  # V0.LISD.EN.2, on at least two opposite sides
 
 _ISOLATION_FINS = 2  # one select-enclosure fin pitch above and below ACTIVE
-_VT_LAYERS = {"rvt": None, "lvt": "LVT", "slvt": "SLVT", "sram": "SRAMVT"}
+#: Threshold flavor -> its layout marker layer, or None for the RVT default.
+VT_LAYERS: dict[str, str | None] = {
+    "rvt": None,
+    "lvt": "LVT",
+    "slvt": "SLVT",
+    "sram": "SRAMVT",
+}
 _M1_PIN_LAYER = LAYERS["M1_PIN"]["layer"]
 _M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
 
@@ -184,8 +193,8 @@ class FinFETSpec:
     def __post_init__(self) -> None:
         if self.flavor not in ("n", "p"):
             raise ValueError(f"flavor must be 'n' or 'p', got {self.flavor!r}")
-        if self.vt not in _VT_LAYERS:
-            raise ValueError(f"vt must be one of {tuple(_VT_LAYERS)}, got {self.vt!r}")
+        if self.vt not in VT_LAYERS:
+            raise ValueError(f"vt must be one of {tuple(VT_LAYERS)}, got {self.vt!r}")
 
         required_ints = (
             "fins",
@@ -459,6 +468,63 @@ class FinFETSpec:
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
+def build_device_band(
+    cell: Any,
+    spec: FinFETSpec,
+    *,
+    y0: float = 0.0,
+    sd_xs: Sequence[float] | None = None,
+    active_x: tuple[float, float] | None = None,
+    source_lisd_y: float | None = None,
+) -> tuple[float, float]:
+    """Draw one transistor band's diffusion stack; return its ACTIVE span.
+
+    A *band* is the part of a FinFET that is the same whether the device is a
+    standalone tile (`build_finfet`) or one of several rows stacked on shared
+    rails inside a composite cell (`chipforge_asap7.devices.inverter`): one
+    fin-quantized ACTIVE rectangle and a `SD_BAR_WIDTH`-wide SDT + LISD bar on
+    every source/drain column.
+
+    Everything else -- body taps, vias, straps, rails, implant, wells and gate
+    cuts -- stays with the caller, because that is exactly where an isolated
+    tile and an abutting array cell disagree.  Sharing more than this would
+    mean making the tile's tap, dummy gates and routing band optional, which
+    is three new ways for the standalone device to come out wrong.
+
+    Args:
+        cell: target gdspy Cell.
+        spec: the band's device.  Only `fins`, the band height and the column
+            arithmetic are read; `flavor`, `vt` and wells stay with the caller.
+        y0: Y of the band's select-band bottom, in cell coordinates.
+        sd_xs: source/drain column centers, overriding `spec.sd_xs`.  A
+            composite cell places its own columns.
+        active_x: ``(x0, x1)`` for the ACTIVE rectangle, overriding the inset
+            island `build_finfet` draws.  An abutting cell passes an overhang
+            here so its diffusion merges with its neighbour's.
+        source_lisd_y: when given, LISD on the source columns runs down to
+            this Y instead of stopping at the ACTIVE edge -- how `build_finfet`
+            reaches the source rail below its channel.
+
+    Returns:
+        ``(act_lo, act_hi)`` in cell coordinates.
+    """
+    columns = list(spec.sd_xs if sd_xs is None else sd_xs)
+    if active_x is None:
+        active_x = (spec.device_x0 + SELECT_X_ENC, spec.width - SELECT_X_ENC)
+    rel_lo, rel_hi = spec.active_span()
+    act_lo, act_hi = rel_lo + y0, rel_hi + y0
+
+    box(cell, "ACTIVE", active_x[0], act_lo, active_x[1], act_hi)
+    half_sd = SD_BAR_WIDTH / 2
+    for index, x_sd in enumerate(columns):
+        box(cell, "SDT", x_sd - half_sd, act_lo, x_sd + half_sd, act_hi)
+        # Columns alternate S, D, S, ... from the left, so the even ones are
+        # the sources that may have to reach a rail below the band.
+        lisd_lo = act_lo if source_lisd_y is None or index % 2 else source_lisd_y
+        box(cell, "LISD", x_sd - half_sd, lisd_lo, x_sd + half_sd, act_hi)
+    return act_lo, act_hi
+
+
 def build_finfet(
     spec: FinFETSpec,
     *,
@@ -511,7 +577,7 @@ def build_finfet(
     # ACTIVE and uncut GATE remain enclosed by at least 27 nm and 17 nm.
     if spec.flavor == "p":
         box(cell, "NWELL", 0, 0, spec.width, spec.height)
-    if vt_layer := _VT_LAYERS[spec.vt]:
+    if vt_layer := VT_LAYERS[spec.vt]:
         box(cell, vt_layer, device_x0, 0, device_x1, spec.height)
 
     # FIN and GATE are manufacturing grids, not shapes cropped to the channel.
@@ -557,15 +623,9 @@ def build_finfet(
 
     # The transistor ACTIVE extends 25 nm beyond the two outer active gate
     # edges.  This leaves a 9 nm gap to each edge dummy and gives exactly the
-    # 46 nm select enclosure used by the standard cells.
-    box(
-        cell,
-        "ACTIVE",
-        device_x0 + SELECT_X_ENC,
-        act_lo,
-        device_x1 - SELECT_X_ENC,
-        act_hi,
-    )
+    # 46 nm select enclosure used by the standard cells.  Source LISD carries
+    # on down to the y=0 rail; drain LISD stops at the ACTIVE edge.
+    build_device_band(cell, spec, source_lisd_y=0)
 
     # The opposite-polarity tap occupies the gap between the tap column's two
     # dummy gates.  It is at least 864 nm² even for a one-fin transistor.
@@ -588,8 +648,6 @@ def build_finfet(
     box(cell, "LIG", device_x0, -half_rail, device_x1, half_rail)
     box(cell, "M1", device_x0, -half_m1, device_x1, half_m1)
     for x_source in spec.source_xs:
-        box(cell, "SDT", x_source - half_sd, act_lo, x_source + half_sd, act_hi)
-        box(cell, "LISD", x_source - half_sd, 0, x_source + half_sd, act_hi)
         box(
             cell,
             "V0",
@@ -601,8 +659,6 @@ def build_finfet(
 
     y_drain = spec.drain_contact_y()
     for x_drain in spec.drain_xs:
-        box(cell, "SDT", x_drain - half_sd, act_lo, x_drain + half_sd, act_hi)
-        box(cell, "LISD", x_drain - half_sd, act_lo, x_drain + half_sd, act_hi)
         box(
             cell,
             "V0",
@@ -743,7 +799,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--flavor", choices=("n", "p"), default="n")
     parser.add_argument(
-        "--vt", choices=tuple(_VT_LAYERS), default="rvt", help="Threshold flavor."
+        "--vt", choices=tuple(VT_LAYERS), default="rvt", help="Threshold flavor."
     )
     parser.add_argument("--fins", type=int, default=1, help="Active fins per finger.")
     parser.add_argument("--fingers", type=int, default=1, help="Gates sharing S/D.")

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..devices.finfet import FinFETSpec
+from ..devices.inverter import INVERTER_PINS, InverterSpec
 from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
 from ..layout.grid import FIN_WIDTH
 
@@ -19,6 +20,8 @@ __all__ = [
     "lvs_deck_path",
     "normalize_asap7_cdl_reference",
     "render_finfet_lvs_schematic",
+    "render_inverter_lvs_schematic",
+    "render_inverter_row_lvs_schematic",
     "render_sense_amp_lvs_schematic",
     "run_lvs",
 ]
@@ -139,6 +142,104 @@ def render_sense_amp_lvs_schematic(
     )
 
 
+def render_inverter_lvs_schematic(
+    spec: InverterSpec,
+    *,
+    cell_name: str | None = None,
+) -> str:
+    """Render a stacked-band inverter as one LVS MOS per physical fin.
+
+    Same unit-fin representation as :func:`render_finfet_lvs_schematic`: the
+    deck extracts every ``FIN x GATE`` intersection as its own device, so each
+    band contributes ``fins x fingers`` parallel units between the output and
+    its rail.  The cell carries no body tap, so run it with ``tie_bodies``
+    enabled -- the substrate and well reach their supplies through the tap
+    rows of the design that places it, exactly as for a released logic cell.
+    """
+
+    name = cell_name or spec.cell_name
+    body = "\n".join(_inverter_units(spec))
+    pins = " ".join(INVERTER_PINS)
+    return (
+        "* ASAP7 inverter LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {pins}\n"
+        f"{body}\n"
+        f".ENDS {name}\n"
+        ".END\n"
+    )
+
+
+def render_inverter_row_lvs_schematic(
+    spec: InverterSpec,
+    count: int,
+    *,
+    cell_name: str,
+) -> str:
+    """Render `count` abutting inverters as one flat unit-fin reference.
+
+    Abutting instances share diffusion, source columns and a gate track, so
+    the extractor cannot keep them apart as separate subcircuits -- their
+    shapes merge across the tile boundary.  The reference is therefore flat
+    too, with pins ``A0/Y0 .. A<n-1>/Y<n-1>`` matching
+    `chipforge_asap7.devices.inverter.build_inverter_row`.
+
+    A row this reference matches is the real proof that the interleave works:
+    every tile's shared edge gate has to have become its neighbour's finger,
+    and no two drivers may share an output.
+
+    An even `count` terminates itself -- the last instance is mirrored, so the
+    gate it does not own faces its neighbour and its outer column is a
+    contacted source.  An odd `count` ends on an unmirrored tile whose extra
+    gate has no neighbour to claim it, leaving one finger driven by floating
+    poly against an uncontacted diffusion stub per fin.  Those devices are
+    real and are modelled here rather than quietly dropped; a placed design
+    terminates the row with a filler instead.
+    """
+
+    instances: list[str] = []
+    for index in range(count):
+        instances += _inverter_units(
+            spec, gate=f"A{index}", drain=f"Y{index}", prefix=f"M{index}_"
+        )
+    if count % 2:
+        instances += [
+            f"Medge_b{index}_n{fin} EDGE_D{index}_{fin} EDGE_G "
+            f"{band.rail_net} {band.rail_net} {band.spec.model} "
+            f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            for index, band in enumerate(spec.bands)
+            for fin in range(band.fins)
+        ]
+    body = "\n".join(instances)
+    header = " ".join([f"A{i}" for i in range(count)])
+    header += " " + " ".join([f"Y{i}" for i in range(count)]) + " VDD VSS"
+    return (
+        f"* ASAP7 inverter row LVS reference: {count} abutting drivers\n"
+        f".SUBCKT {cell_name} {header}\n"
+        f"{body}\n"
+        f".ENDS {cell_name}\n"
+        ".END\n"
+    )
+
+
+def _inverter_units(
+    spec: InverterSpec,
+    *,
+    gate: str = "A",
+    drain: str = "Y",
+    prefix: str = "M",
+) -> list[str]:
+    """One unit-fin MOS line per FIN x GATE channel in `spec`."""
+
+    return [
+        f"{prefix}b{index}_f{finger}_n{fin} {drain} {gate} "
+        f"{band.rail_net} {band.rail_net} {band.spec.model} "
+        f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+        for index, band in enumerate(spec.bands)
+        for finger in range(spec.fingers)
+        for fin in range(band.fins)
+    ]
+
+
 def normalize_asap7_cdl_reference(source: str | Path, output: str | Path) -> Path:
     """Convert released ASAP7 ``NFIN`` MOS lines to unit-fin LVS devices.
 
@@ -226,12 +327,20 @@ def run_lvs(
     deck: str | Path | None = None,
     compare: bool = True,
     asap7_standard_cell: bool = False,
+    tie_bodies: bool | None = None,
     timeout: float = 300,
 ) -> LVSResult:
     """Run ASAP7 KLayout LVS and retain the LVSDB needed by KPEX.
 
     ``compare=False`` prepares connectivity and an LVSDB even when no trusted
     schematic is available.  Normal verification should keep comparison on.
+
+    ``asap7_standard_cell`` does two independent things: it expands a released
+    ``NFIN`` CDL to unit-fin devices, and it ties the well and substrate to
+    VDD/VSS.  A cell this package generates without a body tap -- the stacked
+    inverter, for instance -- needs the second without the first, and says so
+    with ``tie_bodies=True``.  It defaults to following
+    ``asap7_standard_cell``, so existing callers are unaffected.
     """
 
     gds_path = Path(gds).expanduser().resolve()
@@ -243,6 +352,7 @@ def run_lvs(
 
     out = Path(output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
+    tie = asap7_standard_cell if tie_bodies is None else tie_bodies
     if asap7_standard_cell:
         schematic_path = normalize_asap7_cdl_reference(
             schematic_path, out / "reference_unit_fins.cdl"
@@ -266,7 +376,7 @@ def run_lvs(
         "-rd",
         f"compare={'true' if compare else 'false'}",
         "-rd",
-        f"tie_standard_cell_bodies={'true' if asap7_standard_cell else 'false'}",
+        f"tie_standard_cell_bodies={'true' if tie else 'false'}",
         "-rd",
         "run_mode=deep",
         "-rd",

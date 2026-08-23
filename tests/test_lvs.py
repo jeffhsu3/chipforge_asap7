@@ -12,21 +12,10 @@ import gdspy
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet
 from chipforge_asap7.verification.lvs import (
-    find_klayout,
     normalize_asap7_cdl_reference,
     render_finfet_lvs_schematic,
     run_lvs,
 )
-
-
-def _klayout() -> Path | None:
-    try:
-        return find_klayout()
-    except FileNotFoundError:
-        return None
-
-
-KLAYOUT = _klayout()
 
 
 def _write_device(spec: FinFETSpec, path: Path) -> None:
@@ -37,9 +26,8 @@ def _write_device(spec: FinFETSpec, path: Path) -> None:
 
 
 def test_generated_finfet_lvs_matches_and_detects_wrong_fin_count(
-    tmp_path: Path, external_tool
+    tmp_path: Path, require_klayout
 ):
-    external_tool(KLAYOUT is not None, "KLayout is not installed (set KLAYOUT_BIN)")
     spec = FinFETSpec(flavor="p", fins=2, fingers=2, vt="lvt")
     gds = tmp_path / "device.gds"
     _write_device(spec, gds)
@@ -94,9 +82,8 @@ def test_released_cdl_nfin_is_expanded_to_unit_fin_devices(tmp_path: Path):
 
 
 def test_released_invxp33_lvs_when_public_release_is_available(
-    tmp_path: Path, external_tool, released_library: Path
+    tmp_path: Path, external_tool, require_klayout, released_library: Path
 ):
-    external_tool(KLAYOUT is not None, "KLayout is not installed (set KLAYOUT_BIN)")
     gds = released_library / "GDS/asap7sc7p5t_28_R_220121a.gds"
     cdl = released_library / "CDL/LVS/asap7sc7p5t_28_R.cdl"
     external_tool(

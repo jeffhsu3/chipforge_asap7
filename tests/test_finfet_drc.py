@@ -8,45 +8,14 @@ cannot report green on a machine where the claim was never checked.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
 import gdspy
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet
 from chipforge_asap7.devices.finfet import MAX_FINS, MAX_VERIFIABLE_FINS
-from chipforge_asap7.verification.lvs import find_klayout
 
 
-def _asap7_drc_deck() -> Path | None:
-    """Locate the public ASAP7 KLayout runset."""
-    candidates = [
-        Path(os.environ["ASAP7_DRC_DECK"])
-        if os.environ.get("ASAP7_DRC_DECK")
-        else None,
-        Path.home() / "iv4/repos/ASAP7_for_KLayout/drc/drc_ASAP7.lydrc",
-    ]
-    return next(
-        (path for path in candidates if path is not None and path.is_file()), None
-    )
-
-
-def _klayout() -> Path | None:
-    # Same resolution order the LVS runner uses, rather than a second copy of it.
-    try:
-        return find_klayout()
-    except FileNotFoundError:
-        return None
-
-
-KLAYOUT = _klayout()
-ASAP7_DRC_DECK = _asap7_drc_deck()
-
-
-def _run_drc(specs: list[FinFETSpec], tmp_path: Path, tag: str) -> list[str]:
-    """Tile `specs` side by side, run the runset, return violation categories."""
+def _tile(specs: list[FinFETSpec], tag: str):
+    """Tile `specs` side by side in a fresh library; return it and its top cell."""
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     gdspy.current_library = library
     top = library.new_cell(f"finfet_{tag}")
@@ -55,41 +24,10 @@ def _run_drc(specs: list[FinFETSpec], tmp_path: Path, tag: str) -> list[str]:
         device = build_finfet(spec, lib=library)
         top.add(gdspy.CellReference(device, origin=(cursor, 0)))
         cursor += spec.width + 500
-
-    gds = tmp_path / f"{tag}.gds"
-    report = tmp_path / f"{tag}.lyrdb"
-    library.write_gds(str(gds))
-    result = subprocess.run(
-        [
-            str(KLAYOUT),
-            "-b",
-            "-r",
-            str(ASAP7_DRC_DECK),
-            "-rd",
-            f"input={gds}",
-            "-rd",
-            f"topcell={top.name}",
-            "-rd",
-            f"output={report}",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
-    items = ET.parse(report).getroot().findall("./items/item")
-    # The runset writes categories quoted, e.g. "'SDT.W.3'".
-    return [(item.findtext("category") or "").strip("'\"") for item in items]
+    return library, top
 
 
-def test_representative_finfet_matrix_is_asap7_drc_clean(tmp_path: Path, external_tool):
-    external_tool(
-        KLAYOUT is not None and ASAP7_DRC_DECK is not None,
-        "KLayout and the public ASAP7 DRC deck are not installed "
-        "(set KLAYOUT_BIN and ASAP7_DRC_DECK)",
-    )
-
+def test_representative_finfet_matrix_is_asap7_drc_clean(asap7_drc):
     # Exercise every fin height the runset can actually decide, for both
     # polarities, then add nontrivial fold counts, VT markers and a custom band.
     # Anything above MAX_VERIFIABLE_FINS is covered by the companion test below,
@@ -111,12 +49,10 @@ def test_representative_finfet_matrix_is_asap7_drc_clean(tmp_path: Path, externa
     assert len({spec.cell_name for spec in specs}) == len(specs)
 
     assert all(spec.drc_verifiable for spec in specs)
-    assert _run_drc(specs, tmp_path, "drc_matrix") == []
+    assert asap7_drc(*_tile(specs, "drc_matrix"), tag="drc_matrix") == []
 
 
-def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(
-    tmp_path: Path, external_tool
-):
+def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(asap7_drc):
     """Above MAX_VERIFIABLE_FINS the deck is wrong, and only in two ways.
 
     ACTIVE.W.2 and SDT.W.3 both read "vertical height increment is an integer
@@ -130,12 +66,6 @@ def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(
     MAX_VERIFIABLE_FINS can be raised; if a tall device grows a *real*
     violation, that shows up here as a new category.
     """
-    external_tool(
-        KLAYOUT is not None and ASAP7_DRC_DECK is not None,
-        "KLayout and the public ASAP7 DRC deck are not installed "
-        "(set KLAYOUT_BIN and ASAP7_DRC_DECK)",
-    )
-
     # The two fin heights the released decoder inverter is built from.
     specs = [
         FinFETSpec(flavor=flavor, fins=fins, fingers=3)
@@ -145,5 +75,5 @@ def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(
     assert all(not spec.drc_verifiable for spec in specs)
     assert max(spec.fins for spec in specs) == MAX_FINS
 
-    categories = set(_run_drc(specs, tmp_path, "tall_devices"))
+    categories = set(asap7_drc(*_tile(specs, "tall_devices"), tag="tall_devices"))
     assert categories == {"ACTIVE.W.2", "SDT.W.3"}

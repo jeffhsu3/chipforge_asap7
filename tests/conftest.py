@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,6 +17,30 @@ Box = tuple[float, float, float, float]
 #: the released standard-cell library still reports a green suite while the
 #: geometry claims in `chipforge_asap7.devices.finfet` go unverified.
 REQUIRE_TOOLS_ENV = "ASAP7_REQUIRE_TOOLS"
+#: Overrides the search for the public ASAP7 KLayout rule deck.
+DRC_DECK_ENV = "ASAP7_DRC_DECK"
+
+
+def find_asap7_drc_deck() -> Path | None:
+    """Locate the public ASAP7 KLayout runset, if it is installed."""
+    override = os.environ.get(DRC_DECK_ENV)
+    candidates = [
+        Path(override) if override else None,
+        Path.home() / "iv4/repos/ASAP7_for_KLayout/drc/drc_ASAP7.lydrc",
+    ]
+    return next(
+        (path for path in candidates if path is not None and path.is_file()), None
+    )
+
+
+def find_klayout_or_none() -> Path | None:
+    """The LVS runner's KLayout resolution, without the exception."""
+    from chipforge_asap7.verification.lvs import find_klayout
+
+    try:
+        return find_klayout()
+    except FileNotFoundError:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -80,3 +106,70 @@ def boxes_on() -> Callable[[object, str], list[Box]]:
 def released_library() -> Path:
     """Root of the public ASAP7 7.5-track standard-cell release, if present."""
     return Path.home() / "iv4/repos/asap7/asap7sc7p5t_28"
+
+
+@pytest.fixture(scope="session")
+def released_sram_gds() -> Path:
+    """The public ASAP7 SRAM bank GDS, if present.
+
+    `dec_inv_62f_halved_AND` lives in here; it is the cell
+    `chipforge_asap7.devices.inverter` is modelled on, and the only place the
+    released collateral shows a tapless, stacked-band, shared-diffusion cell.
+    """
+    return Path.home() / "iv4/repos/asap7/asap7_sram_0p0/gds/srambank_32b.gds"
+
+
+@pytest.fixture
+def require_klayout(external_tool) -> Path:
+    """The KLayout binary the verification runners use; skip if it is missing."""
+    klayout = find_klayout_or_none()
+    external_tool(klayout is not None, "KLayout is not installed (set KLAYOUT_BIN)")
+    return klayout
+
+
+@pytest.fixture
+def asap7_drc(external_tool, tmp_path) -> Callable[..., list[str]]:
+    """Run the public ASAP7 runset over a library, and report what it found.
+
+    Returns the violation *categories* rather than a pass/fail, because a cell
+    can be as clean as a cell can be and still trip rules that only a placed
+    design satisfies -- latch-up without a tap row, implant enclosure at the
+    end of an abutting row.  Asserting the exact category set keeps those
+    documented instead of waived.
+    """
+
+    def _run(library, top, tag: str = "drc") -> list[str]:
+        klayout = find_klayout_or_none()
+        deck = find_asap7_drc_deck()
+        external_tool(
+            klayout is not None and deck is not None,
+            "KLayout and the public ASAP7 DRC deck are not installed "
+            f"(set KLAYOUT_BIN and {DRC_DECK_ENV})",
+        )
+        gds = tmp_path / f"{tag}.gds"
+        report = tmp_path / f"{tag}.lyrdb"
+        library.write_gds(str(gds))
+        result = subprocess.run(
+            [
+                str(klayout),
+                "-b",
+                "-r",
+                str(deck),
+                "-rd",
+                f"input={gds}",
+                "-rd",
+                f"topcell={top.name}",
+                "-rd",
+                f"output={report}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
+        items = ET.parse(report).getroot().findall("./items/item")
+        # The runset writes categories quoted, e.g. "'SDT.W.3'".
+        return [(item.findtext("category") or "").strip("'\"") for item in items]
+
+    return _run
