@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
+from ..devices.row_support import RowSupportSpec
 from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
 from ..layout.grid import FIN_WIDTH
 
@@ -22,6 +23,7 @@ __all__ = [
     "render_finfet_lvs_schematic",
     "render_inverter_lvs_schematic",
     "render_inverter_row_lvs_schematic",
+    "render_row_support_lvs_schematic",
     "render_sense_amp_lvs_schematic",
     "run_lvs",
 ]
@@ -217,6 +219,45 @@ def render_inverter_row_lvs_schematic(
         f".SUBCKT {cell_name} {header}\n"
         f"{body}\n"
         f".ENDS {cell_name}\n"
+        ".END\n"
+    )
+
+
+def render_row_support_lvs_schematic(
+    spec: RowSupportSpec,
+    *,
+    cell_name: str | None = None,
+) -> str:
+    """Render a row-support cell's devices, one MOS per FIN x GATE channel.
+
+    A filler has none, and a tap has none either: its ties are diffusion, not
+    devices, and what they connect is the well and substrate.  The way to see
+    a tap work is to run LVS over a row that contains one with body ties
+    *disabled* -- the bodies then have to reach their rails through the tap
+    rather than by declaration.
+
+    A decap does have devices: each plate's source and drain both land on its
+    band's rail, and the two bands of a row share one floating gate conductor,
+    so they sit back to back between VDD and VSS.  The plate net is per *row*,
+    not per cell -- the poly is cut at every rail, which is what stops two
+    stacked rows from becoming one capacitor with the wrong terminals.
+    """
+
+    name = cell_name or spec.cell_name
+    instances = [
+        f"M{index}_g{gate}_n{fin} {band.rail_net} PLATE{band.row} "
+        f"{band.rail_net} {band.rail_net} {band.spec.model} "
+        f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+        for index, band in enumerate(spec.bands)
+        for gate in range(len(spec.gate_xs))
+        for fin in range(band.fins)
+    ]
+    body = "\n".join(instances)
+    return (
+        "* ASAP7 row-support LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} VDD VSS\n"
+        f"{body}\n"
+        f".ENDS {name}\n"
         ".END\n"
     )
 

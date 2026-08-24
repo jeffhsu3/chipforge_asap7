@@ -229,6 +229,71 @@ shape, and asserts the three places the two deliberately differ.
 uv run asap7-inverter --rows 18:18,13:13 --fingers 2 --out build/inv.gds
 ```
 
+### Row support — tap, filler, decap
+
+An abutting logic row is as clean as a logic cell can be on its own and still
+reports eight DRC violations, because two of the rules it has to satisfy are
+not properties of a cell at all. Latch-up needs a body tie within 30 µm, and a
+logic cell carries no tap — the released `dec_inv_62f_halved_AND` carries none
+either. Implant enclosure needs 46 nm past the outermost ACTIVE, and an
+abutting cell deliberately stops at 9 nm because the rest comes from its
+neighbour. Measured with the public runset on a four-wide inverter row:
+
+| arrangement | violations |
+|---|---|
+| `row` | 8 — 2× LUP, 2× WELL.EN, 2× NSELECT.EN, 2× PSELECT.EN |
+| `filler row filler` | 2 — LUP only |
+| `filler row filler tap filler` | **0** |
+
+```python
+from chipforge_asap7.devices import InverterSpec, RowSupportSpec, build_row_support
+
+inverter = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
+tap = RowSupportSpec(stack=inverter.stack, kind="tap")   # same stack, by construction
+build_row_support(tap)
+tap.width, tap.height   # (108, 1890)
+```
+
+`RowStack` is what keeps the two in step: it owns where the bands are, how tall
+each is, which polarity it carries and which rail it faces, and both
+`InverterSpec.stack` and `RowSupportSpec.stack` are the same object. A tap
+built from a different stack cannot silently half-fit.
+
+**The ordering is not interchangeable.** A filler carries the *same* implant as
+the row, which is what extends the enclosure past its last ACTIVE; a tap
+carries the opposite. Put a tap straight against a logic cell and the
+enclosure violation stays exactly where it was — while latch-up is fixed, which
+is what makes the mistake easy to miss.
+`test_row_support_drc.py::test_a_tap_next_to_logic_does_not_replace_a_filler`
+pins that down.
+
+On a 3-fin/3-fin stack — two 135 nm bands, which is the released 270 nm
+standard-cell row — the generated tap and filler are **identical to
+`TAPCELL_ASAP7_75t_R` and `FILLER_ASAP7_75t_R` on every layer**, asserted as an
+equality in `tests/test_reference_validation.py`. That includes the 16 nm LI
+rail under each power rail, which is not decoration: `V0.AUX.1-2` oversizes LIG
+by 1 nm before asking whether a contact landed on local interconnect, so 16 nm
+is exactly enough for an 18 nm via, and without it every contact sitting on a
+rail hangs over the end of its LISD bar.
+
+`decap` is the third of the trio and the only one with devices in it. The two
+bands of a row share one gate conductor, which floats, so their capacitors sit
+back to back between VDD and VSS and neither oxide sees the full supply — half
+the capacitance of a grounded-gate pair, and what fits in a cell whose bands
+span the same columns. Stacked rows each get their own plate net, because the
+poly is cut at every rail.
+
+The tap is verified electrically, not just geometrically:
+`test_row_support_lvs.py` runs LVS with the deck's global body tie switched
+*off*, so every body terminal has to reach its rail through drawn geometry. A
+terminated row matches; the same row with its tap removed does not. With the
+tie declared, both pass — which is the point: the usual LVS setup cannot tell a
+working tap from a missing one.
+
+```bash
+uv run asap7-row-support --kind tap --rows 18:18,13:13 --out build/tap.gds
+```
+
 ### Parametric sense amplifier
 
 `SenseAmpSpec` builds the same 16-transistor differential latch used by the

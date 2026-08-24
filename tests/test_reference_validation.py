@@ -295,3 +295,74 @@ def test_our_inverter_diverges_from_the_released_cell_only_where_intended(
     #    cuts both ends.
     assert [(b[1] + b[3]) // 2 for b in ours("GATE_CUT")] == [0, spec.height]
     assert len(released("GATE_CUT")) == 1
+
+
+# ── Dimensional correlation against the released tap and filler ───────────────
+#
+# These two are the only cells this package draws that are *identical* to
+# released ASAP7 collateral rather than merely consistent with it, so the
+# comparison is an equality rather than a set of dimensional claims.  A
+# three-fin/three-fin stack is two 135 nm bands, which is exactly the released
+# 270 nm standard-cell row.
+def test_generated_tap_and_filler_match_the_released_cells_shape_for_shape(
+    external_tool, released_library: Path, boxes_on
+):
+    from chipforge_asap7.devices import RowStack, RowSupportSpec, build_row_support
+    from chipforge_asap7.layout import LAYERS
+
+    gds = released_library / _RELEASED_GDS
+    external_tool(
+        gds.is_file(), "the public ASAP7 standard-cell release is not available"
+    )
+
+    stack = RowStack(rows=((3, 3),))
+    assert stack.height == 270
+
+    for kind, released_cell in (
+        ("tap", "TAPCELL_ASAP7_75t_R"),
+        ("filler", "FILLER_ASAP7_75t_R"),
+    ):
+        spec = RowSupportSpec(stack=stack, kind=kind)
+        cell = build_row_support(spec)
+        assert (spec.width, spec.height) == (108, 270)
+
+        drawn = {
+            name
+            for name in LAYERS
+            if not name.endswith("_PIN") and boxes_on(cell, name)
+        }
+        # CA is an alias of LIG on the same layer number, so it is not a
+        # separate shape set; compare the layers, not the names.
+        specs = {(LAYERS[name]["layer"], LAYERS[name]["datatype"]) for name in drawn}
+        released_specs = {
+            key
+            for key in _released_layer_specs(gds, released_cell)
+            if key[1] != 251  # pin text, which the released cells carry as labels
+        }
+        assert specs == released_specs, kind
+
+        for layer, datatype in sorted(specs):
+            ours = sorted(
+                {
+                    tuple(round(v) for v in b)
+                    for b in _boxes_on_spec(cell, layer, datatype)
+                }
+            )
+            theirs = sorted(set(_released_boxes(gds, released_cell, layer, datatype)))
+            assert ours == theirs, f"{kind} layer {layer}/{datatype}"
+
+
+def _released_layer_specs(path: Path, cell_name: str):
+    gdspy = pytest.importorskip("gdspy")
+    cell = gdspy.GdsLibrary(infile=str(path)).cells[cell_name]
+    return {(int(spec[0]), int(spec[1])) for spec in cell.get_polygons(by_spec=True)}
+
+
+def _boxes_on_spec(cell, layer: int, datatype: int):
+    for polygon_set in cell.polygons:
+        for points, gds_layer, gds_datatype in zip(
+            polygon_set.polygons, polygon_set.layers, polygon_set.datatypes
+        ):
+            if (gds_layer, gds_datatype) == (layer, datatype):
+                xs, ys = points[:, 0], points[:, 1]
+                yield (xs.min(), ys.min(), xs.max(), ys.max())

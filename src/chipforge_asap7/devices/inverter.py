@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from ..layout.grid import FIN_PITCH, FIN_WIDTH, GATE_PITCH, GATE_WIDTH
+from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
 from ..layout.layers import LAYERS, box, require_gdspy
 from .finfet import (
     ACTIVE_ENC,
@@ -63,9 +63,9 @@ from .finfet import (
     POLY_OVERHANG,
     SELECT_X_ENC,
     VT_LAYERS,
-    FinFETSpec,
     build_device_band,
 )
+from .row import RowBand, RowStack
 
 __all__ = [
     "ACTIVE_ABUT_OVERHANG",
@@ -73,7 +73,6 @@ __all__ = [
     "INVERTER_PINS",
     "M2_V1_ENCLOSURE",
     "SELECT_ABUT_OVERHANG",
-    "InverterBand",
     "InverterSpec",
     "build_inverter",
     "build_inverter_row",
@@ -103,51 +102,6 @@ _M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
 
 
 @dataclass(frozen=True)
-class InverterBand:
-    """One transistor band of the stack, and where it sits in the cell."""
-
-    spec: FinFETSpec
-    row: int
-    y0: int
-    rail_y: int
-
-    @property
-    def flavor(self) -> str:
-        return self.spec.flavor
-
-    @property
-    def fins(self) -> int:
-        return self.spec.fins
-
-    @property
-    def height(self) -> int:
-        return self.spec.height_per_row
-
-    @property
-    def active_span(self) -> tuple[float, float]:
-        """Bottom/top Y of this band's ACTIVE, in cell coordinates."""
-        lo, hi = self.spec.active_span()
-        return lo + self.y0, hi + self.y0
-
-    @property
-    def contact_y(self) -> float:
-        """Center Y of the band's source/drain via row.
-
-        Every column contacts on the ACTIVE edge facing the band's own power
-        rail, which is what lets a source reach the rail with a stub instead
-        of a conductor running the length of the channel.
-        """
-        lo, hi = self.active_span
-        if self.rail_y <= self.y0:
-            return lo + CONTACT_SIZE / 2
-        return hi - CONTACT_SIZE / 2
-
-    @property
-    def rail_net(self) -> str:
-        return "VSS" if self.flavor == "n" else "VDD"
-
-
-@dataclass(frozen=True)
 class InverterSpec:
     """A CMOS inverter folded into stacked, rail-sharing transistor bands.
 
@@ -174,17 +128,9 @@ class InverterSpec:
     abut: bool = True
 
     def __post_init__(self) -> None:
-        try:
-            rows = tuple((int(n), int(p)) for n, p in self.rows)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                "rows must be a sequence of (n_fins, p_fins) integer pairs, "
-                f"got {self.rows!r}"
-            ) from exc
-        if not rows:
-            raise ValueError("an inverter needs at least one row")
-        object.__setattr__(self, "rows", rows)
-
+        # RowStack owns row validation and normalisation, so an inverter and
+        # the tap or filler placed beside it cannot disagree about the stack.
+        object.__setattr__(self, "rows", RowStack(rows=self.rows, vt=self.vt).rows)
         if isinstance(self.fingers, bool) or not isinstance(self.fingers, int):
             raise TypeError(f"fingers must be an integer, got {self.fingers!r}")
         if self.fingers < 2 or self.fingers % 2:
@@ -192,20 +138,17 @@ class InverterSpec:
                 "fingers must be a positive even number so both outer S/D "
                 f"columns are sources; got {self.fingers}"
             )
-        # FinFETSpec owns the legal ASAP7 device grid, so every band is
-        # validated by the same rules -- and with the same messages -- that a
-        # standalone device would be.
-        assert self.bands
 
-    # ── Naming ────────────────────────────────────────────────────────────────
+    # ── Band stack ────────────────────────────────────────────────────────────
+    @property
+    def stack(self) -> RowStack:
+        """The row geometry this inverter shares with its row-support cells."""
+        return RowStack(rows=self.rows, vt=self.vt)
+
     @property
     def code(self) -> str:
-        """Per-row fin code, e.g. ``"18n18p_13n13p"``.
-
-        Two stacks can share a total fin count and still be different cells, so
-        the name carries the rows rather than the sum.
-        """
-        return "_".join(f"{n}n{p}p" for n, p in self.rows)
+        """Per-row fin code, e.g. ``"18n18p_13n13p"``."""
+        return self.stack.code
 
     @property
     def cell_name(self) -> str:
@@ -214,71 +157,32 @@ class InverterSpec:
         style_tag = "" if self.abut else "_iso"
         return f"inv_fin_{self.code}_{self.fingers}f{vt_tag}{style_tag}"
 
-    # ── Band stack (pure arithmetic) ──────────────────────────────────────────
     @property
-    def bands(self) -> tuple[InverterBand, ...]:
+    def bands(self) -> tuple[RowBand, ...]:
         """Every drawn band, bottom to top."""
-        stack: list[InverterBand] = []
-        y = 0
-        for row, (n_fins, p_fins) in enumerate(self.rows):
-            flipped = row % 2 == 1
-            pair = (
-                (("p", p_fins), ("n", n_fins))
-                if flipped
-                else (("n", n_fins), ("p", p_fins))
-            )
-            row_y0 = y
-            row_height = sum(
-                FinFETSpec(flavor=f, fins=k, vt=self.vt).default_height_per_row
-                for f, k in pair
-            )
-            for position, (flavor, fins) in enumerate(pair):
-                spec = FinFETSpec(
-                    flavor=flavor, fins=fins, fingers=self.fingers, vt=self.vt
-                )
-                stack.append(
-                    InverterBand(
-                        spec=spec,
-                        row=row,
-                        y0=y,
-                        rail_y=row_y0 if position == 0 else row_y0 + row_height,
-                    )
-                )
-                y += spec.height_per_row
-        return tuple(stack)
+        return self.stack.bands(self.fingers)
 
-    def row_bands(self, row: int) -> tuple[InverterBand, ...]:
+    def row_bands(self, row: int) -> tuple[RowBand, ...]:
         """The two bands of `row`, bottom to top."""
-        return tuple(band for band in self.bands if band.row == row)
+        return self.stack.row_bands(row, self.fingers)
 
     @property
     def row_ys(self) -> tuple[int, ...]:
         """Y of every row boundary, which is also where a rail runs."""
-        edges = [0]
-        for row in range(len(self.rows)):
-            edges.append(edges[-1] + sum(b.height for b in self.row_bands(row)))
-        return tuple(edges)
+        return self.stack.row_ys
 
     @property
     def rails(self) -> tuple[tuple[int, str], ...]:
-        """``(y, net)`` of every power rail, bottom to top.
-
-        Flipping alternate rows is what makes this well defined: each interior
-        rail lies between two bands of one polarity, so it carries one supply.
-        """
-        bands = self.bands
-        return tuple(
-            (y, (bands[0] if index == 0 else bands[2 * index - 1]).rail_net)
-            for index, y in enumerate(self.row_ys)
-        )
+        """``(y, net)`` of every power rail, bottom to top."""
+        return self.stack.rails
 
     def seam_y(self, row: int) -> int:
         """Y of the n/p boundary inside `row`, where the gate is contacted."""
-        return self.row_bands(row)[1].y0
+        return self.stack.seam_y(row)
 
     @property
     def height(self) -> int:
-        return self.row_ys[-1]
+        return self.stack.height
 
     # ── Columns ───────────────────────────────────────────────────────────────
     @property
@@ -422,7 +326,7 @@ class InverterSpec:
     @property
     def fin_grid_ys(self) -> list[int]:
         """Bottom Y of the full manufacturing fin grid across the cell."""
-        return [ACTIVE_ENC + i * FIN_PITCH for i in range(self.height // FIN_PITCH)]
+        return self.stack.fin_grid_ys
 
     # ── Sizing and verification ───────────────────────────────────────────────
     @property

@@ -3,10 +3,15 @@
 from .finfet import FinFETSpec, build_device_band, build_finfet, nmos_fin, pmos_fin
 from .inverter import (
     INVERTER_PINS,
-    InverterBand,
     InverterSpec,
     build_inverter,
     build_inverter_row,
+)
+from .row import RowBand, RowStack
+from .row_support import (
+    ROW_SUPPORT_KINDS,
+    RowSupportSpec,
+    build_row_support,
 )
 from .sense_amp import (
     SENSE_AMP_PINS,
@@ -19,10 +24,13 @@ from .sense_amp import (
 
 __all__ = [
     "INVERTER_PINS",
+    "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
     "FinFETSpec",
-    "InverterBand",
     "InverterSpec",
+    "RowBand",
+    "RowStack",
+    "RowSupportSpec",
     "SenseAmpPlacement",
     "SenseAmpSpec",
     "SenseAmpTransistor",
@@ -30,6 +38,7 @@ __all__ = [
     "build_finfet",
     "build_inverter",
     "build_inverter_row",
+    "build_row_support",
     "build_sense_amp",
     "nmos_fin",
     "pmos_fin",
