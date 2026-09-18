@@ -257,7 +257,12 @@ tap.width, tap.height   # (108, 1890)
 `RowStack` is what keeps the two in step: it owns where the bands are, how tall
 each is, which polarity it carries and which rail it faces, and both
 `InverterSpec.stack` and `RowSupportSpec.stack` are the same object. A tap
-built from a different stack cannot silently half-fit.
+built from a different stack cannot silently half-fit. By default each band is
+as tall as its fins make it (a 2-fin row is 216 nm); `RowStack(rows=((2, 2),),
+band_height=135)` pins every band to 135 nm so that a row of any legal fin
+count, and its tap and filler, sit on the released 270 nm 7.5-track rails. The
+pinned height is carried in the stack's `code` (`2n2p_h135`), so the cells it
+names cannot collide with their fin-default counterparts.
 
 **The ordering is not interchangeable.** A filler carries the *same* implant as
 the row, which is what extends the enclosure past its last ACTIVE; a tap

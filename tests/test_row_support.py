@@ -71,6 +71,23 @@ def test_defaults_match_the_released_widths():
         assert spec.height == RELEASED_ROW.height == 270
 
 
+def test_a_pinned_stack_ties_its_bands_to_the_real_rails():
+    """`band_height` moves the upper rail, and the tap's ties must follow it.
+
+    With the row height summed from fin-default band heights, a pinned 2-fin
+    stack put `rail_y` at 216 while the rails were drawn at 270, so the well
+    tie stopped 54 nm short of the VDD rail it exists to reach.  DRC cannot
+    see that; the LISD extents can.
+    """
+    pinned = RowStack(rows=((2, 2),), band_height=135)
+    spec = RowSupportSpec(stack=pinned, kind="tap")
+    assert spec.height == 270
+    assert spec.cell_name == "tap_fin_2n2p_h135_2cpp"
+    lisd = polys(build_row_support(spec), "LISD")
+    assert any(y1 == 270 for _x0, _y0, _x1, y1 in lisd), "p-band tie must reach VDD"
+    assert any(y0 == 0 for _x0, y0, _x1, _y1 in lisd), "n-band tie must reach VSS"
+
+
 def test_a_single_pitch_cell_cannot_stand_alone():
     """FIN, NWELL, NSELECT and PSELECT all want 108 nm of horizontal width.
 

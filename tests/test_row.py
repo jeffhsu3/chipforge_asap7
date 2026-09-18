@@ -99,6 +99,9 @@ def test_code_carries_the_rows_not_the_total():
         ({"rows": ((2,),)}, "integer pairs"),
         ({"rows": 4}, "integer pairs"),
         ({"vt": "xvt"}, "vt must be one of"),
+        ({"rows": ((4, 4),), "band_height": 135}, "too short"),
+        ({"rows": ((2, 2),), "band_height": 140}, "not a multiple of fin pitch"),
+        ({"band_height": True}, "band_height must be an integer"),
     ],
 )
 def test_rejects_impossible_stacks_at_construction(kwargs, match):
@@ -122,3 +125,47 @@ def test_fin_grid_spans_the_whole_stack():
     ys = stack.fin_grid_ys
     assert len(ys) == stack.height // FIN_PITCH
     assert ys[0] == 10 and all(b - a == FIN_PITCH for a, b in pairwise(ys))
+
+
+def test_band_height_pins_every_band_to_one_height():
+    """``band_height=135`` puts a row of any legal fin count on the 270 nm row.
+
+    Left alone, a band is as tall as its fins make it, so a 2-fin row is
+    216 nm and does not sit on the released 7.5-track rails.
+    """
+    assert RowStack(rows=((2, 2),)).height == 216
+    for fins in (1, 2, 3):
+        stack = RowStack(rows=((fins, fins),), band_height=135)
+        assert stack.height == 270
+        assert [band.height for band in stack.bands()] == [135, 135]
+        assert stack.rails == ((0, "VSS"), (270, "VDD"))
+        assert stack.seam_ys == (135,)
+        assert [band.spec.row_height for band in stack.bands()] == [135, 135]
+
+
+def test_rails_follow_the_drawn_band_height():
+    """The row is as tall as its bands are drawn, not as tall as their fins imply.
+
+    `bands` used to sum the fin-default heights for the row height, so a
+    pinned 2-fin row reported its VDD rail at 216 nm while `row_ys` and the
+    drawn rails said 270: every source stub and tap tie aimed at `rail_y`
+    stopped 54 nm short of the rail.
+    """
+    n_band, p_band = RowStack(rows=((2, 2),), band_height=135).bands()
+    assert (n_band.rail_y, p_band.rail_y) == (0, 270)
+    for stack in (
+        RowStack(rows=((2, 2),), band_height=135),
+        RowStack(rows=((1, 1), (2, 3)), band_height=162),
+        RowStack(rows=((4, 6), (5, 5))),
+    ):
+        for band in stack.bands():
+            assert band.rail_y in stack.row_ys
+            assert band.rail_y in (band.y0, band.y1)
+
+
+def test_band_height_changes_the_code():
+    """Two geometries must not claim one cell name."""
+    assert RowStack(rows=((2, 2),), band_height=135).code == "2n2p_h135"
+    assert (
+        RowStack(rows=((3, 3),), band_height=135).code != RowStack(rows=((3, 3),)).code
+    )

@@ -119,10 +119,19 @@ class RowStack:
             cell gets taller than one legal fin height without giving up the
             standard-cell rail structure.
         vt: threshold-voltage model shared by every band.
+        band_height: height of every band in nm.  By default each band is as
+            tall as its own fins make it (`FinFETSpec.default_height_per_row`),
+            so a 2-fin row comes out 216 nm and a 3-fin row 270 nm.  Pinning it
+            -- ``135`` for the released 270 nm 7.5-track row -- is what lets a
+            row of any legal fin count, and the tap and filler built from the
+            same stack, sit on the standard-cell rails.  Must be a fin-pitch
+            multiple with room for the tallest band's fins and its body tap;
+            `FinFETSpec` rejects anything else at construction.
     """
 
     rows: tuple[tuple[int, int], ...] = ((4, 6),)
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
+    band_height: int | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -134,6 +143,12 @@ class RowStack:
             ) from exc
         if not rows:
             raise ValueError("a row stack needs at least one row")
+        if self.band_height is not None and (
+            isinstance(self.band_height, bool) or not isinstance(self.band_height, int)
+        ):
+            raise TypeError(
+                f"band_height must be an integer or None, got {self.band_height!r}"
+            )
         object.__setattr__(self, "rows", rows)
         # Build the stack once now.  FinFETSpec owns the legal ASAP7 device
         # grid, so this is what rejects an illegal fin count -- with the same
@@ -147,12 +162,22 @@ class RowStack:
         """Per-row fin code, e.g. ``"18n18p_13n13p"``.
 
         Two stacks can share a fin total and still be different geometry, so
-        the code carries the rows rather than the sum.
+        the code carries the rows rather than the sum.  A pinned `band_height`
+        changes every drawn band without changing a fin count, so it is
+        appended as ``_h<nm>`` -- the same guard `FinFETSpec.cell_name` has
+        against two geometries claiming one name.
         """
-        return "_".join(f"{n}n{p}p" for n, p in self.rows)
+        code = "_".join(f"{n}n{p}p" for n, p in self.rows)
+        return code if self.band_height is None else f"{code}_h{self.band_height}"
 
     def band_spec(self, flavor: Literal["n", "p"], fins: int, **kwargs) -> FinFETSpec:
-        """The `FinFETSpec` for one band, on this stack's threshold flavor."""
+        """The `FinFETSpec` for one band, on this stack's threshold flavor.
+
+        A pinned `band_height` is passed through as the device's `row_height`
+        unless the caller gives one explicitly.
+        """
+        if self.band_height is not None:
+            kwargs.setdefault("row_height", self.band_height)
         return FinFETSpec(flavor=flavor, fins=fins, vt=self.vt, **kwargs)
 
     def bands(self, fingers: int = 1) -> tuple[RowBand, ...]:
@@ -166,9 +191,11 @@ class RowStack:
                 else (("n", n_fins), ("p", p_fins))
             )
             row_y0 = y
+            # The row is as tall as its bands are *drawn*, which is only the
+            # fin-default height when nothing pins it.  Summing the defaults
+            # here put a pinned row's upper rail 54 nm below its real rail.
             row_height = sum(
-                self.band_spec(flavor, fins).default_height_per_row
-                for flavor, fins in pair
+                self.band_spec(flavor, fins).height_per_row for flavor, fins in pair
             )
             for position, (flavor, fins) in enumerate(pair):
                 spec = self.band_spec(flavor, fins, fingers=fingers)
