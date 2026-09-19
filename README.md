@@ -299,6 +299,50 @@ working tap from a missing one.
 uv run asap7-row-support --kind tap --rows 18:18,13:13 --out build/tap.gds
 ```
 
+### Parametric NAND2
+
+`NandSpec` is the post-decode gate of the released row decoder,
+`dec_nand_12f_12f_for_and_size_reduced_post_decode_P1N1`, drawn in the same
+tapless, abutting, shared-diffusion style as the decoder inverter. In the
+bank it is the last NAND of the wordline AND tree, `WL<i> =
+INV62(NAND(PA·WLENA, PB·PC<i>))`, and feeds `dec_inv_62f_halved_AND`:
+
+```python
+from chipforge_asap7.devices import NandSpec, build_nand, build_nand_row
+
+spec = NandSpec(rows=((14, 7),), fingers=2)   # the released tile
+spec.width, spec.height        # (216, 675) nm
+spec.gate_roles                # ('B', 'A', 'A', 'B')
+spec.column_roles("n")         # ('S', 'x', 'Y', 'x', 'S'): rail, series node, output
+spec.column_roles("p")         # ('S', 'Y', 'S', 'Y', 'S')
+spec.netlist()                 # one series pair and two pull-ups per finger
+```
+
+Gates run `B A A B` so that every A gate is on the output side of its series
+stack and every B gate on the rail side; in the decoder A carries the late,
+wordline-enable-gated select. The A gates share one LIG pad. The B gates
+cannot, and the released cell leaves them for its parent to join on M2;
+`build_nand` joins them itself with an M2 bar (one V1 per gate bar, stopping
+flush with the outer vias so butted tiles keep 36 nm between ties), so the
+cell is one NAND2 that LVS can match on its own. `fingers` is per input;
+more than two puts A on M2 as well. `abut=False` draws an island with edge
+dummies, and `NandSpec(rows=((3, 3),), fingers=1, abut=False)` is the
+NAND2xp33 footprint on the 270 nm row. One row only for now.
+
+`tests/test_nand_drc.py` asserts the same contract as the inverter: an
+isolated island reports only the missing body tap, an abutting row alone adds
+the row-end implant enclosure, and `filler row filler tap filler` is clean,
+for two and four fingers (one and two M2 ties) and for a `band_height=135`
+row. `tests/test_nand_lvs.py` matches single tiles and butted rows of one,
+two and four against unit-fin references, in which the uncontacted series
+node is one net per fin because that is what the extractor sees.
+`tests/test_reference_validation.py` compares the diffusion, wells, implant,
+gates and contact columns against the released tile.
+
+```bash
+uv run asap7-nand --row 14:7 --fingers 2 --out build/nand.gds
+```
+
 ### Parametric sense amplifier
 
 `SenseAmpSpec` builds the same 16-transistor differential latch used by the

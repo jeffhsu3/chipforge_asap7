@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
+from ..devices.nand import NAND_PINS, NandSpec
 from ..devices.row_support import RowSupportSpec
 from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
 from ..layout.grid import FIN_WIDTH
@@ -23,6 +24,8 @@ __all__ = [
     "render_finfet_lvs_schematic",
     "render_inverter_lvs_schematic",
     "render_inverter_row_lvs_schematic",
+    "render_nand_lvs_schematic",
+    "render_nand_row_lvs_schematic",
     "render_row_support_lvs_schematic",
     "render_sense_amp_lvs_schematic",
     "run_lvs",
@@ -256,6 +259,74 @@ def render_row_support_lvs_schematic(
     return (
         "* ASAP7 row-support LVS reference: one MOS per FIN x GATE channel\n"
         f".SUBCKT {name} VDD VSS\n"
+        f"{body}\n"
+        f".ENDS {name}\n"
+        ".END\n"
+    )
+
+
+def _nand_units(spec: NandSpec, *, suffix: str = "", prefix: str = "M") -> list[str]:
+    """One unit-fin MOS line per FIN x GATE channel of a NAND2.
+
+    The node between the two series nFETs of a stack is uncontacted diffusion,
+    so the extractor sees one such net per fin; the reference names them the
+    same way (``n<stack>_f<fin>``) rather than pretending they are one node.
+    """
+
+    n_spec, p_spec = spec.n_band.spec, spec.p_band.spec
+    a, b, y = f"A{suffix}", f"B{suffix}", f"Y{suffix}"
+    lines: list[str] = []
+    for stack in range(spec.fingers):
+        for fin in range(n_spec.fins):
+            node = f"n{stack}{suffix}_f{fin}"
+            lines.append(
+                f"{prefix}Na{stack}_n{fin}{suffix} {y} {a} {node} VSS {n_spec.model} "
+                f"L={n_spec.gate_length}n W={FIN_WIDTH}n"
+            )
+            lines.append(
+                f"{prefix}Nb{stack}_n{fin}{suffix} {node} {b} VSS VSS {n_spec.model} "
+                f"L={n_spec.gate_length}n W={FIN_WIDTH}n"
+            )
+        for fin in range(p_spec.fins):
+            for tag, gate in (("a", a), ("b", b)):
+                lines.append(
+                    f"{prefix}P{tag}{stack}_n{fin}{suffix} {y} {gate} VDD VDD "
+                    f"{p_spec.model} L={p_spec.gate_length}n W={FIN_WIDTH}n"
+                )
+    return lines
+
+
+def render_nand_lvs_schematic(spec: NandSpec, *, cell_name: str | None = None) -> str:
+    """Render a NAND2 as one LVS MOS per physical fin (see `_nand_units`)."""
+
+    name = cell_name or spec.cell_name
+    body = "\n".join(_nand_units(spec))
+    return (
+        "* ASAP7 NAND2 LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(NAND_PINS)}\n"
+        f"{body}\n"
+        f".ENDS {name}\n"
+        ".END\n"
+    )
+
+
+def render_nand_row_lvs_schematic(
+    spec: NandSpec, count: int, *, cell_name: str | None = None
+) -> str:
+    """`count` independent NAND2s, as `build_nand_row` labels them (``A<k>/B<k>/Y<k>``).
+
+    Butted tiles share only source columns, so unlike the inverter row there is
+    no edge finger to account for: the row is exactly `count` NANDs.
+    """
+
+    name = cell_name or f"{spec.cell_name}_x{count}"
+    pins = " ".join(f"{pin}{k}" for k in range(count) for pin in ("A", "B", "Y"))
+    body = "\n".join(
+        line for k in range(count) for line in _nand_units(spec, suffix=str(k))
+    )
+    return (
+        "* ASAP7 NAND2 row LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {pins} VDD VSS\n"
         f"{body}\n"
         f".ENDS {name}\n"
         ".END\n"

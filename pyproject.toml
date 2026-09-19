@@ -30,6 +30,7 @@ pex = ["klayout-pex>=0.3.12,<0.4; python_version >= '3.12'"]
 
 [project.scripts]
 asap7-inverter = "chipforge_asap7.devices.inverter:main"
+asap7-nand = "chipforge_asap7.devices.nand:main"
 asap7-row-support = "chipforge_asap7.devices.row_support:main"
 asap7-sense-amp = "chipforge_asap7.devices.sense_amp:main"
 asap7-verify = "chipforge_asap7.verification.__main__:main"

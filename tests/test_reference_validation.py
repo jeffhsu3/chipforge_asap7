@@ -366,3 +366,80 @@ def _boxes_on_spec(cell, layer: int, datatype: int):
             if (gds_layer, gds_datatype) == (layer, datatype):
                 xs, ys = points[:, 0], points[:, 1]
                 yield (xs.min(), ys.min(), xs.max(), ys.max())
+
+
+# ── Dimensional correlation against the released post-decode NAND ─────────────
+#
+# `dec_nand_12f_12f_for_and_size_reduced_post_decode_P1N1` is the decoder's
+# last NAND, drawn in the same abutting style as the inverter above.  Its
+# routing is deliberately not compared: the released cell relies on its parent
+# for the VSS ties of its edge columns and for joining its two B gates on M2,
+# both of which `chipforge_asap7.devices.nand` draws itself.
+_SRAM_NAND = "dec_nand_12f_12f_for_and_size_reduced_post_decode_P1N1"
+
+
+def test_generated_nand_matches_the_released_post_decode_nand(
+    external_tool, released_sram_gds: Path, boxes_on
+):
+    """Diffusion, wells, implant, gates and contact columns, shape for shape."""
+    from chipforge_asap7.devices import NandSpec, build_nand
+    from chipforge_asap7.layout import LAYERS
+
+    external_tool(
+        released_sram_gds.is_file(),
+        "the public ASAP7 SRAM release is not available",
+    )
+    spec = NandSpec(rows=((14, 7),), fingers=2)
+    cell = build_nand(spec)
+
+    def released(name: str):
+        return sorted(
+            set(
+                _released_boxes(
+                    released_sram_gds,
+                    _SRAM_NAND,
+                    LAYERS[name]["layer"],
+                    LAYERS[name]["datatype"],
+                )
+            )
+        )
+
+    def ours(name: str):
+        return sorted({tuple(round(v) for v in box) for box in boxes_on(cell, name)})
+
+    assert (spec.width, spec.height) == (216, 675)
+    for name in ("ACTIVE", "NWELL", "BOUNDARY", "GATE"):
+        assert ours(name) == released(name), name
+    for name in ("NSELECT", "PSELECT"):
+        assert sorted((b[1], b[3]) for b in ours(name)) == sorted(
+            (b[1], b[3]) for b in released(name)
+        ), name
+
+    # The same columns are contacted in each band -- and the same ones are
+    # not: the n band's series nodes carry no SDT in either cell.
+    for band in spec.bands:
+        lo, hi = band.active_span
+
+        def columns(boxes, lo=lo, hi=hi):
+            return sorted({(b[0], b[2]) for b in boxes if b[1] < hi and b[3] > lo})
+
+        assert columns(ours("SDT")) == columns(released("SDT")), band.flavor
+
+    # Gate contacts: one V0 on the seam at the same three gates, and LIG pads
+    # over the same gate runs (the released cell draws one of its pads twice).
+    seam = spec.seam_y
+
+    def on_seam(boxes):
+        return sorted(b[0] for b in boxes if b[1] < seam < b[3])
+
+    def pads(boxes):
+        return {(b[0], b[2]) for b in boxes if b[1] < seam < b[3]}
+
+    assert on_seam(ours("V0")) == on_seam(released("V0")) == [18, 72, 180]
+    assert pads(ours("LIG")) <= pads(released("LIG"))
+    assert len(pads(ours("LIG"))) == 3
+
+    # As with the inverter: the released cell cuts its poly only at the rail
+    # it does not share with the cell below; a standalone cell cuts both.
+    assert [(b[1] + b[3]) // 2 for b in ours("GATE_CUT")] == [0, spec.height]
+    assert len(released("GATE_CUT")) == 1

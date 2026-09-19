@@ -12,6 +12,8 @@ from .lvs import (
     find_klayout,
     normalize_asap7_cdl_reference,
     render_finfet_lvs_schematic,
+    render_nand_lvs_schematic,
+    render_nand_row_lvs_schematic,
     render_sense_amp_lvs_schematic,
     run_lvs,
 )
@@ -28,6 +30,8 @@ __all__ = [
     "find_klayout",
     "normalize_asap7_cdl_reference",
     "render_finfet_lvs_schematic",
+    "render_nand_lvs_schematic",
+    "render_nand_row_lvs_schematic",
     "render_sense_amp_lvs_schematic",
     "run_lvs",
     "run_open_pex",
