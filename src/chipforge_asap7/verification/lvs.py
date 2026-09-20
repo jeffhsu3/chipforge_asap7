@@ -9,11 +9,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..devices.driver_slice import DRIVER_SLICE_PINS, DriverSliceSpec
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
 from ..devices.nand import NAND_PINS, NandSpec
 from ..devices.row_support import RowSupportSpec
 from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
+from ..devices.sizing import WORDLINES_PER_SLICE
 from ..layout.grid import FIN_WIDTH
 
 __all__ = [
@@ -21,6 +23,7 @@ __all__ = [
     "find_klayout",
     "lvs_deck_path",
     "normalize_asap7_cdl_reference",
+    "render_driver_slice_lvs_schematic",
     "render_finfet_lvs_schematic",
     "render_inverter_lvs_schematic",
     "render_inverter_row_lvs_schematic",
@@ -265,35 +268,70 @@ def render_row_support_lvs_schematic(
     )
 
 
-def _nand_units(spec: NandSpec, *, suffix: str = "", prefix: str = "M") -> list[str]:
+def _nand_units(
+    spec: NandSpec,
+    *,
+    a: str = "A",
+    b: str = "B",
+    y: str = "Y",
+    tag: str = "",
+    prefix: str = "M",
+) -> list[str]:
     """One unit-fin MOS line per FIN x GATE channel of a NAND2.
 
     The node between the two series nFETs of a stack is uncontacted diffusion,
     so the extractor sees one such net per fin; the reference names them the
     same way (``n<stack>_f<fin>``) rather than pretending they are one node.
+    `tag` keeps instance and series-node names apart when several NANDs share
+    one reference.
     """
 
     n_spec, p_spec = spec.n_band.spec, spec.p_band.spec
-    a, b, y = f"A{suffix}", f"B{suffix}", f"Y{suffix}"
     lines: list[str] = []
     for stack in range(spec.fingers):
         for fin in range(n_spec.fins):
-            node = f"n{stack}{suffix}_f{fin}"
+            node = f"n{stack}{tag}_f{fin}"
             lines.append(
-                f"{prefix}Na{stack}_n{fin}{suffix} {y} {a} {node} VSS {n_spec.model} "
+                f"{prefix}Na{stack}_n{fin}{tag} {y} {a} {node} VSS {n_spec.model} "
                 f"L={n_spec.gate_length}n W={FIN_WIDTH}n"
             )
             lines.append(
-                f"{prefix}Nb{stack}_n{fin}{suffix} {node} {b} VSS VSS {n_spec.model} "
+                f"{prefix}Nb{stack}_n{fin}{tag} {node} {b} VSS VSS {n_spec.model} "
                 f"L={n_spec.gate_length}n W={FIN_WIDTH}n"
             )
         for fin in range(p_spec.fins):
-            for tag, gate in (("a", a), ("b", b)):
+            for which, gate in (("a", a), ("b", b)):
                 lines.append(
-                    f"{prefix}P{tag}{stack}_n{fin}{suffix} {y} {gate} VDD VDD "
+                    f"{prefix}P{which}{stack}_n{fin}{tag} {y} {gate} VDD VDD "
                     f"{p_spec.model} L={p_spec.gate_length}n W={FIN_WIDTH}n"
                 )
     return lines
+
+
+def render_driver_slice_lvs_schematic(
+    spec: DriverSliceSpec, *, cell_name: str | None = None
+) -> str:
+    """Four NAND2 + driver pairs sharing SEL, flat, one MOS per physical fin.
+
+    Flat because the drivers are: interleaved inverter tiles share gate tracks
+    and diffusion, so the extractor cannot keep them apart as subcircuits.
+    Four is an even count, so the row terminates itself and there is no
+    unpaired edge finger to model.
+    """
+
+    name = cell_name or spec.cell_name
+    body: list[str] = []
+    for i in range(WORDLINES_PER_SLICE):
+        body += _nand_units(spec.nand, a="SEL", b=f"B{i}", y=f"N{i}", tag=f"_{i}")
+        body += _inverter_units(
+            spec.inverter, gate=f"N{i}", drain=f"WL{i}", prefix=f"MD{i}_"
+        )
+    return (
+        "* ASAP7 driver slice LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(DRIVER_SLICE_PINS)}\n"
+        + "\n".join(body)
+        + f"\n.ENDS {name}\n.END\n"
+    )
 
 
 def render_nand_lvs_schematic(spec: NandSpec, *, cell_name: str | None = None) -> str:
@@ -322,7 +360,9 @@ def render_nand_row_lvs_schematic(
     name = cell_name or f"{spec.cell_name}_x{count}"
     pins = " ".join(f"{pin}{k}" for k in range(count) for pin in ("A", "B", "Y"))
     body = "\n".join(
-        line for k in range(count) for line in _nand_units(spec, suffix=str(k))
+        line
+        for k in range(count)
+        for line in _nand_units(spec, a=f"A{k}", b=f"B{k}", y=f"Y{k}", tag=f"_{k}")
     )
     return (
         "* ASAP7 NAND2 row LVS reference: one MOS per FIN x GATE channel\n"

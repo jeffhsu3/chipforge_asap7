@@ -33,6 +33,7 @@ asap7-inverter = "chipforge_asap7.devices.inverter:main"
 asap7-nand = "chipforge_asap7.devices.nand:main"
 asap7-row-support = "chipforge_asap7.devices.row_support:main"
 asap7-sense-amp = "chipforge_asap7.devices.sense_amp:main"
+asap7-wl-slice = "chipforge_asap7.devices.driver_slice:main"
 asap7-verify = "chipforge_asap7.verification.__main__:main"
 
 [project.urls]

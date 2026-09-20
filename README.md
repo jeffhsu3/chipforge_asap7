@@ -343,6 +343,59 @@ gates and contact columns against the released tile.
 uv run asap7-nand --row 14:7 --fingers 2 --out build/nand.gds
 ```
 
+### Decoder sizing and the four-wordline driver slice
+
+`size_decoder` sizes every gate between an address bit and the wordline by
+logical effort, in fins. It is arithmetic only and needs nothing installed.
+The wordline load sizes the driver; the depth only decides how the address is
+split into predecode groups and how many gates hang on each predecode line:
+
+```python
+from chipforge_asap7.devices import DriverSliceSpec, build_driver_slice, size_decoder
+
+sizing = size_decoder(wl_load_fF=22.8, depth=32, stage_effort=4.43)
+sizing.stages["driver"].drive      # 62   -> dec_inv_62f_halved_AND
+sizing.nand_rows, sizing.driver_rows   # ((14, 7),)  ((18, 18), (13, 13))
+sizing.groups                      # {'PC': 2, 'PB': 2, 'PA': 1}, the released 5-to-32 split
+print(sizing.summary())            # every stage: fins, load, effort achieved, delay
+
+spec = DriverSliceSpec.from_sizing(sizing)   # == DriverSliceSpec(), the released slice
+spec.width, spec.height            # (432, 3240) nm
+spec.wordline_xs                   # [54, 162, 270, 378]: M3 on the 108 nm bitcell pitch
+```
+
+The technology numbers in `LogicalEffortModel` were measured with Xyce on the
+ASAP7 TT BSIM-CMG card (0.7 V, RVT): tau 1.76 ps, inverter parasitic 0.59,
+FO4 8.1 ps, 41.7 aF of gate per fin, and a NAND2 logical effort of 1.44
+against the 1.5 that equal n/p strength predicts. With them a 22.8 fF
+wordline at the released stage effort reproduces the released driver and NAND
+exactly. Holding the stage effort holds the delay, so a deeper decoder costs
+address-input capacitance rather than time. The wire capacitance default is
+an assumption, and the wordline's own RC is left to the caller.
+
+`DriverSliceSpec` is the upper 3.24 um of the released
+`post_Decode_and_size_reduced_x1` slice: two rows of two `NandSpec` tiles, the
+upper row mirrored, under four `InverterSpec` drivers interleaved as
+`build_inverter_row` places them. `WL<i> = SEL . B<i>`. The slice adds the
+routing its leaves cannot have: SEL on an M2 bar along each NAND row's seam
+joined by one M3 on the tile boundary; each NAND output up to its driver on
+M3, because M1 cannot cross the VSS rail between them, with the lower NAND's
+output jogging one gate pitch on M2 and the two landings staggered by a
+track; and each wordline from the driver's top drain contact, which the
+interleave puts on the bitcell pitch, up M3 to the slice edge.
+`build_driver_slice_support` stacks the filler, tap or decap of both row
+stacks into one full-height column. `tests/test_driver_slice_physical.py`
+checks the slice alone (tap and row-end enclosure only), one and two butted
+slices between their support columns (clean), the released size (only the
+deck's height enumeration), and LVS against four ANDs sharing SEL, with a
+private-select reference failing. The small gates that make SEL and B<i>
+from the predecode lines are standard cells in the released slice and are
+not drawn here.
+
+```bash
+uv run asap7-wl-slice --wl-load-ff 22.8 --depth 32 --stage-effort 4.43 --out build/slice.gds
+```
+
 ### Parametric sense amplifier
 
 `SenseAmpSpec` builds the same 16-transistor differential latch used by the

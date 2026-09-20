@@ -281,9 +281,12 @@ class NandSpec:
 
         That gate is either the second A finger of the pad (no M1 bar of its
         own) or an edge dummy, so the track is free; the bars of the gates on
-        either side are one M1 pitch away.
+        either side are one M1 pitch away.  The bar is one 18 nm track centred
+        on that gate, which also keeps an isolated tile's bar 18 nm inside
+        its boundary.
         """
-        return n_drain_x + _HALF_CT + _HALF_M1, n_drain_x + GATE_PITCH - _HALF_M1
+        start = n_drain_x + _HALF_CT + _HALF_M1
+        return start, start + M1_WIDTH
 
     # ── Overhang ──────────────────────────────────────────────────────────────
     @property

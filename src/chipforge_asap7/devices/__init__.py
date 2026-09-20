@@ -1,5 +1,11 @@
 """Parametric ASAP7 devices built on `chipforge_asap7.layout` primitives."""
 
+from .driver_slice import (
+    DRIVER_SLICE_PINS,
+    DriverSliceSpec,
+    build_driver_slice,
+    build_driver_slice_support,
+)
 from .finfet import FinFETSpec, build_device_band, build_finfet, nmos_fin, pmos_fin
 from .inverter import (
     INVERTER_PINS,
@@ -22,14 +28,25 @@ from .sense_amp import (
     build_sense_amp,
     sense_amp_transistors,
 )
+from .sizing import (
+    DecoderSizing,
+    LogicalEffortModel,
+    Stage,
+    size_decoder,
+    split_fins_into_rows,
+)
 
 __all__ = [
+    "DRIVER_SLICE_PINS",
     "INVERTER_PINS",
     "NAND_PINS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
+    "DecoderSizing",
+    "DriverSliceSpec",
     "FinFETSpec",
     "InverterSpec",
+    "LogicalEffortModel",
     "NandSpec",
     "RowBand",
     "RowStack",
@@ -37,7 +54,10 @@ __all__ = [
     "SenseAmpPlacement",
     "SenseAmpSpec",
     "SenseAmpTransistor",
+    "Stage",
     "build_device_band",
+    "build_driver_slice",
+    "build_driver_slice_support",
     "build_finfet",
     "build_inverter",
     "build_inverter_row",
@@ -48,4 +68,6 @@ __all__ = [
     "nmos_fin",
     "pmos_fin",
     "sense_amp_transistors",
+    "size_decoder",
+    "split_fins_into_rows",
 ]
