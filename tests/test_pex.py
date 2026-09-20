@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -181,3 +182,36 @@ def test_complete_open_pex_with_fastercap_when_configured(
     assert "NFIN=1 NF=1" in result.post_layout_netlist.read_text()
     assert result.capacitance_csv.is_file()
     assert result.resistance_csv.read_text().count("\n") == 20
+
+
+@pytest.mark.skipif(not HAVE_KPEX, reason="KPEX is not installed")
+def test_resistance_only_pex_never_needs_the_field_solver(
+    tmp_path: Path, require_klayout, monkeypatch
+):
+    """`capacitance=False` is the same resistance network, in seconds, with no solver."""
+    monkeypatch.setenv("FASTERCAP_EXE", str(tmp_path / "no-such-solver"))
+    spec = FinFETSpec()
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    build_finfet(spec, lib=library)
+    gds = tmp_path / "device.gds"
+    library.write_gds(str(gds))
+    reference = tmp_path / "reference.sp"
+    reference.write_text(render_finfet_lvs_schematic(spec))
+
+    result = run_open_pex(
+        gds,
+        reference,
+        tmp_path / "pex",
+        cell_name=spec.cell_name,
+        substrate_net="B",
+        capacitance=False,
+    )
+    netlist = result.post_layout_netlist.read_text()
+    assert result.lvs.matched
+    assert "Rext" in netlist and "Cext" not in netlist
+    assert result.resistance_csv.read_text().count("\n") == 20  # as the full run finds
+    assert not result.capacitance_csv.exists()
+    report = json.loads(result.report.read_text())
+    assert report["capacitance"]["extracted"] is False
+    assert report["counts"]["capacitors"] == 0

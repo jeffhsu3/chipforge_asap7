@@ -579,9 +579,11 @@ def run_open_pex(
     fastercap_library_dir: str | Path | None = None,
     fastercap_threads: int | None = None,
     asap7_standard_cell: bool = False,
+    tie_bodies: bool | None = None,
     substrate_net: str | None = None,
     model_card: str | Path | None = None,
     dialect: str = "ngspice_osdi",
+    capacitance: bool = True,
     capacitance_tolerance: float = 0.08,
     capacitance_mesh_area_um2: float = 0.1,
     capacitance_mesh_quality: float = 1.0,
@@ -591,7 +593,19 @@ def run_open_pex(
     zero_resistance_floor_ohm: float = 1e-3,
     timeout: float = 900.0,
 ) -> PEXResult:
-    """Run stages 1-4 of the open flow and emit a post-layout subcircuit."""
+    """Run stages 1-4 of the open flow and emit a post-layout subcircuit.
+
+    `tie_bodies` is passed to `run_lvs`: a tapless generated cell (the stacked
+    inverter, the NAND, the driver slice) needs its well and substrate tied by
+    declaration without the ``NFIN`` expansion `asap7_standard_cell` implies.
+
+    ``capacitance=False`` skips the field solver, which is nearly all of the
+    run time, and emits the distributed resistance alone: no ``Cext`` elements,
+    and the FasterCap paths of the result name files that were never written.
+    Resistance does not depend on the solve, so this is exact for what it
+    reports; the layout reducer uses it to attribute a resistance change to one
+    shape without paying for a solve per shape.
+    """
 
     _require_kpex()
     if capacitance_mesh_area_um2 < 0 or resistance_mesh_area_um2 < 0:
@@ -625,6 +639,7 @@ def run_open_pex(
         cell_name=cell_name,
         klayout=klayout,
         asap7_standard_cell=asap7_standard_cell,
+        tie_bodies=tie_bodies,
         timeout=timeout,
     )
     if not lvs.matched:
@@ -651,38 +666,46 @@ def run_open_pex(
 
     cap_dir = output / "fastercap"
     cap_dir.mkdir(exist_ok=True)
-    cap_builder = FasterCapInputBuilder(
-        pex_context=context,
-        tech_info=tech,
-        k_void=3.5,
-        delaunay_amax=capacitance_mesh_area_um2,
-        delaunay_b=capacitance_mesh_quality,
-    )
-    cap_generator = cap_builder.build()
-    cap_input = Path(
-        cap_generator.write_fastcap(
-            output_dir_path=str(cap_dir), prefix=f"{cell_name}_"
-        )
-    ).resolve()
+    cap_input = cap_dir / f"{cell_name}_.lst"
     cap_log = cap_dir / "fastercap.log"
-    fastercap_executable = find_fastercap(fastercap)
-    fastercap_command = _run_fastercap(
-        fastercap_executable,
-        cap_input,
-        cap_log,
-        tolerance=capacitance_tolerance,
-        d_coeff=1.0,
-        refinement=capacitance_refinement,
-        library_dir=fastercap_library_dir,
-        threads=fastercap_threads,
-        timeout=timeout,
-    )
-    raw_matrix: CapacitanceMatrix = fastercap_parse_capacitance_matrix(str(cap_log))
     raw_cap_csv = cap_dir / "capacitance_raw.csv"
-    raw_matrix.write_csv(str(raw_cap_csv))
-    cap_matrix = raw_matrix.averaged_off_diagonals()
     cap_csv = cap_dir / "capacitance_averaged.csv"
-    cap_matrix.write_csv(str(cap_csv))
+    cap_matrix: CapacitanceMatrix | None = None
+    fastercap_executable: Path | None = None
+    fastercap_command: tuple[str, ...] | list[str] = ()
+    if capacitance:
+        cap_builder = FasterCapInputBuilder(
+            pex_context=context,
+            tech_info=tech,
+            k_void=3.5,
+            delaunay_amax=capacitance_mesh_area_um2,
+            delaunay_b=capacitance_mesh_quality,
+        )
+        cap_generator = cap_builder.build()
+        cap_input = Path(
+            cap_generator.write_fastcap(
+                output_dir_path=str(cap_dir), prefix=f"{cell_name}_"
+            )
+        ).resolve()
+        cap_log = cap_dir / "fastercap.log"
+        fastercap_executable = find_fastercap(fastercap)
+        fastercap_command = _run_fastercap(
+            fastercap_executable,
+            cap_input,
+            cap_log,
+            tolerance=capacitance_tolerance,
+            d_coeff=1.0,
+            refinement=capacitance_refinement,
+            library_dir=fastercap_library_dir,
+            threads=fastercap_threads,
+            timeout=timeout,
+        )
+        raw_matrix: CapacitanceMatrix = fastercap_parse_capacitance_matrix(str(cap_log))
+        raw_cap_csv = cap_dir / "capacitance_raw.csv"
+        raw_matrix.write_csv(str(raw_cap_csv))
+        cap_matrix = raw_matrix.averaged_off_diagonals()
+        cap_csv = cap_dir / "capacitance_averaged.csv"
+        cap_matrix.write_csv(str(cap_csv))
 
     square_counting = RExtractorTech.Algorithm.ALGORITHM_SQUARE_COUNTING
     resistance_extractor = RExtractor(
@@ -725,14 +748,17 @@ def run_open_pex(
     if substrate_net not in top_net_names:
         raise ValueError(f"substrate net {substrate_net!r} is not a circuit net")
 
-    cap_records, cap_warnings = add_maxwell_capacitance(
-        expanded,
-        cell_name,
-        list(cap_matrix.conductor_names),
-        [list(row) for row in cap_matrix.rows],
-        substrate_net=substrate_net,
-        threshold_farad=capacitance_threshold_farad,
-    )
+    cap_records: list[dict[str, Any]] = []
+    cap_warnings: list[dict[str, Any]] = []
+    if cap_matrix is not None:
+        cap_records, cap_warnings = add_maxwell_capacitance(
+            expanded,
+            cell_name,
+            list(cap_matrix.conductor_names),
+            [list(row) for row in cap_matrix.rows],
+            substrate_net=substrate_net,
+            threshold_farad=capacitance_threshold_farad,
+        )
 
     raw_netlist = output / f"{cell_name}.klayout_pex.spice"
     pdk = PDKConfig(
@@ -795,7 +821,7 @@ def run_open_pex(
             "resistors": len(resistance_records),
             "capacitors": len(cap_records),
             "reconnected_device_terminals": reconnect_count,
-            "fastercap_conductors": cap_matrix.dimension,
+            "fastercap_conductors": cap_matrix.dimension if cap_matrix else 0,
         },
         "resistance": {
             "total_ohm": sum(item["resistance_ohm"] for item in resistance_records),
@@ -809,7 +835,8 @@ def run_open_pex(
                 item["capacitance_farad"] for item in cap_records
             ),
             "pair_totals_farad": capacitance_by_pair,
-            "matrix_conductors": list(cap_matrix.conductor_names),
+            "extracted": capacitance,
+            "matrix_conductors": list(cap_matrix.conductor_names) if cap_matrix else [],
             "warnings": cap_warnings,
         },
         "settings": {
@@ -825,7 +852,9 @@ def run_open_pex(
             "kpex": kpex_version,
             "fastercap": _tool_version(
                 [str(fastercap_executable), "-bv"], environment=solver_environment
-            ),
+            )
+            if fastercap_executable
+            else None,
             "fastercap_command": list(fastercap_command),
         },
         "outputs": {

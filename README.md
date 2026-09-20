@@ -555,6 +555,89 @@ and `results.json` are written under `build/sense_amp_spice/`.
 python -m chipforge_asap7.devices --fins 2 --fingers 2 --multipliers 2
 ```
 
+### Layout reduction
+
+Generators inherit geometry. `InverterSpec` draws a tall M1 input strap and a
+gate contact in every row because the released decoder inverter does, and
+nothing in a generator says which shapes are load-bearing. `reduce_layout`
+finds out the way test-case reducers do: remove a piece, keep the removal if
+the cell is still right.
+
+"Still right" is three checks, cheapest first:
+
+1. **LVS matches and every reference pin is still extracted.** The pin check is
+   separate because KLayout pairs nets by topology, so a label that has lost
+   its metal still "matches". The shape under each top-level pin label is
+   pinned: never deleted, only shrunk to a landing around the label.
+2. **No DRC category is worse** than in the unedited layout
+   (`verification.drc.run_drc`, the public KLayout runset).
+3. **Extraction agrees.** No net's worst resistance rises more than
+   `r_tolerance` (5 %): from the pin to each device terminal, or, on a net with
+   no pin, from each driving diffusion to each gate. And the
+   switched-capacitance cost, in which signal-to-signal coupling counts as
+   Miller capacitance, does not go up.
+
+Deletion runs over vias, then metals, then LIG, to a fixed point; probes run in
+parallel. Then each surviving wire has its ends pulled in by a parallel
+k-section search. Shapes touching their cell's `BOUNDARY` (rails, abutment
+stubs, a wordline leaving the top edge) are never edited, and an end that lies
+under other metal is a junction, not a stub, and is left alone.
+
+```bash
+asap7-reduce --gds inv.gds --schematic inv.sp --cell INV --out build/reduce
+asap7-reduce ... --no-capacitance   # resistance floors only, no field solver
+```
+
+```python
+from chipforge_asap7.verification import ReductionConfig, reduce_layout
+
+result = reduce_layout("inv.gds", "inv.sp", "build/reduce", cell_name="INV")
+print(result.summary())           # edits per layer, what extraction refused, before/after
+result.gds, result.report         # INV_reduced.gds, reduction.json
+```
+
+On `InverterSpec(rows=((4, 6), (3, 3)), fingers=2, abut=False)`, with its one
+pin on row 0, three edits survive (234 probes and three field solves, 5 minutes
+on 8 cores):
+
+| Edit | Shape | Why it could go |
+| --- | --- | --- |
+| delete | row-1 M1 input strap, 18 x 134 | a second landing nothing uses |
+| delete | the V0 under it | only fed the strap |
+| shrink | row-0 M1 input strap, 242 nm to 36 nm | the landing at the contact is enough |
+
+Cost falls 1.214 to 1.096 fF (-9.7 %) and A-Y coupling 0.196 to 0.169 fF, with
+every pin-to-device resistance unchanged: what went was dead-end metal. The
+row-1 **LIG pad stays**. LVS and DRC let it go, since the gates run through
+both rows, but it ties the two fingers' gates together at the far end, and
+without it the worst gate resistance goes 126 to 199 ohm. That is the case for
+the third check.
+
+Two things learned the hard way, both now defaults:
+
+- **The field solver must be converged to compare layouts.** FasterCap refines
+  its mesh until two passes agree to a tolerance. At 0.08-0.15 the same three
+  edits read as anything from -56 % to +6 %; at 0.02 they track a hundredfold
+  finer input mesh to within a point. A converged solve is minutes on anything
+  larger than a leaf, so it runs three times (before, after deleting, after
+  shrinking), while `run_open_pex(capacitance=False)`, which is exact and takes
+  seconds, gates every batch and assigns blame shape by shape.
+- **Reduce a cell in the context that uses it.** A leaf reduced alone gives up
+  landings its parent needs. Reduce the parent and let edits fall in the
+  leaves; the report names the cell each edit belongs to. Reducing a whole
+  `DriverSliceSpec` (the same inverter, a 4/2-fin NAND, `--no-capacitance`,
+  1223 probes, 9 minutes on 12 cores) deletes the same row-1 strap and V0 in
+  the inverter leaf, but shortens the row-0 strap only to 68-171, where the
+  slice router lands, rather than to the landing at the label; trims three NAND
+  input bars; and keeps the inverter's row-1 LIG because the NAND-to-inverter
+  net, `int[B0,SEL,WL0]`, would go 384 to 457 ohm. That net has no pin: nets
+  inside the cell are measured from driving diffusion to driven gate, and
+  named by the pins around them because the extractor's numbering does not
+  survive an edit.
+
+The output is a list of findings, not a generator: promote what it finds into
+spec knobs.
+
 ## Geometry parity
 
 These helpers were *copied* out of chipforge's compilers, which still carry

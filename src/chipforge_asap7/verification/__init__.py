@@ -7,6 +7,7 @@ sign-off replacement.  See :mod:`chipforge_asap7.verification.pex` for the
 assumptions and machine-readable uncertainty report.
 """
 
+from .drc import DRCViolation, drc_counts, find_drc_deck, run_drc
 from .lvs import (
     LVSResult,
     find_klayout,
@@ -18,23 +19,35 @@ from .lvs import (
     render_sense_amp_lvs_schematic,
     run_lvs,
 )
+from .parasitics import Parasitics, effective_resistance
 from .pex import PEXResult, find_fastercap, run_open_pex
+from .reduce import Edit, ReductionConfig, ReductionResult, reduce_layout
 from .reference import ValidationResult, validate_released_inverter
 from .stack import calibration_manifest, write_kpex_technology
 
 __all__ = [
+    "DRCViolation",
+    "Edit",
     "LVSResult",
     "PEXResult",
+    "Parasitics",
+    "ReductionConfig",
+    "ReductionResult",
     "ValidationResult",
     "calibration_manifest",
+    "drc_counts",
+    "effective_resistance",
+    "find_drc_deck",
     "find_fastercap",
     "find_klayout",
     "normalize_asap7_cdl_reference",
+    "reduce_layout",
     "render_driver_slice_lvs_schematic",
     "render_finfet_lvs_schematic",
     "render_nand_lvs_schematic",
     "render_nand_row_lvs_schematic",
     "render_sense_amp_lvs_schematic",
+    "run_drc",
     "run_lvs",
     "run_open_pex",
     "validate_released_inverter",
