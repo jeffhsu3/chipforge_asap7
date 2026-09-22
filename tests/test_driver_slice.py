@@ -93,6 +93,61 @@ def test_cell_is_two_leaves_and_eight_references():
     assert names == [f"{SMALL.cell_name}__inv"] * 4 + [f"{SMALL.cell_name}__nand"] * 4
 
 
+def test_drivers_keep_only_the_input_metal_the_router_lands_on():
+    """What the reducer did to a whole slice, asked of the generator instead.
+
+    One landing per driver, in row 0, from the bottom of the strap -- where the
+    two staggered landings are -- up to the pad of the gate contact.  The
+    landings do not move, so the routing above them is the same either way.
+    """
+    inverter = SMALL.inverter
+    assert inverter.input_rows is None and inverter.input_reach is None
+    driver = SMALL.driver
+    below, _ = inverter.full_input_reach(0)
+    assert (driver.input_rows, driver.input_reach) == ((0,), (below, 14))
+    assert driver.rows == inverter.rows and driver.netlist("X") == inverter.netlist("X")
+
+    full = DriverSliceSpec(nand=SMALL.nand, inverter=inverter, trim_driver_input=False)
+    assert full.driver is inverter
+    assert full.landing_ys == SMALL.landing_ys
+    assert SMALL.input_strap_y[0] == full.input_strap_y[0]
+    assert SMALL.input_strap_y[1] == SMALL.driver_y0 + inverter.seam_y(0) + 14
+    assert SMALL.input_strap_y[1] < full.input_strap_y[1]
+
+    def input_m1(spec):
+        """M1 on the drivers' input tracks, above the NAND rows that share them."""
+        xs = {(x - 9, x + 9) for x in spec.input_xs}
+        # Mirrored placements come back a float hair off the grid.
+        boxes = [
+            tuple(round(v) for v in b)
+            for b in _flat_boxes(build_driver_slice(spec), "M1")
+        ]
+        return sorted(b for b in boxes if (b[0], b[2]) in xs and b[1] > spec.driver_y0)
+
+    trimmed, untrimmed = input_m1(SMALL), input_m1(full)
+    assert len(trimmed) == 4 and len(untrimmed) == 8  # four drivers, one row or two
+    assert {(b[1], b[3]) for b in trimmed} == {SMALL.input_strap_y}
+    assert sum(b[3] - b[1] for b in trimmed) < 0.5 * sum(b[3] - b[1] for b in untrimmed)
+
+
+def test_a_short_driver_keeps_enough_strap_above_the_contact_for_both_landings():
+    spec = DriverSliceSpec(
+        nand=NandSpec(rows=((4, 2),)), inverter=InverterSpec(rows=((2, 2),))
+    )
+    lo, hi = spec.input_strap_y
+    assert spec.driver.input_reach == (40, 24)
+    assert lo <= spec.landing_ys[0] - 14 and spec.landing_ys[1] + 14 == hi
+
+
+def test_a_driver_that_sets_its_own_input_knobs_is_drawn_as_given():
+    inverter = InverterSpec(rows=((8, 8), (4, 4)), input_rows=(0, 1))
+    spec = DriverSliceSpec(nand=SMALL.nand, inverter=inverter)
+    assert spec.driver is inverter
+    assert spec.input_strap_y == tuple(
+        spec.driver_y0 + y for y in inverter.input_strap_y(0)
+    )
+
+
 def test_support_column_covers_the_full_slice_height():
     tap = build_driver_slice_support(SMALL, "tap")
     (x0, y0), (x1, y1) = tap.get_bounding_box()
@@ -118,6 +173,16 @@ def test_netlist_shares_sel_and_instantiates_both_leaves():
         ({"inverter": InverterSpec(rows=((8, 8),), fingers=4)}, "two fingers"),
         ({"inverter": InverterSpec(rows=((8, 8),), abut=False)}, "abutting"),
         ({"nand": NandSpec(rows=((6, 4),), vt="lvt")}, "one threshold flavor"),
+        # The slice lands in row 0, low on the strap: a driver that offers only
+        # row 1, or only a bare pad at the contact, gives it nothing to land on.
+        (
+            {"inverter": InverterSpec(rows=((8, 8), (4, 4)), input_rows=(1,))},
+            "row-0 input",
+        ),
+        (
+            {"inverter": InverterSpec(rows=((8, 8),), input_reach=(14, 14))},
+            "does not hold",
+        ),
     ],
 )
 def test_rejects_leaves_that_cannot_sit_on_the_wordline_pitch(kwargs, match):

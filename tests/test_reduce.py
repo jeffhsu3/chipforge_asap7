@@ -320,6 +320,52 @@ def test_inverter_gives_up_its_dead_strap_but_extraction_keeps_the_gate_tie(
 
 
 @pytest.mark.skipif(not HAVE_KPEX, reason="KPEX is not installed")
+def test_nothing_is_left_to_take_from_an_inverter_built_with_its_input_knobs(
+    tmp_path: Path, external_tool, require_klayout
+):
+    """The findings above, promoted to `InverterSpec`, close the loop.
+
+    Asked for one bare landing, the generator draws what the reducer would
+    have left; the reducer is then offered the same layers and declines, and
+    still refuses the row-1 gate tie for the same reason.
+    """
+    external_tool(
+        find_asap7_drc_deck() is not None, "the public ASAP7 DRC deck is not installed"
+    )
+    spec = InverterSpec(
+        rows=((4, 6), (3, 3)),
+        fingers=2,
+        abut=False,
+        input_rows=(0,),
+        input_reach=(14, 14),
+    )
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    build_inverter(spec, name="INV", lib=library)
+    gds, reference = tmp_path / "inv.gds", tmp_path / "inv.sp"
+    library.write_gds(str(gds))
+    reference.write_text(render_inverter_lvs_schematic(spec, cell_name="INV"))
+
+    result = reduce_layout(
+        gds,
+        reference,
+        tmp_path / "out",
+        cell_name="INV",
+        config=ReductionConfig(
+            layers=("V0", "M1", "LIG"),
+            shrink_layers=("M1",),
+            capacitance=False,
+            max_passes=2,
+        ),
+    )
+    on_input_track = [
+        e for e in result.edits if e.before[0] <= spec.input_gate_x <= e.before[2]
+    ]
+    assert on_input_track == []
+    assert [kept["layer"] for kept in result.kept_for_parasitics] == ["LIG"]
+
+
+@pytest.mark.skipif(not HAVE_KPEX, reason="KPEX is not installed")
 @pytest.mark.skipif(
     os.environ.get("ASAP7_SLOW_TESTS") != "1",
     reason="minutes of field solving; set ASAP7_SLOW_TESTS=1",

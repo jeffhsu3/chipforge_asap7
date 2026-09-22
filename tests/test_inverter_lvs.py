@@ -83,6 +83,34 @@ def test_isolated_inverter_lvs_matches_and_detects_wrong_sizing(
     ).matched
 
 
+@pytest.mark.parametrize(
+    "knobs",
+    [
+        {"input_rows": (0,), "input_reach": (14, 14)},
+        {"input_rows": (1,)},
+        {"input_rows": (0,), "input_reach": (310, 14)},
+    ],
+)
+def test_input_knobs_match_the_reference_of_the_plain_cell(
+    knobs, tmp_path: Path, require_klayout
+):
+    """The knobs move metal, not devices: one reference serves every setting."""
+    plain = InverterSpec(rows=((12, 12), (8, 8)), abut=False)
+    spec = InverterSpec(rows=plain.rows, abut=False, **knobs)
+    gds = tmp_path / "inverter.gds"
+    _write(lambda lib: build_inverter(spec, lib=lib), gds)
+    reference = tmp_path / "reference.spice"
+    reference.write_text(render_inverter_lvs_schematic(plain, cell_name=spec.cell_name))
+    matched = run_lvs(
+        gds, reference, tmp_path / "lvs", cell_name=spec.cell_name, tie_bodies=True
+    )
+    assert matched.matched
+    assert matched.extracted_netlist.read_text().count("M$") == spec.total_fins
+    assert (
+        "* pin A" in matched.extracted_netlist.read_text()
+    )  # the label is still on metal
+
+
 def test_four_finger_output_is_tied_on_m2_not_left_split(
     tmp_path: Path, require_klayout
 ):

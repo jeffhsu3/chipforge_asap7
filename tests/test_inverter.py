@@ -30,6 +30,7 @@ from chipforge_asap7.devices.inverter import (
     ACTIVE_ABUT_OVERHANG,
     GATE_STRAP_CLEARANCE,
     M2_V1_ENCLOSURE,
+    MIN_INPUT_REACH,
     SELECT_ABUT_OVERHANG,
     main,
 )
@@ -184,6 +185,24 @@ def test_fin_ceiling_and_deck_ceiling_are_reported_separately():
         ({"rows": ((MAX_FINS + 1, 2),)}, "tallest device"),
         ({"rows": ((0, 2),)}, "must be >= 1"),
         ({"vt": "xvt"}, "vt must be one of"),
+        ({"input_rows": ()}, "non-empty ascending"),
+        ({"input_rows": (1,)}, "rows 0..0"),
+        ({"rows": ((4, 6), (3, 3)), "input_rows": (1, 0)}, "non-empty ascending"),
+        ({"input_reach": (14,)}, "two integers"),
+        ({"input_reach": (13, 14)}, "below the seam of row 0 must be 14"),
+        ({"input_reach": (14, 500)}, "above the seam of row 0"),
+        # A one-fin band has 13 nm above its seam.  Using all of it puts the landing
+        # at the strap's clearance from the via row, which only a long edge may do.
+        ({"rows": ((1, 1),), "input_reach": (15, 13)}, "needs 25 nm to the via rows"),
+        (
+            {"rows": ((1, 1),), "input_reach": (14, 11)},
+            "above the seam of row 0 must be 13",
+        ),
+        # Legal in row 0 and too long for the shorter row 1.
+        (
+            {"rows": ((4, 6), (3, 3)), "input_reach": (94, 14)},
+            "below the seam of row 1",
+        ),
     ],
 )
 def test_rejects_impossible_specs(kwargs, match):
@@ -222,6 +241,85 @@ def test_every_active_finger_reaches_the_input_strap():
             assert strap[2] >= gate_x + GATE_LIG_HEIGHT / 2
         # ... and stop short of the shared edge gate, which is not ours to drive.
         assert strap[2] < spec.gate_grid_xs[-1] - GATE_LIG_HEIGHT / 2
+
+
+def _input_metal(spec):
+    """``(straps, vias)``: the M1 on the input gate's track, and the V0 on a seam."""
+    cell = build_inverter(spec)
+    x = spec.input_gate_x
+    straps = [
+        b
+        for b in polys(cell, "M1")
+        if (b[0], b[2]) == (x - M1_WIDTH / 2, x + M1_WIDTH / 2)
+    ]
+    seams = {spec.seam_y(row) for row in range(len(spec.rows))}
+    vias = [
+        b for b in polys(cell, "V0") if b[0] < x < b[2] and (b[1] + b[3]) / 2 in seams
+    ]
+    return cell, straps, vias
+
+
+def test_input_defaults_to_the_released_cells_strap_in_every_row():
+    spec = InverterSpec(rows=((4, 6), (3, 3)), abut=False)
+    _, straps, vias = _input_metal(spec)
+    assert [(b[1], b[3]) for b in straps] == [(68, 310), (446, 580)]
+    assert [(b[1], b[3]) for b in straps] == [
+        spec.input_strap_y(0),
+        spec.input_strap_y(1),
+    ]
+    assert len(vias) == 2
+    assert spec.full_input_reach(0) == (94, 148) and spec.full_input_reach(1) == (
+        67,
+        67,
+    )
+
+
+def test_input_rows_drops_the_landing_but_never_the_gate_tie():
+    """What the layout reducer found: the second landing is a stub, the LIG is not.
+
+    LVS and DRC would let the row-1 LIG go with it, but it joins the fingers'
+    gates at that seam and extraction puts the gate resistance up by half
+    without it.  So the knob has no way to remove it.
+    """
+    spec = InverterSpec(rows=((4, 6), (3, 3)), abut=False, input_rows=(0,))
+    cell, straps, vias = _input_metal(spec)
+    assert [(b[1], b[3]) for b in straps] == [(68, 310)]
+    assert [(b[1] + b[3]) / 2 for b in vias] == [spec.seam_y(0)]
+    assert len(polys(cell, "LIG")) == len(spec.rows)
+    with pytest.raises(ValueError, match="row 1 has no input landing"):
+        spec.input_strap_y(1)
+
+    upper = InverterSpec(rows=((4, 6), (3, 3)), abut=False, input_rows=(1,))
+    assert upper.pin_positions["A"] == (upper.input_gate_x, upper.seam_y(1))
+    assert [(b[1], b[3]) for b in _input_metal(upper)[1]] == [(446, 580)]
+
+
+def test_input_reach_cuts_the_strap_down_to_a_legal_via_pad():
+    bare = (MIN_INPUT_REACH, MIN_INPUT_REACH)
+    spec = InverterSpec(
+        rows=((4, 6), (3, 3)), abut=False, input_rows=(0,), input_reach=bare
+    )
+    _, (strap,), (via,) = _input_metal(spec)
+    seam = spec.seam_y(0)
+    assert (strap[1], strap[3]) == (seam - 14, seam + 14) == spec.input_strap_y(0)
+    assert (strap[2] - strap[0]) * (strap[3] - strap[1]) == 504  # M1.A.1, exactly
+    assert via[1] - strap[1] == strap[3] - via[3] == M1_V0_ENCLOSURE
+    assert spec.pin_positions["A"] == (spec.input_gate_x, seam)  # still on metal
+
+    lopsided = InverterSpec(rows=((4, 6),), input_reach=(94, 14))
+    assert lopsided.input_strap_y(0) == (68, 176)
+
+
+def test_input_knobs_rename_the_cell_and_leave_the_circuit_alone():
+    plain = InverterSpec(rows=((4, 6), (3, 3)))
+    trimmed = InverterSpec(rows=((4, 6), (3, 3)), input_rows=(0,), input_reach=(40, 14))
+    assert plain.cell_name == "inv_fin_4n6p_3n3p_2f"
+    assert trimmed.cell_name == "inv_fin_4n6p_3n3p_2f_in0_reach40x14"
+    assert InverterSpec(rows=((4, 6), (3, 3)), input_rows=(0, 1)).cell_name.endswith(
+        "_in01"
+    )
+    assert trimmed.netlist("X") == plain.netlist("X")
+    assert trimmed.width == plain.width and trimmed.height == plain.height
 
 
 def test_gate_strap_sits_where_no_sd_bar_can_reach_it():

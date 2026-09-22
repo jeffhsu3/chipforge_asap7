@@ -17,6 +17,7 @@ import gdspy
 
 from chipforge_asap7.devices import InverterSpec, build_inverter, build_inverter_row
 from chipforge_asap7.devices.finfet import MAX_VERIFIABLE_FINS
+from chipforge_asap7.devices.inverter import MIN_INPUT_REACH
 
 #: No logic cell satisfies this alone -- it needs a tap row within 30 um.  The
 #: released `dec_inv_62f_halved_AND` has no tap either.
@@ -77,6 +78,36 @@ def test_isolated_inverters_only_trip_the_missing_body_tap(asap7_drc):
         ]
     )
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+
+
+def test_trimmed_input_is_as_clean_as_the_full_strap(asap7_drc):
+    """One landing, down to the bare via pad, which is M1 minimum area exactly.
+
+    Also a landing in the upper row only, and one that reaches a long way down
+    and barely up -- the shape a driver slice asks for.
+    """
+    bare = (MIN_INPUT_REACH, MIN_INPUT_REACH)
+    specs = [
+        InverterSpec(
+            rows=((4, 6), (3, 3)), abut=False, input_rows=(0,), input_reach=bare
+        ),
+        InverterSpec(rows=((4, 6), (3, 3)), abut=False, input_rows=(1,)),
+        # One p fin leaves 13 nm above the seam, hard against the via row's
+        # clearance; only a landing 36 nm long may sit that close (M1.S.2).
+        InverterSpec(rows=((1, 1),), abut=False, input_reach=(23, 13)),
+        InverterSpec(rows=((2, 3),), fingers=4, abut=False, vt="lvt", input_reach=bare),
+        InverterSpec(
+            rows=((12, 12), (8, 8)), abut=False, input_rows=(0,), input_reach=(310, 14)
+        ),
+    ]
+    assert len({spec.cell_name for spec in specs}) == len(specs)
+    library, top = _library(
+        [
+            ((lambda lib, s=spec: build_inverter(s, lib=lib)), spec.width)
+            for spec in specs
+        ]
+    )
+    assert set(asap7_drc(library, top, tag="trimmed")) == NO_TAP_IN_CELL
 
 
 def test_abutting_style_adds_only_the_enclosure_its_neighbour_supplies(asap7_drc):

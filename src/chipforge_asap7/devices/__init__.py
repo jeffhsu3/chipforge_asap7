@@ -9,6 +9,7 @@ from .driver_slice import (
 from .finfet import FinFETSpec, build_device_band, build_finfet, nmos_fin, pmos_fin
 from .inverter import (
     INVERTER_PINS,
+    MIN_INPUT_REACH,
     InverterSpec,
     build_inverter,
     build_inverter_row,
@@ -37,8 +38,10 @@ from .sizing import (
 )
 
 __all__ = [
+    "BITLINE_MUX_PINS",
     "DRIVER_SLICE_PINS",
     "INVERTER_PINS",
+    "MIN_INPUT_REACH",
     "NAND_PINS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",

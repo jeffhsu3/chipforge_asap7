@@ -43,15 +43,15 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.layers import LAYERS, box, require_gdspy
 from .finfet import CONTACT_SIZE, M1_MIN_SPACE, M1_V0_ENCLOSURE, M1_WIDTH, MAX_FINS
 from .inverter import (
-    GATE_STRAP_CLEARANCE,
     M2_V1_ENCLOSURE,
+    MIN_INPUT_REACH,
     InverterSpec,
     build_inverter,
 )
@@ -95,12 +95,20 @@ class DriverSliceSpec:
             two wordline pitches wide and butts against its neighbour.
         inverter: the wordline driver.  Two fingers and abutting, so that four
             interleave into four wordline pitches.
+        trim_driver_input: draw each driver with the input metal this slice's
+            own router lands on and no more -- one landing, in row 0, reaching
+            from the lower of the two staggered landings up to the gate
+            contact -- instead of the released cell's tall strap in every row.
+            It applies only when `inverter` leaves its own input knobs unset.
+            Turn it off for a router that wants the whole strap to choose from;
+            `input_strap_y` always reports what is drawn.
     """
 
     nand: NandSpec = field(default_factory=lambda: NandSpec(rows=((14, 7),), fingers=2))
     inverter: InverterSpec = field(
         default_factory=lambda: InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
     )
+    trim_driver_input: bool = True
 
     def __post_init__(self) -> None:
         for cell, what in ((self.nand, "NAND"), (self.inverter, "wordline driver")):
@@ -127,11 +135,17 @@ class DriverSliceSpec:
                 "the NAND's n band is too short: the output's via needs a track "
                 "clear of the B tie; use more n fins or band_height"
             )
-        lo, hi = self.input_strap_y
-        if self.landing_ys[1] + _CAP > hi:
+        if 0 not in self.driver.input_landing_rows:
             raise ValueError(
-                f"the driver's input strap ({hi - lo} nm) is too short for two "
-                "staggered landings; use at least two fins per band"
+                "the slice lands on the driver's row-0 input; "
+                f"got input_rows={self.inverter.input_rows}"
+            )
+        lo, hi = self.input_strap_y
+        if self.landing_ys[0] - _CAP < lo or self.landing_ys[1] + _CAP > hi:
+            raise ValueError(
+                f"the driver's input strap ({hi - lo} nm) does not hold two "
+                "staggered landings; use at least two fins per band, or leave "
+                "the inverter's input_rows and input_reach to the slice"
             )
 
     @classmethod
@@ -239,18 +253,45 @@ class DriverSliceSpec:
         return band.contact_y + (3 * _HALF if top else -3 * _HALF)
 
     @property
+    def driver(self) -> InverterSpec:
+        """The wordline driver as this slice draws it: `inverter`, input trimmed.
+
+        The layout reducer, run on a whole slice, deletes the row-1 landing of
+        every driver and cuts the row-0 strap back to the router's landings and
+        the gate contact.  This asks the generator for that cell directly.  The
+        devices are `inverter`'s, so its netlist and LVS reference stand.
+        """
+        inverter = self.inverter
+        if (
+            not self.trim_driver_input
+            or inverter.input_rows is not None
+            or inverter.input_reach is not None
+        ):
+            return inverter
+        below, most_above = inverter.full_input_reach(0)
+        top_landing = inverter.seam_y(0) - below + _CAP + _TRACK
+        above = max(MIN_INPUT_REACH, top_landing + _CAP - inverter.seam_y(0))
+        if (
+            above > most_above
+        ):  # too short for the landings at all; __post_init__ says so
+            return inverter
+        return replace(inverter, input_rows=(0,), input_reach=(below, above))
+
+    @property
     def input_strap_y(self) -> tuple[float, float]:
-        """Slice Y extent of the drivers' row-0 M1 input straps."""
-        lower, upper = self.inverter.row_bands(0)
-        return (
-            self.driver_y0 + lower.contact_y + _HALF + GATE_STRAP_CLEARANCE,
-            self.driver_y0 + upper.contact_y - _HALF - GATE_STRAP_CLEARANCE,
-        )
+        """Slice Y extent of the drivers' row-0 M1 input straps, as drawn."""
+        lo, hi = self.driver.input_strap_y(0)
+        return self.driver_y0 + lo, self.driver_y0 + hi
 
     @property
     def landing_ys(self) -> tuple[float, float]:
-        """Y of the even and odd drivers' input landings, one M2 track apart."""
-        first = self.input_strap_y[0] + _CAP
+        """Y of the even and odd drivers' input landings, one M2 track apart.
+
+        Counted up from the bottom of the full strap, so that trimming the
+        strap above them does not move them.
+        """
+        below, _ = self.inverter.full_input_reach(0)
+        first = self.driver_y0 + self.inverter.seam_y(0) - below + _CAP
         return first, first + _TRACK
 
     @property
@@ -393,7 +434,7 @@ def build_driver_slice(
         if lib is not None
         else gdspy.Cell(cell_name, exclude_from_current=True)
     )
-    nand, inverter = spec.nand, spec.inverter
+    nand, inverter = spec.nand, spec.driver
     nand_leaf = build_nand(
         nand, name=f"{cell_name}__nand", lib=lib, draw_pin_labels=False
     )

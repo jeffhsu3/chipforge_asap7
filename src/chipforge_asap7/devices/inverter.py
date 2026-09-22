@@ -72,7 +72,9 @@ __all__ = [
     "GATE_STRAP_CLEARANCE",
     "INVERTER_PINS",
     "M2_V1_ENCLOSURE",
+    "MIN_INPUT_REACH",
     "SELECT_ABUT_OVERHANG",
+    "SHORT_M1_EDGE",
     "InverterSpec",
     "build_inverter",
     "build_inverter_row",
@@ -94,6 +96,17 @@ M2_V1_ENCLOSURE = 8
 #: Euclidean M1 spacing is bought entirely in Y: sqrt(4^2 + 23^2) = 23.3 nm
 #: against a rule of 18.  Shrink this and the cell stops being DRC clean.
 GATE_STRAP_CLEARANCE = M1_MIN_SPACE + M1_V0_ENCLOSURE
+#: The least M1 an input landing can have either side of its V0: the via's own
+#: pad.  Two of them make 28 x 18 nm, which is exactly the M1 minimum area
+#: (M1.A.1, 504 nm2), so no legal reach can fall under it.  A one-fin band
+#: leaves a nanometre less than this on its side of the seam, and there the
+#: via rows' clearance is the limit instead.
+MIN_INPUT_REACH = CONTACT_SIZE // 2 + M1_V0_ENCLOSURE
+#: M1.S.2: an edge under 36 nm needs 25 nm to its neighbour where a long one
+#: needs 18.  `GATE_STRAP_CLEARANCE` buys 23.3 nm from a drain pad, so a landing
+#: that short has to stop 2 nm further from the via rows than the strap does.
+SHORT_M1_EDGE = 36
+_SHORT_EDGE_SETBACK = 2
 
 INVERTER_PINS = ("A", "Y", "VDD", "VSS")
 
@@ -120,12 +133,35 @@ class InverterSpec:
             the tile so neighbours merge, and one shared edge gate.  Set False
             for a self-contained island with its own dummy gates and a full
             46 nm select enclosure, which the public runset can check alone.
+        input_rows: rows that get an M1 input landing and the V0 under it.
+            ``None`` is every row, as the released cell draws it, which suits a
+            parent that wants to choose its access point.  A parent that lands
+            once wants ``(0,)``: every other landing is a dead-end stub 27 nm
+            from the output strap, and the uncut poly carries the input between
+            rows anyway.  Every row keeps its LIG strap regardless -- it is
+            what ties the fingers' gates together at that seam, and without it
+            the worst gate resistance of a two-row cell rises by half.
+        input_reach: ``(below, above)`` nm of M1 from the seam along the gate
+            track, for every landing.  ``None`` reaches as far as the via rows
+            allow, the released cell's tall strap; ``(MIN_INPUT_REACH,) * 2``
+            is the bare via pad.  A landing under `SHORT_M1_EDGE` long must
+            also keep clear of the via rows, which a one-fin band has no room
+            for; make it 36 nm there.  Give a parent the reach its landings need
+            and no more: on a (4, 6)+(3, 3) cell, one bare landing instead of
+            two tall straps takes a tenth off the switched wire capacitance
+            and a seventh off the input-to-output coupling, at no resistance.
+
+    Both input knobs came out of `chipforge_asap7.verification.reduce`, which
+    found the shapes; they change no device, so the netlist and the LVS
+    reference are the same for every setting.
     """
 
     rows: tuple[tuple[int, int], ...] = ((4, 6),)
     fingers: int = 2
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     abut: bool = True
+    input_rows: tuple[int, ...] | None = None
+    input_reach: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         # RowStack owns row validation and normalisation, so an inverter and
@@ -138,6 +174,45 @@ class InverterSpec:
                 "fingers must be a positive even number so both outer S/D "
                 f"columns are sources; got {self.fingers}"
             )
+        if self.input_rows is not None:
+            rows = tuple(self.input_rows)
+            if (
+                not rows
+                or any(isinstance(r, bool) or not isinstance(r, int) for r in rows)
+                or list(rows) != sorted(set(rows))
+                or not 0 <= rows[0] <= rows[-1] < len(self.rows)
+            ):
+                raise ValueError(
+                    "input_rows must be a non-empty ascending selection of rows "
+                    f"0..{len(self.rows) - 1}; got {self.input_rows!r}"
+                )
+            object.__setattr__(self, "input_rows", rows)
+        if self.input_reach is not None:
+            reach = tuple(self.input_reach)
+            if len(reach) != 2 or any(
+                isinstance(r, bool) or not isinstance(r, int) for r in reach
+            ):
+                raise TypeError(
+                    f"input_reach must be two integers (below, above); got {self.input_reach!r}"
+                )
+            object.__setattr__(self, "input_reach", reach)
+            short = sum(reach) < SHORT_M1_EDGE
+            for row in self.input_landing_rows:
+                most = self.full_input_reach(row)
+                for got, limit, side in zip(reach, most, ("below", "above")):
+                    if not min(MIN_INPUT_REACH, limit) <= got <= limit:
+                        raise ValueError(
+                            f"input_reach {side} the seam of row {row} must be "
+                            f"{min(MIN_INPUT_REACH, limit)}..{limit} nm; got {got}"
+                        )
+                    if short and got > limit - _SHORT_EDGE_SETBACK:
+                        raise ValueError(
+                            f"a landing under {SHORT_M1_EDGE} nm long needs 25 nm to "
+                            f"the via rows (M1.S.2), so at most "
+                            f"{limit - _SHORT_EDGE_SETBACK} nm {side} the seam of row "
+                            f"{row}; got input_reach={reach}.  Make it "
+                            f"{SHORT_M1_EDGE} nm long or pull it in"
+                        )
 
     # ── Band stack ────────────────────────────────────────────────────────────
     @property
@@ -155,7 +230,12 @@ class InverterSpec:
         """Default cell name, e.g. ``"inv_fin_18n18p_13n13p_2f"``."""
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         style_tag = "" if self.abut else "_iso"
-        return f"inv_fin_{self.code}_{self.fingers}f{vt_tag}{style_tag}"
+        input_tag = ""
+        if self.input_rows is not None:
+            input_tag += "_in" + "".join(str(row) for row in self.input_rows)
+        if self.input_reach is not None:
+            input_tag += "_reach{}x{}".format(*self.input_reach)
+        return f"inv_fin_{self.code}_{self.fingers}f{vt_tag}{style_tag}{input_tag}"
 
     @property
     def bands(self) -> tuple[RowBand, ...]:
@@ -226,6 +306,37 @@ class InverterSpec:
     def input_gate_x(self) -> int:
         """Gate finger the input strap contacts and runs on."""
         return self.gate_xs[-1]
+
+    @property
+    def input_landing_rows(self) -> tuple[int, ...]:
+        """Rows that carry an M1 input landing: `input_rows`, or every row."""
+        if self.input_rows is not None:
+            return self.input_rows
+        return tuple(range(len(self.rows)))
+
+    def full_input_reach(self, row: int) -> tuple[int, int]:
+        """The most M1 `row`'s landing can have ``(below, above)`` its seam.
+
+        The strap shares a track pitch with the drain landing pads, so it has
+        to stop `GATE_STRAP_CLEARANCE` short of both via rows.
+        """
+        lower, upper = self.row_bands(row)
+        keep_out = CONTACT_SIZE // 2 + GATE_STRAP_CLEARANCE
+        seam = self.seam_y(row)
+        # Via rows sit half a contact inside an integer ACTIVE edge: whole nm.
+        return (
+            int(seam - lower.contact_y - keep_out),
+            int(upper.contact_y - seam - keep_out),
+        )
+
+    def input_strap_y(self, row: int) -> tuple[int, int]:
+        """Y extent of the M1 input landing in `row`, which must be an input row."""
+        if row not in self.input_landing_rows:
+            raise ValueError(
+                f"row {row} has no input landing; input_rows={self.input_rows}"
+            )
+        below, above = self.input_reach or self.full_input_reach(row)
+        return self.seam_y(row) - below, self.seam_y(row) + above
 
     def output_strap_x(self, drain_x: int) -> tuple[float, float]:
         """M1 track for the output strap beside `drain_x`.
@@ -363,7 +474,7 @@ class InverterSpec:
         strap_x0, strap_x1 = self.output_strap_x(self.drain_xs[0])
         rails = {net: y for y, net in reversed(self.rails)}
         return {
-            "A": (self.input_gate_x, self.seam_y(0)),
+            "A": (self.input_gate_x, self.seam_y(self.input_landing_rows[0])),
             "Y": ((strap_x0 + strap_x1) / 2, self.bands[0].contact_y),
             "VDD": (self.width / 2, rails["VDD"]),
             "VSS": (self.width / 2, rails["VSS"]),
@@ -551,11 +662,12 @@ def build_inverter(
     # -- the same place the released standard cells take gate access, and the
     # only Y in the cell where no LISD bar is in the way.  A single 22 nm pad
     # on the contacted finger would leave the others on floating poly.  The
-    # link between rows is carried by the uncut poly itself, not by metal.
+    # link between rows is carried by the uncut poly itself, not by metal, so
+    # the LIG is drawn in every row and the M1 landing only where it is asked
+    # for: a row's LIG still ties its fingers' gates without a via above it.
     gate_x = spec.input_gate_x
     half_lig = GATE_LIG_HEIGHT / 2
     for row in range(len(spec.rows)):
-        lower, upper = spec.row_bands(row)
         y_seam = spec.seam_y(row)
         box(
             cell,
@@ -565,15 +677,11 @@ def build_inverter(
             spec.gate_xs[-1] + half_lig,
             y_seam + half_lig,
         )
+        if row not in spec.input_landing_rows:
+            continue
+        strap_y0, strap_y1 = spec.input_strap_y(row)
         _square(cell, "V0", gate_x, y_seam, CONTACT_SIZE)
-        box(
-            cell,
-            "M1",
-            gate_x - half_m1,
-            lower.contact_y + half_ct + GATE_STRAP_CLEARANCE,
-            gate_x + half_m1,
-            upper.contact_y - half_ct - GATE_STRAP_CLEARANCE,
-        )
+        box(cell, "M1", gate_x - half_m1, strap_y0, gate_x + half_m1, strap_y1)
 
     if draw_pin_labels:
         positions = spec.pin_positions
@@ -697,12 +805,30 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Draw a self-contained island instead of the abutting array style.",
     )
+    parser.add_argument(
+        "--input-rows",
+        type=lambda text: tuple(int(row) for row in text.split(",")),
+        default=None,
+        help="Rows that get an M1 input landing, e.g. '0'; every row when omitted.",
+    )
+    parser.add_argument(
+        "--input-reach",
+        type=lambda text: tuple(int(nm) for nm in text.split(",")),
+        default=None,
+        help=f"M1 'below,above' each landing's seam in nm, e.g. "
+        f"'{MIN_INPUT_REACH},{MIN_INPUT_REACH}' for the bare via pad; the full strap when omitted.",
+    )
     parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
     args = parser.parse_args(argv)
 
     rows = args.rows if isinstance(args.rows, tuple) else _parse_rows(args.rows)
     spec = InverterSpec(
-        rows=rows, fingers=args.fingers, vt=args.vt, abut=not args.isolated
+        rows=rows,
+        fingers=args.fingers,
+        vt=args.vt,
+        abut=not args.isolated,
+        input_rows=args.input_rows,
+        input_reach=args.input_reach,
     )
     output = args.out or Path(f"{spec.cell_name}.gds")
     output.parent.mkdir(parents=True, exist_ok=True)

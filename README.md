@@ -225,8 +225,36 @@ two drivers share an output. `tests/test_reference_validation.py` compares the
 drawn ACTIVE, SDT, LISD, NWELL and BOUNDARY against the released cell shape for
 shape, and asserts the three places the two deliberately differ.
 
+The released cell draws a tall M1 input strap and a gate contact in every row,
+which suits a parent that wants to choose where it lands. A parent that lands
+once does not need them, and two knobs say so:
+
+```python
+InverterSpec(rows=((4, 6), (3, 3)), input_rows=(0,))                         # one landing, in row 0
+InverterSpec(rows=((4, 6), (3, 3)), input_rows=(0,), input_reach=(14, 14))   # ... cut to the via pad
+```
+
+| `(4, 6), (3, 3)`, isolated | switched cost | A-Y coupling | worst gate R |
+| --- | --- | --- | --- |
+| default: full strap, every row | 1.214 fF | 0.196 fF | 126 ohm |
+| `input_rows=(0,)` | 1.168 (-3.8 %) | 0.186 | 126 |
+| ... and `input_reach=(14, 14)` | 1.093 (-10.0 %) | 0.168 (-14 %) | 126 |
+
+`input_reach` is `(below, above)` the seam in nm: `None` is the full strap, and
+a parent asks for what its landings need. Both knobs move metal only, so the
+netlist and the LVS reference are the same for every setting. Neither can
+remove a row's LIG strap: it ties the fingers' gates together at that seam, and
+without it the worst gate resistance goes from 126 to 199 ohm. A landing
+under 36 nm long answers to M1.S.2 (25 nm to a neighbour, not 18), so it must
+stop 2 nm further from the via rows than the strap does; a one-fin band has no
+room for that, and the spec says so rather than leaving it to DRC. These
+knobs, their limits and the numbers all came from [layout
+reduction](#layout-reduction); `DriverSliceSpec` applies them to its drivers by
+default.
+
 ```bash
 uv run asap7-inverter --rows 18:18,13:13 --fingers 2 --out build/inv.gds
+uv run asap7-inverter --rows 4:6,3:3 --input-rows 0 --input-reach 14,14 --isolated
 ```
 
 ### Row support — tap, filler, decap
@@ -383,6 +411,12 @@ M3, because M1 cannot cross the VSS rail between them, with the lower NAND's
 output jogging one gate pitch on M2 and the two landings staggered by a
 track; and each wordline from the driver's top drain contact, which the
 interleave puts on the bitcell pitch, up M3 to the slice edge.
+The drivers are drawn with the input metal that routing lands on and no more
+(`spec.driver`: `input_rows=(0,)` and a reach from the two landings up to the
+gate contact), which on the released size takes each driver's input M1 from
+1.62 um in two straps to 0.49 um in one. `trim_driver_input=False` keeps the
+full straps for a custom `router=` that wants the choice; `input_strap_y`
+reports what is drawn either way.
 `build_driver_slice_support` stacks the filler, tap or decap of both row
 stacks into one full-height column. `tests/test_driver_slice_physical.py`
 checks the slice alone (tap and row-end enclosure only), one and two butted
@@ -636,7 +670,12 @@ Two things learned the hard way, both now defaults:
   survive an edit.
 
 The output is a list of findings, not a generator: promote what it finds into
-spec knobs.
+spec knobs. These became `InverterSpec.input_rows` and `input_reach`, and
+`DriverSliceSpec.trim_driver_input`, which asks each driver for one row-0
+landing reaching from the router's two landings to the gate contact. Built
+that way the inverter extracts to the reducer's numbers, and
+`tests/test_reduce.py` offers it back to the reducer, which takes nothing more
+from the input track and still refuses the gate tie.
 
 ## Geometry parity
 
