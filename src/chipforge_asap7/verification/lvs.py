@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -480,6 +481,11 @@ def run_lvs(
     compare: bool = True,
     asap7_standard_cell: bool = False,
     tie_bodies: bool | None = None,
+    merge_fin_diffusion: bool | None = None,
+    flatten_circuits: Sequence[str] = (),
+    blank_circuits: Sequence[str] = (),
+    double_implant_is_tap: bool = True,
+    flat: bool = False,
     timeout: float = 300,
 ) -> LVSResult:
     """Run ASAP7 KLayout LVS and retain the LVSDB needed by KPEX.
@@ -493,6 +499,26 @@ def run_lvs(
     inverter, for instance -- needs the second without the first, and says so
     with ``tie_bodies=True``.  It defaults to following
     ``asap7_standard_cell``, so existing callers are unaffected.
+
+    The rest are for layouts this package did not draw -- an assembled macro
+    holding released standard cells and an SRAM array:
+
+    * ``merge_fin_diffusion`` takes source/drain as the whole ACTIVE outside
+      the gate, as the ASAP7 Calibre deck and so every released CDL does; the
+      uncontacted node of a series stack is then one net instead of one per
+      fin.  Follows ``asap7_standard_cell`` unless given.
+    * ``flatten_circuits`` (glob patterns) dissolves cells on both sides.  A
+      bitcell's transistors are completed by its neighbours, so its layout cell
+      holds a fraction of the devices its schematic does.
+    * ``blank_circuits`` compares cells by their pins' names alone.  Use it for
+      a released cell whose GDS and CDL order a series stack differently, once
+      `series_order_is_the_only_difference` has said that is all it is.
+    * ``double_implant_is_tap=False`` stops ACTIVE under both implants acting
+      as a well tap.  It is a way to see past that error, not around it.
+    * ``flat`` extracts without hierarchy.  KLayout 0.30's hierarchical
+      extractor has been seen to stop on an internal assertion
+      (``dbHierNetworkProcessor.cc ... id_new != 0``) on some arrays; flat
+      extraction is slower and cannot compare a cell by pin name.
     """
 
     gds_path = Path(gds).expanduser().resolve()
@@ -505,6 +531,7 @@ def run_lvs(
     out = Path(output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     tie = asap7_standard_cell if tie_bodies is None else tie_bodies
+    merge = asap7_standard_cell if merge_fin_diffusion is None else merge_fin_diffusion
     if asap7_standard_cell:
         schematic_path = normalize_asap7_cdl_reference(
             schematic_path, out / "reference_unit_fins.cdl"
@@ -530,7 +557,15 @@ def run_lvs(
         "-rd",
         f"tie_standard_cell_bodies={'true' if tie else 'false'}",
         "-rd",
-        "run_mode=deep",
+        f"merge_fin_diffusion={'true' if merge else 'false'}",
+        "-rd",
+        f"double_implant_is_tap={'true' if double_implant_is_tap else 'false'}",
+        "-rd",
+        f"flatten_circuits={','.join(flatten_circuits)}",
+        "-rd",
+        f"blank_circuits={','.join(blank_circuits)}",
+        "-rd",
+        f"run_mode={'flat' if flat else 'deep'}",
         "-rd",
         "top_lvl_pins=true",
     ]

@@ -19,6 +19,7 @@ from .lvs import (
     render_sense_amp_lvs_schematic,
     run_lvs,
 )
+from .lvs_report import HierarchicalLVSResult, run_hierarchical_lvs, summarize_lvsdb
 from .parasitics import Parasitics, effective_resistance
 from .pex import PEXResult, find_fastercap, run_open_pex
 from .reduce import Edit, ReductionConfig, ReductionResult, reduce_layout
@@ -28,6 +29,7 @@ from .stack import calibration_manifest, write_kpex_technology
 __all__ = [
     "DRCViolation",
     "Edit",
+    "HierarchicalLVSResult",
     "LVSResult",
     "PEXResult",
     "Parasitics",
@@ -48,8 +50,10 @@ __all__ = [
     "render_nand_row_lvs_schematic",
     "render_sense_amp_lvs_schematic",
     "run_drc",
+    "run_hierarchical_lvs",
     "run_lvs",
     "run_open_pex",
+    "summarize_lvsdb",
     "validate_released_inverter",
     "write_kpex_technology",
 ]

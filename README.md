@@ -589,6 +589,57 @@ and `results.json` are written under `build/sense_amp_spice/`.
 python -m chipforge_asap7.devices --fins 2 --fingers 2 --multipliers 2
 ```
 
+### LVS of an assembled macro
+
+`run_lvs` proves a generated cell against a reference written for it.
+`run_hierarchical_lvs` is for a layout this package did not draw: a macro of
+released standard cells, hard IP and an SRAM array, against the designer's own
+netlist.
+
+```python
+from chipforge_asap7.verification import run_hierarchical_lvs
+
+result = run_hierarchical_lvs("sram.gds", "sram.sp", "build/lvs", cell_name="sram_x4x2x1",
+                              flatten_circuits=("sram_cell_*",))
+result.matched, result.failing, result.series_order_cells
+print(result.describe())
+```
+
+Three things had to be true before such a comparison meant anything, and each
+is an option of `run_lvs` and of the deck:
+
+- **`merge_fin_diffusion`.** On the fins, the uncontacted node inside a series
+  stack is a net per fin, and the generated cells' references are written that
+  way. The ASAP7 Calibre deck, and so every released CDL, takes source/drain as
+  the whole ACTIVE outside the gate, where it is one net. Without it no
+  standard cell with a stack matches its CDL; with it, all 24 in OpenFinRAM's
+  controller do except the two below.
+- **`flatten_circuits`.** A bitcell's transistors are completed by its
+  neighbours: the layout's `sram_cell_8t` holds 3 devices and its schematic 14.
+- **Series order.** Released `AOI211xp5` stacks its pull-up C, B, (A1‖A2) in
+  the GDS and the other way round in the CDL; `AO21x1` has A1 and A2 swapped in
+  its pull-down. Calibre's gate recognition passes both. KLayout fails the
+  first and *matches* the second by pairing A1 with A2, which then breaks the
+  parent. `summarize_lvsdb` reports such pairings (`renamed_pins`) and decides
+  `series_order_only`: both sides reduced to series/parallel trees with
+  unordered series, internal nets named from the pins inward, equal trees and
+  equal fins per input. A library cell proven that way is compared by pin name
+  (`blank_circuits`) in a second pass and named in the result. A NOR offered
+  for a NAND, or a cell one fin short, is not excused.
+
+A failing circuit also gets `supply_shorts`: instance pins on a supply net in
+the layout and not in the reference. A short to a rail swallows a net whole,
+and the compare can then only say that nothing matches; this says which pins
+went where. `double_implant_is_tap=False` is for seeing past one specific
+error, ACTIVE under both implants acting as a well tap, not for passing with
+it. The report reader runs inside KLayout's own Python, so it needs the binary
+and nothing else.
+
+On OpenFinRAM's two-port macro this matched every block below the top at
+transistor level (the controller, both 514-device column IO blocks) and found
+two shorts to VSS at the top that the compiler's metal-graph check cannot see;
+see `docs/macro_verification.md` there.
+
 ### Layout reduction
 
 Generators inherit geometry. `InverterSpec` draws a tall M1 input strap and a

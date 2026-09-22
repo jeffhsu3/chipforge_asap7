@@ -75,8 +75,19 @@ active_fin = active & fin
 pwell = boundary - nwell
 nactive = active_fin & nselect - nwell
 pactive = active_fin & pselect & nwell
-ptap = active & pselect - nwell
-ntap = active & nselect & nwell
+# ACTIVE under both implants is a layout error (NSELECT.PSELECT.AUX.1), and
+# counting it as a tap is what makes LVS show the consequence: whatever
+# diffusion it belongs to is tied to the well.  One such sliver per array tap
+# grounds every bitline it touches and buries any other mismatch, so
+# double_implant_is_tap=false leaves it out -- to see what else is wrong, not
+# to pass.
+if ($double_implant_is_tap || "true").to_s.downcase == "true"
+  ptap = active & pselect - nwell
+  ntap = active & nselect & nwell
+else
+  ptap = active & pselect - nselect - nwell
+  ntap = (active & nselect & nwell) - pselect
+end
 
 ngate_all = nactive & gate_con
 pgate_all = pactive & gate_con
@@ -90,8 +101,19 @@ pgate_sram = pgate_all & sramvt
 ngate_rvt = ngate_all - lvt - slvt - sramvt
 pgate_rvt = pgate_all - lvt - slvt - sramvt
 
-nsd = nactive - ngate_all
-psd = pactive - pgate_all
+# Source/drain.  By default it is what is drawn on the fins, so the uncontacted
+# node inside a series stack is one net *per fin* -- faithful, and what the
+# generated cells' references are written against.  The ASAP7 Calibre deck,
+# and therefore every released CDL, takes source/drain as the whole ACTIVE
+# outside the gate, where that node is one net: the merged epitaxy.  A released
+# standard cell with a series stack only matches its CDL in that view.
+if ($merge_fin_diffusion || "false").to_s.downcase == "true"
+  nsd = (active & nselect - nwell) - gate_con
+  psd = (active & pselect & nwell) - gate_con
+else
+  nsd = nactive - ngate_all
+  psd = pactive - pgate_all
+end
 
 # Split SDT contacts for KPEX device-terminal attribution, and preserve a
 # merged local-interconnect layer for distributed-R extraction.
@@ -208,6 +230,21 @@ connect(m8, m8_text)
 connect(m9, m9_text)
 
 netlist
+# The SPICE reader upper-cases the schematic's names; glob patterns do not fold.
+def each_pattern(text)
+  (text || "").to_s.split(",").map(&:strip).reject(&:empty?).each do |pattern|
+    yield pattern
+    yield pattern.upcase if pattern != pattern.upcase
+  end
+end
+# An SRAM bitcell's transistors are completed by its neighbours, so the layout
+# cell holds a fraction of the devices its schematic does: flatten both.
+each_pattern($flatten_circuits) do |pattern|
+  netlist.flatten_circuit(pattern)
+  schematic.flatten_circuit(pattern) if $schematic
+end
+# Compare a circuit by its pins' names alone, contents unseen.
+each_pattern($blank_circuits) { |pattern| blank_circuit(pattern) }
 align if $schematic
 
 # Width is the drawn FIN stripe width, not a BSIM-CMG width.  Tight tolerance
