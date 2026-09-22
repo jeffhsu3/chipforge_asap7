@@ -169,3 +169,20 @@ def test_band_height_changes_the_code():
     assert (
         RowStack(rows=((3, 3),), band_height=135).code != RowStack(rows=((3, 3),)).code
     )
+
+
+def test_a_row_can_pin_its_two_bands_to_different_heights():
+    """Half an 8T bitcell row is 297 nm, eleven fin pitches: 135 + 162, not two equal bands."""
+    stack = RowStack(rows=((3, 3), (3, 3)), band_height=(135, 162))
+    assert [(b.flavor, b.height) for b in stack.bands()] == [("n", 135), ("p", 162), ("p", 162), ("n", 135)]
+    assert stack.row_ys == (0, 297, 594)  # two ports in one 8T row, VDD shared in the middle
+    assert stack.rails == ((0, "VSS"), (297, "VDD"), (594, "VSS"))
+    assert stack.seam_ys == (135, 297 + 162)
+    assert stack.code == "3n3p_3n3p_h135x162"
+    assert stack.band_height_of("n") == 135 and stack.band_height_of("p") == 162
+    assert RowStack(rows=((3, 3),), band_height=135).band_height_of("p") == 135
+    assert RowStack(rows=((3, 3),), band_height=[135, 162]).band_height == (135, 162)
+    with pytest.raises(TypeError, match="pair of"):
+        RowStack(rows=((3, 3),), band_height=(135, 162, 189))
+    with pytest.raises(ValueError):
+        RowStack(rows=((3, 5),), band_height=(135, 162))  # five fins do not fit six pitches

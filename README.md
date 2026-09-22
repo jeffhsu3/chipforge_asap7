@@ -430,6 +430,99 @@ not drawn here.
 uv run asap7-wl-slice --wl-load-ff 22.8 --depth 32 --stage-effort 4.43 --out build/slice.gds
 ```
 
+### Parametric bitline leaf: precharge and column mux
+
+`BitlineMuxSpec` is the part of a column IO that repeats at the bitline pitch:
+two precharge pFETs and a transmission-gate column select, six transistors per
+bitline pair. The released bank draws it (`sram_prech_ymux_6t112`) inside a
+core pitched for the 270 nm 6T cell; this one takes its height from the array.
+The default row is 297 nm, half a 594 nm 8T bitcell row, which needs bands of
+unequal height (`RowStack(band_height=(135, 162))`; a single integer still
+means both).
+
+```python
+from chipforge_asap7.devices import (
+    BitlineMuxSpec, build_bitline_mux, build_bitline_mux_group,
+)
+
+spec = BitlineMuxSpec(n_fins=3, p_fins=3, selects=4, select=0)
+spec.cell_name            # "blmux_3n3p_h135x162_s0of4"
+spec.width, spec.height   # (702, 297) nm
+spec.tracks_y             # {"BL": 80, "BLN": 116, "YSEL": 152, "YSELN": 188}  M2
+spec.track_x              # SA, SAN, PRECHN, YSEL[0..3], YSELN[0..3]           M3
+leaf = build_bitline_mux(spec)
+mux = build_bitline_mux_group(spec)   # four leaves, 702 x 1188 nm, a 4:1 mux
+```
+
+In the dense row style a poly stripe spans both bands, so an nFET and the pFET
+above it share a gate. Here none do: the transmission gate wants `YSEL` below
+and `YSELN` above, and precharge has no nFET. Every n-only or p-only device
+gets a gate column of its own and the other band has no diffusion under it:
+
+```
+column   xa   Ga   x0   G0   x1   G1   x2   G2   x3   G3   x4   Gb   xb
+p band         .   SA  YSELN BL  PRECHN VDD PRECHN BLN YSELN SAN   .
+n band   BL  YSEL  SA    .    .    .    .    .    .    .   SAN YSEL BLN
+```
+
+What a group shares runs straight through every leaf on full-height M3: `SA`,
+`SAN` and `PRECHN` over their own columns, and all `selects` select pairs on
+36 nm tracks either side, of which a leaf taps its own. So the mux ratio is a
+parameter (each select costs 36 nm a side: 486 nm wide at 2:1, 702 at 4:1, 918
+at 8:1), and stacking leaves is the whole of the mux routing.
+`build_bitline_mux_group` stacks them, every other one flipped so neighbours
+share a rail. Bitlines enter on M2 at the left edge.
+
+`tests/test_bitline_mux_drc.py` holds the leaf to the public runset: alone it
+reports `ACTIVE.LUP.1` (it has no tap) and nothing else, inside `filler leaf
+filler tap filler` it is clean, and stacking adds nothing.
+`tests/test_bitline_mux_lvs.py` compares leaves against a unit-fin reference
+and a stacked group against `render_bitline_mux_group_lvs_schematic`, flat:
+`SA`, `SAN`, `PRECHN` one net each, every select reaching its own leaf only.
+Two leaves given the same select fail that comparison, as does a wrong fin
+count.
+
+```bash
+uv run asap7-bitline-mux --selects 4 --group --out build/blmux/group4.gds
+```
+
+#### Two rows, and bitlines where the array puts them
+
+Two ports' leaves cannot share a strip: their M3 tracks sit at the same x, and
+a leaf shifted a gate pitch runs its tracks through the other's M3 jumpers. So
+each port gets a strip at its own end of the bitlines, and with it the whole
+594 nm of bitcell row per pair. `rows=2` spends that on the devices: the row
+is drawn once as a cell and placed twice, the second time mirrored about the
+VDD rail, so every full-height M3 track meets itself and the two copies are in
+parallel. Twice the fins for one gate pitch of extra width.
+
+`bitline_entry=(y_BL, y_BLN)` says where the pair crosses the leaf's left edge
+and `bitline_layer` on which metal. Two M3 columns outside the select tracks
+take each bitline from there to its M2 track in both rows; on M4 the column
+ends in an 18 x 24 nm V3 under a 24 nm stub. For OpenFinRAM's `sram_cell_8t`,
+whose rows put port A on M2 and port B on M4:
+
+```python
+port_a = BitlineMuxSpec(rows=2, bitline_entry=(348.5, 245.5))                     # 756 x 594 nm
+port_b = BitlineMuxSpec(rows=2, bitline_entry=(510, 78), bitline_layer="M4")
+```
+
+An entry that would put two nets' M2 within a space of each other is rejected
+with the offending pair of y's. `build_bitline_mux_group` flips alternate
+leaves, which is also how an array flips alternate rows, so a flipped leaf
+finds its bitlines where its entry, flipped, says. Port A's strip goes on the
+left of the array mirrored in x, port B's on the right as drawn.
+
+Both are in the DRC and LVS tests above, alone, terminated and stacked, with a
+leaf whose upper row has lost its V2 as the case that must fail. Against the
+real `array_x2x4_sram_8t` (OpenFinRAM `tmp/bitline_io/`), with a strap per
+bitline across the gap an edge cell fills, all sixteen bitlines reach six fins
+of nFET on their own `YSEL`, six of pFET on their own `YSELN` and six of
+precharge, and nothing else.
+
+Write driver, output latch and the per-group block around `SenseAmpSpec` are
+still to come.
+
 ### Parametric sense amplifier
 
 `SenseAmpSpec` builds the same 16-transistor differential latch used by the

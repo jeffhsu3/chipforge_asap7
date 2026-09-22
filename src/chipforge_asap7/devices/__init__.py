@@ -1,5 +1,12 @@
 """Parametric ASAP7 devices built on `chipforge_asap7.layout` primitives."""
 
+from .bitline_mux import (
+    BITLINE_MUX_PINS,
+    BitlineMuxSpec,
+    bitline_mux_group_pins,
+    build_bitline_mux,
+    build_bitline_mux_group,
+)
 from .driver_slice import (
     DRIVER_SLICE_PINS,
     DriverSliceSpec,
@@ -45,6 +52,7 @@ __all__ = [
     "NAND_PINS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
+    "BitlineMuxSpec",
     "DecoderSizing",
     "DriverSliceSpec",
     "FinFETSpec",
@@ -58,6 +66,9 @@ __all__ = [
     "SenseAmpSpec",
     "SenseAmpTransistor",
     "Stage",
+    "bitline_mux_group_pins",
+    "build_bitline_mux",
+    "build_bitline_mux_group",
     "build_device_band",
     "build_driver_slice",
     "build_driver_slice_support",

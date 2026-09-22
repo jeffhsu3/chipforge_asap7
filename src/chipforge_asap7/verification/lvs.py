@@ -10,6 +10,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..devices.bitline_mux import (
+    BITLINE_MUX_PINS,
+    BitlineMuxSpec,
+    bitline_mux_group_pins,
+)
 from ..devices.driver_slice import DRIVER_SLICE_PINS, DriverSliceSpec
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
@@ -345,6 +350,74 @@ def render_nand_lvs_schematic(spec: NandSpec, *, cell_name: str | None = None) -
         f".SUBCKT {name} {' '.join(NAND_PINS)}\n"
         f"{body}\n"
         f".ENDS {name}\n"
+        ".END\n"
+    )
+
+
+def render_bitline_mux_lvs_schematic(
+    spec: BitlineMuxSpec, *, cell_name: str | None = None
+) -> str:
+    """Render a bitline leaf as one LVS MOS per physical fin.
+
+    Every source/drain column of the leaf is contacted, so unlike the NAND it
+    has no per-fin internal node: each logical transistor is simply `fins`
+    unit devices in parallel.
+    """
+
+    name = cell_name or spec.cell_name
+    n_band, p_band = spec.bands
+    lines = []
+    for device, drain, gate, source, flavor, fins in spec.devices:
+        band = n_band if flavor == "n" else p_band
+        bulk = "VSS" if flavor == "n" else "VDD"
+        for fin in range(fins):
+            lines.append(
+                f"{device}_f{fin} {drain} {gate} {source} {bulk} {band.spec.model} "
+                f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            )
+    body = "\n".join(lines)
+    return (
+        "* ASAP7 bitline leaf LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(BITLINE_MUX_PINS)}\n"
+        f"{body}\n"
+        f".ENDS {name}\n"
+        ".END\n"
+    )
+
+
+def render_bitline_mux_group_lvs_schematic(
+    spec: BitlineMuxSpec, *, cell_name: str
+) -> str:
+    """Render a stacked `spec.selects`-to-one column mux, flat, one MOS per fin.
+
+    Leaf ``i`` has its own ``BL[i]``, ``BLN[i]``, ``YSEL[i]`` and ``YSELN[i]``;
+    ``SA``, ``SAN`` and ``PRECHN`` are one net each across the group.  That is
+    the whole claim of `build_bitline_mux_group` -- that the leaves' M3 tracks
+    meet and nothing else does -- so a select wired to the wrong leaf, or two
+    leaves sharing a bitline, fails here.
+    """
+
+    n_band, p_band = spec.bands
+    local = {"BL", "BLN", "YSEL", "YSELN"}
+    lines = []
+    for i in range(spec.selects):
+        for device, drain, gate, source, flavor, fins in spec.devices:
+            band = n_band if flavor == "n" else p_band
+            bulk = "VSS" if flavor == "n" else "VDD"
+            nets = [
+                f"{net}[{i}]" if net in local else net for net in (drain, gate, source)
+            ]
+            for fin in range(fins):
+                lines.append(
+                    f"{device}{i}_f{fin} {nets[0]} {nets[1]} {nets[2]} {bulk} {band.spec.model} "
+                    f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+                )
+    body = "\n".join(lines)
+    return (
+        "* ASAP7 column-mux group LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {cell_name} {' '.join(bitline_mux_group_pins(spec))}\n"
+        f"{body}\n"
+        f".ENDS {cell_name}\n"
         ".END\n"
     )
 

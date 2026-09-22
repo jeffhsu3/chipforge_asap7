@@ -126,12 +126,15 @@ class RowStack:
             row of any legal fin count, and the tap and filler built from the
             same stack, sit on the standard-cell rails.  Must be a fin-pitch
             multiple with room for the tallest band's fins and its body tap;
-            `FinFETSpec` rejects anything else at construction.
+            `FinFETSpec` rejects anything else at construction.  A pair is
+            ``(n_band, p_band)``: a row that has to match a pitch which is an
+            odd number of fin pitches -- half of an 8T bitcell row is 297 nm,
+            eleven -- cannot split it evenly, and ``(135, 162)`` can.
     """
 
     rows: tuple[tuple[int, int], ...] = ((4, 6),)
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
-    band_height: int | None = None
+    band_height: int | tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -143,12 +146,18 @@ class RowStack:
             ) from exc
         if not rows:
             raise ValueError("a row stack needs at least one row")
-        if self.band_height is not None and (
-            isinstance(self.band_height, bool) or not isinstance(self.band_height, int)
-        ):
-            raise TypeError(
-                f"band_height must be an integer or None, got {self.band_height!r}"
-            )
+        heights = self.band_height
+        if heights is not None:
+            pair = heights if isinstance(heights, (tuple, list)) else (heights,)
+            if len(pair) not in (1, 2) or any(
+                isinstance(h, bool) or not isinstance(h, int) for h in pair
+            ):
+                raise TypeError(
+                    "band_height must be an integer, an (n_band, p_band) pair of "
+                    f"integers, or None; got {self.band_height!r}"
+                )
+            if len(pair) == 2:
+                object.__setattr__(self, "band_height", (pair[0], pair[1]))
         object.__setattr__(self, "rows", rows)
         # Build the stack once now.  FinFETSpec owns the legal ASAP7 device
         # grid, so this is what rejects an illegal fin count -- with the same
@@ -168,7 +177,17 @@ class RowStack:
         against two geometries claiming one name.
         """
         code = "_".join(f"{n}n{p}p" for n, p in self.rows)
-        return code if self.band_height is None else f"{code}_h{self.band_height}"
+        if self.band_height is None:
+            return code
+        if isinstance(self.band_height, tuple):
+            return f"{code}_h{self.band_height[0]}x{self.band_height[1]}"
+        return f"{code}_h{self.band_height}"
+
+    def band_height_of(self, flavor: Literal["n", "p"]) -> int | None:
+        """The pinned height of an n or a p band, or None when nothing pins it."""
+        if isinstance(self.band_height, tuple):
+            return self.band_height[0 if flavor == "n" else 1]
+        return self.band_height
 
     def band_spec(self, flavor: Literal["n", "p"], fins: int, **kwargs) -> FinFETSpec:
         """The `FinFETSpec` for one band, on this stack's threshold flavor.
@@ -177,7 +196,7 @@ class RowStack:
         unless the caller gives one explicitly.
         """
         if self.band_height is not None:
-            kwargs.setdefault("row_height", self.band_height)
+            kwargs.setdefault("row_height", self.band_height_of(flavor))
         return FinFETSpec(flavor=flavor, fins=fins, vt=self.vt, **kwargs)
 
     def bands(self, fingers: int = 1) -> tuple[RowBand, ...]:
