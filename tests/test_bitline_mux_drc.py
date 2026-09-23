@@ -8,6 +8,8 @@ tap filler`` it reports nothing.  Skips when KLayout or the runset is missing;
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import gdspy
 import pytest
 
@@ -81,7 +83,11 @@ def test_stacking_leaves_adds_no_violation(selects, asap7_drc):
     assert set(asap7_drc(library, group, tag=f"group{selects}")) == NO_TAP_IN_CELL
 
 
-@pytest.mark.parametrize("spec", [PORT_A, PORT_B], ids=["port_a_m2", "port_b_m4"])
+@pytest.mark.parametrize(
+    "spec",
+    [PORT_A, PORT_B, replace(PORT_A, grid_offset=13.5), replace(PORT_B, grid_offset=13.5)],
+    ids=["port_a_m2", "port_b_m4", "port_a_m2_on_the_array_grid", "port_b_m4_on_the_array_grid"],
+)
 def test_two_row_leaves_and_their_groups_add_no_violation(spec, asap7_drc):
     library = _library()
     top = library.new_cell("blmux_two_row")

@@ -246,6 +246,48 @@ def test_a_group_flips_alternate_leaves_as_an_array_flips_its_rows():
     assert rails == [(297 * k, "VDD" if k % 2 else "VSS") for k in range(9)]
 
 
+def test_a_grid_offset_moves_the_landings_against_the_flip():
+    # Half a fin pitch up puts the leaf's fins on an 8T array's grid; each
+    # row's bitlines still come in where the array puts them, which is
+    # 13.5 nm lower on the leaf's own edge for upright rows and 13.5 higher
+    # for flipped ones.
+    spec = replace(PORT_A, grid_offset=13.5)
+    assert spec.entry_y == {"BL": 335.0, "BLN": 232.0}
+    assert spec.for_row(0).bitline_entry == (335.0, 232.0) and spec.for_row(0).grid_offset == 0
+    assert spec.for_row(1).bitline_entry == (362.0, 259.0) and spec.for_row(1).select == 1
+    assert spec.for_row(2) == replace(spec.for_row(0), select=2)
+    library = _library()
+    group = build_bitline_mux_group(spec, lib=library)
+    assert group.name == "blmux_3n3p_h135x162_r2_group4_m2in3485x2455g135"
+    where = {label.text: label.position[1] for label in group.labels}
+    # In the array's frame (13.5 nm below the group's) these are the rows' bars.
+    assert [where[f"BL[{i}]"] + 13.5 for i in range(4)] == [
+        348.5,
+        1188 - 348.5,
+        1188 + 348.5,
+        2376 - 348.5,
+    ]
+    assert [where[f"BLN[{i}]"] + 13.5 for i in range(4)] == [
+        245.5,
+        1188 - 245.5,
+        1188 + 245.5,
+        2376 - 245.5,
+    ]
+    # Every leaf's landing is a real M2 bar at its edge, at that leaf's own entry.
+    for i, leaf in enumerate(sorted(group.get_dependencies(), key=lambda c: c.name)):
+        bars = {
+            (x0, y0, x1, y1)
+            for (x0, y0), (x1, y1) in (
+                poly.get_bounding_box() for poly in leaf.polygons if poly.layers == [20]
+            )
+            if x0 == 0
+        }
+        wanted = spec.for_row(i).entry_y
+        assert {round((y0 + y1) / 2, 1) for _, y0, _, y1 in bars} >= {wanted["BL"], wanted["BLN"]}
+    with pytest.raises(ValueError, match="needs a bitline_entry"):
+        BitlineMuxSpec(grid_offset=13.5)
+
+
 def test_one_row_can_take_an_entry_too():
     spec = BitlineMuxSpec(bitline_entry=(224, 260))
     assert spec.has_entry_columns and spec.height == 297

@@ -47,24 +47,35 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
-from ..layout.layers import LAYERS, box, require_gdspy
-from .finfet import (
-    CONTACT_SIZE,
-    DEVICE_GATE_CUT_HEIGHT,
-    GATE_LIG_HEIGHT,
-    LI_RAIL_HEIGHT,
-    M1_MIN_SPACE,
-    M1_V0_ENCLOSURE,
-    M1_WIDTH,
-    POLY_OVERHANG,
-    SD_BAR_WIDTH,
-    SELECT_X_ENC,
-    VT_LAYERS,
-    build_device_band,
-)
-from .inverter import ACTIVE_ABUT_OVERHANG, M2_V1_ENCLOSURE
+from ..layout.grid import GATE_PITCH
+from ..layout.layers import box, require_gdspy
+from .finfet import M1_MIN_SPACE, SELECT_X_ENC
 from .row import RowBand, RowStack
+from .rowcell import (
+    CAP,
+    HALF,
+    ISLAND_OVERHANG,
+    M4_HALF,
+    M4_PITCH,
+    M4_X_GRID,
+    PAD,
+    TRACK,
+    V3_M3_CAP,
+    V3_M4_CAP,
+    draw_frame,
+    draw_rails,
+    gate_contact,
+    island,
+    label,
+    landing,
+    m2_track,
+    m3_column,
+    sd_contact,
+    square,
+    stack_to_m3,
+    supply_contact,
+    via_y,
+)
 
 __all__ = [
     "BITLINE_MUX_PINS",
@@ -76,28 +87,7 @@ __all__ = [
 
 BITLINE_MUX_PINS = ("BL", "BLN", "SA", "SAN", "PRECHN", "YSEL", "YSELN", "VDD", "VSS")
 
-_HALF = CONTACT_SIZE // 2  # 9: half a via, half an 18 nm track
-_CAP = _HALF + M1_V0_ENCLOSURE  # 14: metal past a via along its own track
-_PAD = _HALF + M2_V1_ENCLOSURE  # 17: M2 past a V1
-_TRACK = M1_WIDTH + M1_MIN_SPACE  # 36
-_HALF_SD = SD_BAR_WIDTH // 2
-_HALF_LIG = GATE_LIG_HEIGHT // 2
-_HALF_CUT = DEVICE_GATE_CUT_HEIGHT // 2
-_HALF_RAIL = LI_RAIL_HEIGHT // 2
-_LIG_PAST_GATE = 1
 _DEVICE_COLUMNS = 8  # gate pitches the six devices and their two end dummies take
-
-_M1_PIN = (LAYERS["M1_PIN"]["layer"], LAYERS["M1_PIN"]["datatype"])
-_M2_PIN = (LAYERS["M2_PIN"]["layer"], LAYERS["M2_PIN"]["datatype"])
-_M3_PIN = (LAYERS["M3_PIN"]["layer"], LAYERS["M3_PIN"]["datatype"])
-_M4_PIN = (LAYERS["M4_PIN"]["layer"], LAYERS["M4_PIN"]["datatype"])
-_PIN_LAYERS = {"M1": _M1_PIN, "M2": _M2_PIN, "M3": _M3_PIN, "M4": _M4_PIN}
-
-_M4_HALF = 12  # M4 is 24 nm wide, and a V3 is exactly as tall as its M4
-_M4_PITCH = 48
-_M4_X_GRID = 24  # the public deck holds M4 vertices to a 24 nm grid in x
-_V3_M3_CAP = _M4_HALF + 5  # M3 past a V3, along the column
-_V3_M4_CAP = _HALF + 11  # M4 past a V3, along the track
 
 
 @dataclass(frozen=True)
@@ -126,6 +116,15 @@ class BitlineMuxSpec:
             cell's M2 bitlines sit on them.
         bitline_layer: the metal they arrive on.  M2 and M4 both run along the
             bitline; an 8T array has port A on one and port B on the other.
+        grid_offset: nm the leaf's bottom sits above the bottom of the array
+            row that delivers its bitlines, ``bitline_entry`` staying measured
+            from the row.  A leaf centres a fin *space* on its edge, as ASAP7's
+            standard cells do; an SRAM bitcell centres a *fin* there.  Placed
+            ``13.5`` (half the fin pitch) up, the leaf's fins fall on the
+            array's grid and the two can abut, which is how the released ASAP7
+            bank places its periphery.  In a group the flipped leaves sit that
+            far *down* from their rows, so their landings move the other way;
+            `for_row` draws each leaf accordingly.
     """
 
     n_fins: int = 3
@@ -137,6 +136,7 @@ class BitlineMuxSpec:
     rows: int = 1
     bitline_entry: tuple[float, float] | None = None
     bitline_layer: Literal["M2", "M4"] = "M2"
+    grid_offset: float = 0.0
 
     def __post_init__(self) -> None:
         for name in ("selects", "select", "rows"):
@@ -165,15 +165,17 @@ class BitlineMuxSpec:
                     f"bitline_entry is (y_BL, y_BLN), got {self.bitline_entry!r}"
                 )
             object.__setattr__(self, "bitline_entry", entry)
+        elif self.grid_offset:
+            raise ValueError("grid_offset places the array's bitlines, so it needs a bitline_entry")
         # RowStack and FinFETSpec reject what cannot be drawn.
         n_band, p_band = self.bands
         # Six M2 tracks have to fit between the two via rows; see `tracks_y`.
-        if self.tracks_y["BLN"] + _HALF + M1_MIN_SPACE > self.tracks_y["YSEL"] - _HALF:
+        if self.tracks_y["BLN"] + HALF + M1_MIN_SPACE > self.tracks_y["YSEL"] - HALF:
             raise ValueError(
                 f"an n band of {n_band.height} nm leaves no room for both bitline "
                 "tracks under the gate contacts; use at least 135 nm"
             )
-        if self.tracks_y["YSELN"] + _HALF + M1_MIN_SPACE > p_band.contact_y - _PAD:
+        if self.tracks_y["YSELN"] + HALF + M1_MIN_SPACE > via_y(p_band) - PAD:
             raise ValueError(
                 f"a p band of {p_band.height} nm leaves no room for the select tie "
                 "under the via row; use at least 162 nm"
@@ -184,16 +186,16 @@ class BitlineMuxSpec:
     def _check_entry(self) -> None:
         """Reject an entry that would put two nets' metal within a space of each other."""
         ys = self.entry_y
-        half = _HALF if self.bitline_layer == "M2" else _M4_HALF
+        half = HALF if self.bitline_layer == "M2" else M4_HALF
         for net, y in ys.items():
-            if not half + _HALF <= y <= self.height - half - _HALF:
+            if not half + HALF <= y <= self.height - half - HALF:
                 raise ValueError(
                     f"{net} enters at y={y}, outside the {self.height} nm leaf"
                 )
         if self.bitline_layer == "M4":
-            if abs(ys["BL"] - ys["BLN"]) < _M4_PITCH:
+            if abs(ys["BL"] - ys["BLN"]) < M4_PITCH:
                 raise ValueError(
-                    f"M4 bitlines need {_M4_PITCH} nm between them, got {ys}"
+                    f"M4 bitlines need {M4_PITCH} nm between them, got {ys}"
                 )
             return
         # On M2 the entry shares the left margin with the other bitline's
@@ -204,13 +206,13 @@ class BitlineMuxSpec:
         for net, other in (("BL", "BLN"), ("BLN", "BL")):
             y = ys[net]
             for y_other in (*self.track_ys(other), ys[other], *ties):
-                if abs(y - y_other) < _TRACK:
+                if abs(y - y_other) < TRACK:
                     raise ValueError(
-                        f"{net} entering on M2 at y={y} is within {_TRACK} nm of other "
+                        f"{net} entering on M2 at y={y} is within {TRACK} nm of other "
                         f"M2 at y={y_other}"
                     )
             for y_own in self.track_ys(net):
-                if 0 < abs(y - y_own) < _TRACK:
+                if 0 < abs(y - y_own) < TRACK:
                     raise ValueError(
                         f"{net} entering on M2 at y={y} crowds its own track at y={y_own}; "
                         "enter on the track or a full pitch from it"
@@ -270,7 +272,23 @@ class BitlineMuxSpec:
             # Tenths of a nanometre, so that 245.5 stays a legal cell name.
             y_bl, y_bln = (round(10 * y) for y in self.bitline_entry)
             tag += f"_{self.bitline_layer.lower()}in{y_bl}x{y_bln}"
+            if self.grid_offset:
+                tag += f"g{round(10 * self.grid_offset)}"
         return tag
+
+    def for_row(self, index: int) -> BitlineMuxSpec:
+        """The leaf drawn for row `index` of a group: its select, and its entry on its own edge.
+
+        Odd rows are flipped, so with a `grid_offset` their bitlines cross
+        their edge as far *above* the entry as the even rows' cross below it.
+        The result has no offset of its own: it is what is drawn.
+        """
+        spec = replace(self, select=index)
+        if not self.grid_offset:
+            return spec
+        sign = 1 if index % 2 else -1
+        entry = tuple(y + sign * self.grid_offset for y in self.bitline_entry)
+        return replace(spec, bitline_entry=entry, grid_offset=0.0)
 
     # ── Columns ───────────────────────────────────────────────────────────────
     @property
@@ -286,12 +304,12 @@ class BitlineMuxSpec:
     def columns_left(self) -> int:
         """Empty gate pitches left of the devices: ``YSEL`` tracks, entry columns."""
         tracks = self.selects + (2 if self.has_entry_columns else 0)
-        return max(0, math.ceil((_TRACK * tracks - 81) / GATE_PITCH))
+        return max(0, math.ceil((TRACK * tracks - 81) / GATE_PITCH))
 
     @property
     def columns_right(self) -> int:
         """Empty gate pitches right of the devices, for the ``YSELN`` tracks."""
-        return max(0, math.ceil((_TRACK * self.selects - 27) / GATE_PITCH))
+        return max(0, math.ceil((TRACK * self.selects - 27) / GATE_PITCH))
 
     @property
     def width(self) -> int:
@@ -321,8 +339,8 @@ class BitlineMuxSpec:
         x = self.sd_x
         tracks = {"SA": x["x0"], "SAN": x["x4"], "PRECHN": x["x2"]}
         for j in range(self.selects):
-            tracks[f"YSEL[{j}]"] = x["x0"] - _TRACK * (j + 1)
-            tracks[f"YSELN[{j}]"] = x["xb"] + _TRACK * (j + 1)
+            tracks[f"YSEL[{j}]"] = x["x0"] - TRACK * (j + 1)
+            tracks[f"YSELN[{j}]"] = x["xb"] + TRACK * (j + 1)
         return tracks
 
     @property
@@ -330,16 +348,19 @@ class BitlineMuxSpec:
         """X of the two entry columns, outside every select track; ``BL`` outermost."""
         x0 = self.sd_x["x0"]
         return {
-            "BL": x0 - _TRACK * (self.selects + 2),
-            "BLN": x0 - _TRACK * (self.selects + 1),
+            "BL": x0 - TRACK * (self.selects + 2),
+            "BLN": x0 - TRACK * (self.selects + 1),
         }
 
     @property
     def entry_y(self) -> dict[str, float]:
-        """Y at which each bitline crosses the left edge."""
+        """Y at which each bitline crosses the left edge of this leaf as drawn (unflipped)."""
         if self.bitline_entry is None:
             return {net: self.tracks_y[net] for net in ("BL", "BLN")}
-        return dict(zip(("BL", "BLN"), self.bitline_entry, strict=True))
+        return {
+            net: y - self.grid_offset
+            for net, y in zip(("BL", "BLN"), self.bitline_entry, strict=True)
+        }
 
     def track_ys(self, net: str) -> tuple[int, ...]:
         """Y of `net`'s M2 track in every row; the upper row is the lower one mirrored."""
@@ -356,10 +377,11 @@ class BitlineMuxSpec:
         """
         n_band, _ = self.bands
         # 80 on the default row.
-        bl = int(n_band.contact_y) + _PAD + M1_MIN_SPACE + _HALF
+        # The landing on the via row lies along the track, 18 nm tall.
+        bl = via_y(n_band) + HALF + M1_MIN_SPACE + HALF + 3
         # 152: its V1 sits on the gate contact's M1 bar, above the LIG.
-        ysel = self.seam_y + _PAD
-        return {"BL": bl, "BLN": bl + _TRACK, "YSEL": ysel, "YSELN": ysel + _TRACK}
+        ysel = self.seam_y + PAD
+        return {"BL": bl, "BLN": bl + TRACK, "YSEL": ysel, "YSELN": ysel + TRACK}
 
     @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
@@ -368,8 +390,8 @@ class BitlineMuxSpec:
         mid = self.height / 2
         rails = {net: y for y, net in reversed(self.rails)}
         return {
-            "BL": (self.bitline_layer, (_PAD, entry["BL"])),
-            "BLN": (self.bitline_layer, (_PAD, entry["BLN"])),
+            "BL": (self.bitline_layer, (PAD, entry["BL"])),
+            "BLN": (self.bitline_layer, (PAD, entry["BLN"])),
             "SA": ("M3", (tx["SA"], mid)),
             "SAN": ("M3", (tx["SAN"], mid)),
             "PRECHN": ("M3", (tx["PRECHN"], mid)),
@@ -378,6 +400,40 @@ class BitlineMuxSpec:
             "VDD": ("M1", (self.width / 2, rails["VDD"])),
             "VSS": ("M1", (self.width / 2, rails["VSS"])),
         }
+
+    @property
+    def group_cell_name(self) -> str:
+        return f"{self._size_tag}_group{self.selects}{self._variant_tag}"
+
+    def group_pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
+        """``pin -> (metal, (x, y))`` of a `selects`-to-one group of this leaf.
+
+        Bitlines enter at the left edge of each leaf, the flipped ones' at
+        their entry mirrored; selects are on their M3 tracks; the shared nets
+        once; and every rail once, since each is its own conductor until a
+        power grid joins them.
+        """
+        height, tx = self.height, self.track_x
+        pins: dict[str, tuple[str, tuple[float, float]]] = {}
+        for i in range(self.selects):
+            y0 = (i + 1) * height if i % 2 else i * height
+            entry = self.for_row(i).entry_y
+            for pin in ("BL", "BLN"):
+                y_pin = y0 - entry[pin] if i % 2 else y0 + entry[pin]
+                pins[f"{pin}[{i}]"] = (self.bitline_layer, (PAD, y_pin))
+            for pin in ("YSEL", "YSELN"):
+                pins[f"{pin}[{i}]"] = (
+                    "M3",
+                    (tx[f"{pin}[{i}]"], i * height + height / 2),
+                )
+        for pin in ("SA", "SAN", "PRECHN"):
+            pins[pin] = ("M3", (tx[pin], height / 2))
+        for k in range(self.rows * self.selects + 1):
+            pins[f"{'VDD' if k % 2 else 'VSS'}{'' if k < 2 else f'.{k}'}"] = (
+                "M1",
+                (self.width / 2, k * self.row_height),
+            )
+        return pins
 
     # ── Netlist ───────────────────────────────────────────────────────────────
     @property
@@ -413,22 +469,6 @@ class BitlineMuxSpec:
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-def _square(cell: Any, layer: str, x: float, y: float) -> None:
-    box(cell, layer, x - _HALF, y - _HALF, x + _HALF, y + _HALF)
-
-
-def _stack_to_m3(cell: Any, x: float, y: float) -> None:
-    """V1, an M2 landing turned *along the column*, and V2, on an M1 pad at (x, y).
-
-    Neighbouring columns are 54 nm apart.  Two M2 landings lying along the
-    track would face each other tip to tip at 20 nm, where two short edges need
-    31; standing up, they face side to side at 36.
-    """
-    _square(cell, "V1", x, y)
-    box(cell, "M2", x - _HALF, y - _PAD, x + _HALF, y + _PAD)
-    _square(cell, "V2", x, y)
-
-
 def _new_cell(name: str, lib: Any) -> Any:
     if lib is not None:
         return lib.new_cell(name)
@@ -440,89 +480,37 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     n_band, p_band = spec.bands
     width, height, seam = spec.width, spec.row_height, spec.seam_y
     x, g, tx, ty = spec.sd_x, spec.gate_x, spec.track_x, spec.tracks_y
-    half_gate = GATE_WIDTH // 2
 
-    # Implant and well tile the row band by band, the whole width of the cell.
-    for band in (n_band, p_band):
-        box(cell, band.implant, 0, band.y0, width, band.y1)
-        if band.in_nwell:
-            box(cell, "NWELL", 0, band.y0, width, band.y1)
-    if vt_layer := VT_LAYERS[spec.vt]:
-        box(cell, vt_layer, 0, 0, width, height)
-
-    # FIN and GATE are manufacturing grids; every stripe is one gate through
-    # both bands, cut on the rails.  Which band has diffusion under it is what
-    # makes it an nFET's gate, a pFET's, or nobody's.
-    for y_fin in spec.row_stack.fin_grid_ys:
-        box(cell, "FIN", 0, y_fin, width, y_fin + FIN_WIDTH)
-    for x_gate in spec.gate_grid_xs:
-        box(
-            cell,
-            "GATE",
-            x_gate - half_gate,
-            -POLY_OVERHANG,
-            x_gate + half_gate,
-            height + POLY_OVERHANG,
-        )
-    for y_rail, _ in spec.row_stack.rails:
-        box(cell, "GATE_CUT", 0, y_rail - _HALF_CUT, width, y_rail + _HALF_CUT)
+    draw_frame(cell, spec.row_stack, width, spec.vt)
 
     # Diffusion.  One p island under the four pFETs; two n islands, one under
     # each select nFET, 200 nm apart with the pFETs' gates passing between them.
-    over = ACTIVE_ABUT_OVERHANG
-    islands = (
-        (p_band, ("x0", "x1", "x2", "x3", "x4")),
-        (n_band, ("xa", "x0")),
-        (n_band, ("x4", "xb")),
-    )
-    for band, columns in islands:
-        xs = [x[column] for column in columns]
-        build_device_band(
-            cell,
-            band.spec,
-            y0=band.y0,
-            sd_xs=xs,
-            active_x=(xs[0] - over, xs[-1] + over),
-        )
+    island(cell, p_band, [x[c] for c in ("x0", "x1", "x2", "x3", "x4")])
+    island(cell, n_band, [x["xa"], x["x0"]])
+    island(cell, n_band, [x["x4"], x["xb"]])
     # The implant encloses the outermost diffusion.
-    assert x["xa"] - over >= SELECT_X_ENC
+    assert x["xa"] - ISLAND_OVERHANG >= SELECT_X_ENC
 
-    # Rails.  The precharge source is the only supply contact: its LISD carries
-    # on to the VDD rail and the V0 sits on the rail, over an LI rail.
-    for y_rail, _ in spec.row_stack.rails:
-        box(cell, "LIG", 0, y_rail - _HALF_RAIL, width, y_rail + _HALF_RAIL)
-        box(cell, "M1", 0, y_rail - _HALF, width, y_rail + _HALF)
-    p_lo, _ = p_band.active_span
-    box(cell, "LISD", x["x2"] - _HALF_SD, p_lo, x["x2"] + _HALF_SD, p_band.rail_y)
-    _square(cell, "V0", x["x2"], p_band.rail_y)
+    # Rails.  The precharge source is the only supply contact.
+    draw_rails(cell, spec.row_stack, width)
+    supply_contact(cell, p_band, x["x2"])
 
     # Every other diffusion column: a V0 and an M1 pad on its band's via row.
     # The two bitline columns of the n band carry their pad up to the BL track.
-    y_n, y_p = int(n_band.contact_y), int(p_band.contact_y)
     for column in ("x0", "x1", "x3", "x4"):
-        _square(cell, "V0", x[column], y_p)
-        box(cell, "M1", x[column] - _HALF, y_p - _CAP, x[column] + _HALF, y_p + _CAP)
+        y_p = sd_contact(cell, p_band, x[column])
     for column in ("x0", "x4"):
-        _square(cell, "V0", x[column], y_n)
-        box(cell, "M1", x[column] - _HALF, y_n - _CAP, x[column] + _HALF, y_n + _CAP)
+        y_n = sd_contact(cell, n_band, x[column])
     for column in ("xa", "xb"):
-        _square(cell, "V0", x[column], y_n)
-        box(
-            cell,
-            "M1",
-            x[column] - _HALF,
-            y_n - _CAP,
-            x[column] + _HALF,
-            ty["BL"] + _CAP,
-        )
-        _square(cell, "V1", x[column], ty["BL"])
+        sd_contact(cell, n_band, x[column], reach=ty["BL"] + CAP)
+        square(cell, "V1", x[column], ty["BL"])
 
     # Shared nets, straight through on M3.  SA and SAN tap both bands of their
     # own column; PRECHN taps its gate contact (below).
     for net in ("SA", "SAN"):
-        box(cell, "M3", tx[net] - _HALF, 0, tx[net] + _HALF, height)
-        for y_via in (y_n, y_p):
-            _stack_to_m3(cell, tx[net], y_via)
+        m3_column(cell, tx[net], 0, height)
+        landing(cell, n_band, tx[net])
+        landing(cell, p_band, tx[net])
 
     # Bitlines.  BL comes in on its track, meets the n column it passes first,
     # and rides a short M3 jumper over the seam to its p column.  BLN crosses
@@ -530,38 +518,24 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     # track starts at the cell edge, or at its entry column if there is one.
     start = {net: 0 for net in ("BL", "BLN")}
     if spec.has_entry_columns:
-        start = {net: x_entry - _PAD for net, x_entry in spec.entry_x.items()}
-    box(cell, "M2", start["BL"], ty["BL"] - _HALF, x["x1"] + _PAD, ty["BL"] + _HALF)
-    box(cell, "M2", start["BLN"], ty["BLN"] - _HALF, x["xb"] + _PAD, ty["BLN"] + _HALF)
-    box(cell, "M2", x["xb"] - _PAD, ty["BL"] - _HALF, x["xb"] + _PAD, ty["BL"] + _HALF)
+        start = {net: x_entry - PAD for net, x_entry in spec.entry_x.items()}
+    m2_track(cell, ty["BL"], start["BL"], x["x1"] + PAD)
+    m2_track(cell, ty["BLN"], start["BLN"], x["xb"] + PAD)
+    m2_track(cell, ty["BL"], x["xb"] - PAD, x["xb"] + PAD)
     for column, track in (("x1", "BL"), ("x3", "BLN")):
-        _square(cell, "V2", x[column], ty[track])
-        box(
-            cell,
-            "M3",
-            x[column] - _HALF,
-            ty[track] - _CAP,
-            x[column] + _HALF,
-            y_p + _CAP,
-        )
-        _stack_to_m3(cell, x[column], y_p)
+        m3_column(cell, x[column], ty[track] - CAP, y_p + CAP, vias=[ty[track]])
+        stack_to_m3(cell, x[column], y_p)
     # BLN's n column, up from the BL track's height to its own.
-    for y_via in (ty["BL"], ty["BLN"]):
-        _square(cell, "V2", x["xb"], y_via)
-    box(cell, "M3", x["xb"] - _HALF, ty["BL"] - _CAP, x["xb"] + _HALF, ty["BLN"] + _CAP)
+    m3_column(
+        cell, x["xb"], ty["BL"] - CAP, ty["BLN"] + CAP, vias=[ty["BL"], ty["BLN"]]
+    )
 
-    # Gate contacts, on the seam.  One LIG pad per run of same-net gates.
-    def pad(first: str, last: str) -> None:
-        box(cell, "LIG", g[first] - half_gate - _LIG_PAST_GATE, seam - _HALF_LIG,
-            g[last] + half_gate + _LIG_PAST_GATE, seam + _HALF_LIG)  # fmt: skip
-
-    # PRECHN: one pad under both precharge gates, contacted between them, where
-    # the n band has nothing; the M1 bar drops to the n via row to meet its M3.
-    pad("G1", "G2")
-    _square(cell, "V0", x["x2"], seam)
-    box(cell, "M1", x["x2"] - _HALF, y_n - _CAP, x["x2"] + _HALF, seam + _CAP)
-    box(cell, "M3", tx["PRECHN"] - _HALF, 0, tx["PRECHN"] + _HALF, height)
-    _stack_to_m3(cell, x["x2"], y_n)
+    # Gate contacts, on the seam.  PRECHN: one pad under both precharge gates,
+    # contacted between them, where the n band has nothing; the M1 bar drops
+    # to the n via row to meet its M3.
+    gate_contact(cell, seam, [g["G1"], g["G2"]], x["x2"], y_n - CAP)
+    m3_column(cell, tx["PRECHN"], 0, height)
+    landing(cell, n_band, x["x2"])
 
     # YSEL on the two outer gates, YSELN on the two inner ones.  Each is tied on
     # its own M2 track and taps its own select among the group's M3 tracks.
@@ -569,24 +543,19 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
         y_tie = ty[role]
         track = tx[f"{role}[{spec.select}]"]
         for gate in gates:
-            pad(gate, gate)
-            _square(cell, "V0", g[gate], seam)
-            box(cell, "M1", g[gate] - _HALF, seam - _CAP, g[gate] + _HALF, y_tie + _CAP)
-            _square(cell, "V1", g[gate], y_tie)
+            gate_contact(cell, seam, [g[gate]], g[gate], y_tie + CAP)
         reach = [g[gates[0]], g[gates[1]], track]
-        box(
+        m2_track(
             cell,
-            "M2",
-            min(reach) - _PAD,
-            y_tie - _HALF,
-            max(reach) + _PAD,
-            y_tie + _HALF,
+            y_tie,
+            min(reach) - PAD,
+            max(reach) + PAD,
+            vias=[g[gates[0]], g[gates[1]]],
         )
-        _square(cell, "V2", track, y_tie)
+        square(cell, "V2", track, y_tie)
     for j in range(spec.selects):
         for role in ("YSEL", "YSELN"):
-            track = tx[f"{role}[{j}]"]
-            box(cell, "M3", track - _HALF, 0, track + _HALF, height)
+            m3_column(cell, tx[f"{role}[{j}]"], 0, height)
 
 
 def _draw_entry(cell: Any, spec: BitlineMuxSpec) -> None:
@@ -596,26 +565,26 @@ def _draw_entry(cell: Any, spec: BitlineMuxSpec) -> None:
         via_ys = set(spec.track_ys(net))
         if spec.bitline_layer == "M2":
             via_ys.add(y_in)
-            box(cell, "M2", 0, y_in - _HALF, x_entry + _PAD, y_in + _HALF)
-            ends = [(y - _CAP, y + _CAP) for y in via_ys]
+            box(cell, "M2", 0, y_in - HALF, x_entry + PAD, y_in + HALF)
+            ends = [(y - CAP, y + CAP) for y in via_ys]
         else:
-            reach = x_entry + _V3_M4_CAP
-            reach += -reach % _M4_X_GRID
-            box(cell, "M4", 0, y_in - _M4_HALF, reach, y_in + _M4_HALF)
+            reach = x_entry + V3_M4_CAP
+            reach += -reach % M4_X_GRID
+            box(cell, "M4", 0, y_in - M4_HALF, reach, y_in + M4_HALF)
             box(
                 cell,
                 "V3",
-                x_entry - _HALF,
-                y_in - _M4_HALF,
-                x_entry + _HALF,
-                y_in + _M4_HALF,
+                x_entry - HALF,
+                y_in - M4_HALF,
+                x_entry + HALF,
+                y_in + M4_HALF,
             )
-            ends = [(y - _CAP, y + _CAP) for y in via_ys]
-            ends.append((y_in - _V3_M3_CAP, y_in + _V3_M3_CAP))
+            ends = [(y - CAP, y + CAP) for y in via_ys]
+            ends.append((y_in - V3_M3_CAP, y_in + V3_M3_CAP))
         for y_via in via_ys:
-            _square(cell, "V2", x_entry, y_via)
-        box(cell, "M3", x_entry - _HALF, min(lo for lo, _ in ends),
-            x_entry + _HALF, max(hi for _, hi in ends))  # fmt: skip
+            square(cell, "V2", x_entry, y_via)
+        box(cell, "M3", x_entry - HALF, min(lo for lo, _ in ends),
+            x_entry + HALF, max(hi for _, hi in ends))  # fmt: skip
 
 
 def build_bitline_mux(
@@ -649,15 +618,10 @@ def build_bitline_mux(
     if draw_pin_labels:
         for pin, (metal, origin) in spec.pin_positions.items():
             if pin not in ("VDD", "VSS"):
-                layer, texttype = _PIN_LAYERS[metal]
-                cell.add(gdspy.Label(pin, origin, layer=layer, texttype=texttype))
+                label(cell, pin, metal, origin)
         # Every rail is its own conductor until a power grid joins them.
         for y_rail, net in spec.rails:
-            cell.add(
-                gdspy.Label(
-                    net, (spec.width / 2, y_rail), layer=_M1_PIN[0], texttype=_M1_PIN[1]
-                )
-            )
+            label(cell, net, "M1", (spec.width / 2, y_rail))
     box(cell, "BOUNDARY", 0, 0, spec.width, spec.height)
     return cell
 
@@ -690,37 +654,21 @@ def build_bitline_mux_group(
     """
     spec = spec or BitlineMuxSpec()
     gdspy = require_gdspy()
-    cell_name = name or f"{spec._size_tag}_group{spec.selects}{spec._variant_tag}"
+    cell_name = name or spec.group_cell_name
     cell = _new_cell(cell_name, lib)
-    height, tx, entry = spec.height, spec.track_x, spec.entry_y
-    layers = _PIN_LAYERS
-
-    def label(text: str, metal: str, origin: tuple[float, float]) -> None:
-        if draw_pin_labels:
-            cell.add(
-                gdspy.Label(
-                    text, origin, layer=layers[metal][0], texttype=layers[metal][1]
-                )
-            )
+    height = spec.height
 
     for i in range(spec.selects):
-        leaf_spec = replace(spec, select=i)
+        leaf_spec = spec.for_row(i)
         leaf = build_bitline_mux(
             leaf_spec, name=f"{cell_name}__leaf{i}", lib=lib, draw_pin_labels=False
         )
         flipped = bool(i % 2)
         y0 = (i + 1) * height if flipped else i * height
         cell.add(gdspy.CellReference(leaf, origin=(0, y0), x_reflection=flipped))
-        for pin in ("BL", "BLN"):
-            y_pin = y0 - entry[pin] if flipped else y0 + entry[pin]
-            label(f"{pin}[{i}]", spec.bitline_layer, (_PAD, y_pin))
-        for pin in ("YSEL", "YSELN"):
-            label(f"{pin}[{i}]", "M3", (tx[f"{pin}[{i}]"], i * height + height / 2))
-    for pin in ("SA", "SAN", "PRECHN"):
-        label(pin, "M3", (tx[pin], height / 2))
-    # Every rail is its own conductor until a power grid joins them: name them all.
-    for k in range(spec.rows * spec.selects + 1):
-        label("VDD" if k % 2 else "VSS", "M1", (spec.width / 2, k * spec.row_height))
+    if draw_pin_labels:
+        for pin, (metal, origin) in spec.group_pin_positions().items():
+            label(cell, pin.split(".")[0], metal, origin)
     box(cell, "BOUNDARY", 0, 0, spec.width, spec.selects * height)
     return cell
 

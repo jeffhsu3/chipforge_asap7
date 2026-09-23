@@ -15,19 +15,16 @@ The package is a standalone, importable library — it does **not** depend on
 chipforge, so any project can consume it.
 
 ```bash
-# from another uv project, tracking the checkout live
-uv add --editable /home/jeff/iv4/repos/chipforge_asap7
-
-# or pin it in that project's pyproject.toml
-#   [project]
-#   dependencies = ["chipforge-asap7[gds]"]
-#   [tool.uv.sources]
-#   chipforge-asap7 = { path = "/home/jeff/iv4/repos/chipforge_asap7", editable = true }
-
-# plain pip works too
-pip install /home/jeff/iv4/repos/chipforge_asap7           # constants + grid math
-pip install "/home/jeff/iv4/repos/chipforge_asap7[gds]"    # + the draw_* helpers
+git clone https://github.com/jeffhsu3/chipforge_asap7.git
+cd chipforge_asap7
+python -m pip install .          # constants and grid math
+python -m pip install ".[gds]"  # also install gdspy for GDS drawing
 ```
+
+The repository currently requires GitHub access. To develop against a local
+checkout, run `python -m pip install -e ".[gds]"` from the repository root.
+The package is licensed under [BSD 3-Clause](LICENSE); see
+[third-party notices](THIRD_PARTY_NOTICES.md) for the ASAP7 attribution.
 
 **`chipforge_asap7` has no required dependencies.** The layer map, the grid
 constants and every pure-geometry helper (`column_x`, `column_gate_track`,
@@ -513,6 +510,15 @@ leaves, which is also how an array flips alternate rows, so a flipped leaf
 finds its bitlines where its entry, flipped, says. Port A's strip goes on the
 left of the array mirrored in x, port B's on the right as drawn.
 
+The leaf centres a fin *space* on its edge, as ASAP7's standard cells do; an
+SRAM bitcell centres a *fin* there, so a leaf beside an array is half a fin
+pitch off its grid. `grid_offset=13.5` says the leaf is placed that far up
+the array's row, `bitline_entry` staying measured from the row: the fins land
+on one grid and the leaf can abut the array. This is how the released ASAP7
+bank places its periphery. A group's flipped leaves then sit that far *down*
+from their rows, so `for_row(i)` moves their landings the other way, and the
+group's `BL[i]` labels are where the leaf's edge meets each row's bar.
+
 Both are in the DRC and LVS tests above, alone, terminated and stacked, with a
 leaf whose upper row has lost its V2 as the case that must fail. Against the
 real `array_x2x4_sram_8t` (OpenFinRAM `tmp/bitline_io/`), with a strap per
@@ -522,6 +528,142 @@ precharge, and nothing else.
 
 Write driver, output latch and the per-group block around `SenseAmpSpec` are
 still to come.
+
+### Write driver and output latch
+
+The other two per-column IO cells, drawn on two of the leaf's rows (594 nm,
+VDD shared in the middle) so the three abut. Both keep the released bank's
+topology and take fins, band height and VT as parameters; the helpers they
+share with the leaf (frame, rails, contacts, via stacks, tracks) live in
+`chipforge_asap7.devices.rowcell`.
+
+```python
+from chipforge_asap7.devices import WriteDriverSpec, OutputLatchSpec
+
+WriteDriverSpec(n_fins=3, p_fins=3, keeper_fins=1)   # 648 x 594 nm, "wrdrv_3n3p_k1_h135x162"
+OutputLatchSpec(n_fins=3, p_fins=3, fingers=2)        # 756 x 594 nm, "outlatch_3n3p_f2_h135x162"
+```
+
+`WriteDriverSpec` is the released `write_driver_sram`: an inverter, two nFET
+pass gates that load `(D, DN)` into a cross-coupled latch while write enable
+is low, and two transmission gates that put the latch on `SA`/`SAN` while it
+is high, so the latch's own pull-downs write the bitline. The bottom row holds
+everything gated by write enable and the inverter; the row above holds the
+latch, whose pFET keepers (`keeper_fins`, one by default) are their own narrow
+island so a pass gate can overwrite them. `W`/`WN` climb between the rows on
+the M3 of the columns their transmission-gate pFETs sit on. `SA` and `SAN`
+are full-height M3 tracks as in the leaf; `D`, `WRENA`, `WRENAN` are M3 stubs
+from the bottom edge.
+
+`OutputLatchSpec` is the released latch and driver: two NAND2s cross-coupled
+as an SR latch that the sense amplifier's `QA`/`QAN` set (both high while it
+precharges, the latch's hold state), an inverter, and a tristate inverter
+onto the data pin enabled by `OE`/`OEB`. The latch is one five-column island
+per band with its series nodes uncontacted. The tristate is drawn in pairs of
+fingers (`fingers`, even), six stripes a pair, because its nFET and pFET
+enable stripes cannot share poly; `Q` collects the pairs on the p via row.
+`QA`/`QAN` leave on M3 at the bottom, `OE`/`OEB`/`Q` at the top.
+
+Every variant in `tests/test_write_driver_physical.py` and
+`tests/test_output_latch_physical.py` matches a unit-fin LVS reference (the
+uncontacted series nodes named per fin, as the NAND's are), reports only
+`ACTIVE.LUP.1` alone and nothing inside a filler/tap row, and a stronger
+keeper or more fingers than drawn is the case that fails. The three IO cells
+abutted on one row pair, terminated, report nothing.
+
+```bash
+uv run asap7-write-driver --keeper-fins 1 --out build/io/wrdrv.gds
+uv run asap7-output-latch --fingers 4 --out build/io/outlatch.gds
+```
+
+### Sense amplifier on the IO row
+
+`SenseAmpRowSpec` is the released amplifier drawn as an IO cell, 702 x 594 nm
+at the defaults, so the four column cells abut (`SenseAmpSpec` above stays
+the spacious tile-per-transistor version). A current-latched differential
+pair: `SA`/`SAN` gate the input nFETs, `SAE` the tail, the drains feed a
+cross-coupled nFET pair under a cross-coupled pFET pair, and `SAPRECHN`
+precharges and equalizes the outputs. The four off transistors the released
+cell keeps on its outputs as matching dummies are not drawn.
+
+```python
+from chipforge_asap7.devices import SenseAmpRowSpec
+
+SenseAmpRowSpec(n_fingers=2, tail_fingers=2)   # "sarow_3n3p_f2t2_h135x162", 702 x 594 nm
+SenseAmpRowSpec(n_fingers=4, tail_fingers=4)   # 1242 x 594 nm
+```
+
+The bottom row's n band is one interleaved chain, `52 57 QAN 57 52 VSS 52 58
+QA 58 52` under `SA QA QA SA SAE SAE SAN QAN QAN SAN`: each finger's input
+device and cross-coupled device share the uncontacted node between them and
+every `52` column joins on the 80 nm track. The cross-coupled pFETs need
+exactly the `QA`/`QAN` stripes, so they sit in that row's p band over them
+with no stripes of their own, `n_fingers` each. The row above holds the
+precharge and equalizer as one island whose four stripes share one
+`SAPRECHN` pad. `SA`, `SAN`, `SAE` leave on M3 at the bottom, `SAPRECHN`,
+`QA`, `QAN` at the top.
+
+Every variant in `tests/test_sense_amp_row_physical.py` matches a unit-fin
+reference, reports `ACTIVE.LUP.1` alone and nothing in a filler/tap row, a
+longer tail than drawn fails, and the four IO cells abutted on one row pair
+report nothing. In Xyce (TT, 0.7 V, 20 fF a side) the netlist resolves 10 mV
+of either polarity 13 ps after `SAE`, the released amplifier's polarity, 3 ps
+behind it.
+
+```bash
+uv run asap7-sense-amp-row --n-fingers 4 --tail-fingers 4 --out build/io/sarow.gds
+```
+
+### The column IO block
+
+`IoColumnSpec` places the four cells for one port and one data bit and joins
+them: the mux group at the left, its bitlines entering at the edge, and beside
+it a logic column one row pair per cell, sense amplifier, output latch, a
+tap with fillers, write driver. 1620 x 2376 nm for a 4:1 group of two-row
+leaves; the logic column is the widest cell, widened if need be so that every
+spare beside a narrower cell is at least a support cell.
+
+```python
+from chipforge_asap7.devices import IoColumnSpec, BitlineMuxSpec, build_io_column
+
+port_a = IoColumnSpec()   # BitlineMuxSpec(rows=2, bitline_entry=(348.5, 245.5)), defaults elsewhere
+port_b = IoColumnSpec(mux=BitlineMuxSpec(rows=2, bitline_entry=(510, 78), bitline_layer="M4"))
+cell = build_io_column(port_a)
+port_a.routes       # {"SA": [(96, [270, 810]), (1878, [270, 918])], ...}
+```
+
+What joins the cells is drawn on M4, the one layer none of them use: a
+horizontal wire with an 18 x 24 V3 on each M3 it meets, at a height where
+both exist. `SA`/`SAN` run from the group's full-height tracks to the
+amplifier's stubs and to the driver's columns; `QA`/`QAN` climb from the
+amplifier's risers into the latch's stubs directly above (where riser and
+stub share a column, the boundary is bridged on M3 and no M4 is drawn).
+Every other pin is the cell's own metal, labelled once: the per-leaf
+bitlines and selects, `PRECHN`, `SAE`, `SAPRECHN`, `D`, `WRENA`, `WRENAN`,
+`OE`, `OEB`, `Q`, and each rail. The controls leave at the block's top and
+bottom edges on M3, clear of the block's own M4, which is where a macro
+router can reach them: the write driver's from its top, the latch's `Q`,
+`OE`, `OEB` from its top, `QA`/`QAN` internal. `one_sense_phase=True` straps
+the amplifier's `SAPRECHN` to `SAE` on M3 and leaves one `SAE` pin, on the
+top stub; `block_netlist(spec)` is the whole block as one flat BSIM-CMG
+subcircuit, which is how OpenFinRAM's deck carries it.
+
+`tests/test_io_column_physical.py` holds the port-A and port-B blocks and an
+8:1 one with a bigger amplifier and driver to the public runset (nothing
+fires; without the tap, `ACTIVE.LUP.1` alone) and to a flat unit-fin LVS
+reference of all four cells (`render_io_column_lvs_schematic`); the
+reference with `QA` and `QAN` crossed between amplifier and latch is the case
+that fails.
+
+```bash
+uv run asap7-io-column --selects 4 --out build/io/iocol_port_a.gds
+uv run asap7-io-column --bitline-entry 510,78 --bitline-layer M4 --out build/io/iocol_port_b.gds
+```
+
+OpenFinRAM's `iocol_sram_8t_a/b` are this block (built there at the
+bitcell's bitline heights, port A mirrored), and its netlist is what the
+compiler's deck instantiates. Two blocks built into one gdspy library share
+their logic cells and supports.
 
 ### Parametric sense amplifier
 

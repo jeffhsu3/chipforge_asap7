@@ -3,6 +3,8 @@ name = "chipforge-asap7"
 dynamic = ["version"]
 description = "ASAP7 PDK layout primitives (fin/gate grids, layer map) for chipforge."
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.11"
 authors = [
     {name = "jeffhsu3", email = "jeffhsu3@gmail.com"},
@@ -31,15 +33,19 @@ pex = ["klayout-pex>=0.3.12,<0.4; python_version >= '3.12'"]
 [project.scripts]
 asap7-bitline-mux = "chipforge_asap7.devices.bitline_mux:main"
 asap7-inverter = "chipforge_asap7.devices.inverter:main"
+asap7-io-column = "chipforge_asap7.devices.io_column:main"
 asap7-nand = "chipforge_asap7.devices.nand:main"
+asap7-output-latch = "chipforge_asap7.devices.output_latch:main"
 asap7-reduce = "chipforge_asap7.verification.reduce:main"
 asap7-row-support = "chipforge_asap7.devices.row_support:main"
 asap7-sense-amp = "chipforge_asap7.devices.sense_amp:main"
+asap7-sense-amp-row = "chipforge_asap7.devices.sense_amp_row:main"
 asap7-wl-slice = "chipforge_asap7.devices.driver_slice:main"
+asap7-write-driver = "chipforge_asap7.devices.write_driver:main"
 asap7-verify = "chipforge_asap7.verification.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/jeffhsu3/chipforge"
+Homepage = "https://github.com/jeffhsu3/chipforge_asap7"
 
 [build-system]
 requires = ["hatchling"]
@@ -52,7 +58,7 @@ path = "src/chipforge_asap7/__init__.py"
 packages = ["src/chipforge_asap7"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "scripts", "README.md", "pyproject.toml"]
+include = ["src", "tests", "scripts", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "pyproject.toml"]
 
 [dependency-groups]
 dev = [

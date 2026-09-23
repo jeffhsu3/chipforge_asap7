@@ -18,10 +18,21 @@ from ..devices.bitline_mux import (
 from ..devices.driver_slice import DRIVER_SLICE_PINS, DriverSliceSpec
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
+from ..devices.io_column import (
+    IoColumnSpec,
+    block_series_nodes,
+    io_column_pins,
+)
+from ..devices.io_column import (
+    _block_devices as block_devices,
+)
 from ..devices.nand import NAND_PINS, NandSpec
+from ..devices.output_latch import OUTPUT_LATCH_PINS, OutputLatchSpec
 from ..devices.row_support import RowSupportSpec
 from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
+from ..devices.sense_amp_row import SenseAmpRowSpec
 from ..devices.sizing import WORDLINES_PER_SLICE
+from ..devices.write_driver import WRITE_DRIVER_PINS, WriteDriverSpec
 from ..layout.grid import FIN_WIDTH
 
 __all__ = [
@@ -385,6 +396,110 @@ def render_bitline_mux_lvs_schematic(
     )
 
 
+def render_write_driver_lvs_schematic(
+    spec: WriteDriverSpec, *, cell_name: str | None = None
+) -> str:
+    """Render the write driver as one LVS MOS per physical fin."""
+    bands = spec.bands
+    lines = []
+    for device, drain, gate, source, flavor, fins in spec.devices:
+        band = bands["n0"] if flavor == "n" else bands["p0"]
+        bulk = "VSS" if flavor == "n" else "VDD"
+        for fin in range(fins):
+            lines.append(
+                f"{device}_f{fin} {drain} {gate} {source} {bulk} {band.spec.model} "
+                f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            )
+    name = cell_name or spec.cell_name
+    return (
+        "* ASAP7 write driver LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(WRITE_DRIVER_PINS)}\n"
+        + "\n".join(lines)
+        + f"\n.ENDS {name}\n.END\n"
+    )
+
+
+def render_output_latch_lvs_schematic(
+    spec: OutputLatchSpec, *, cell_name: str | None = None
+) -> str:
+    """Render the output latch as one LVS MOS per physical fin.
+
+    The series nodes of the NAND stacks and the tristate are uncontacted
+    diffusion, one net per fin in the extraction, so they are named per fin
+    here too, as `_nand_units` does.
+    """
+    bands = spec.bands
+    series = spec.series_nodes
+    lines = []
+    for device, drain, gate, source, flavor, fins in spec.devices:
+        band = bands["n0"] if flavor == "n" else bands["p0"]
+        bulk = "VSS" if flavor == "n" else "VDD"
+        for fin in range(fins):
+            d, s_ = (
+                f"{net}_f{fin}" if net in series else net for net in (drain, source)
+            )
+            lines.append(
+                f"{device}_f{fin} {d} {gate} {s_} {bulk} {band.spec.model} "
+                f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            )
+    name = cell_name or spec.cell_name
+    return (
+        "* ASAP7 output latch LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(OUTPUT_LATCH_PINS)}\n"
+        + "\n".join(lines)
+        + f"\n.ENDS {name}\n.END\n"
+    )
+
+
+def render_sense_amp_row_lvs_schematic(
+    spec: SenseAmpRowSpec, *, cell_name: str | None = None
+) -> str:
+    """Render the row sense amplifier as one LVS MOS per physical fin, series nodes per fin."""
+    bands = spec.bands
+    series = spec.series_nodes
+    lines = []
+    for device, drain, gate, source, flavor, fins in spec.devices:
+        band = bands["n0"] if flavor == "n" else bands["p0"]
+        bulk = "VSS" if flavor == "n" else "VDD"
+        for fin in range(fins):
+            d, s_ = (
+                f"{net}_f{fin}" if net in series else net for net in (drain, source)
+            )
+            lines.append(
+                f"{device}_f{fin} {d} {gate} {s_} {bulk} {band.spec.model} "
+                f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            )
+    name = cell_name or spec.cell_name
+    return (
+        "* ASAP7 row sense amplifier LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {name} {' '.join(SENSE_AMP_PINS)}\n"
+        + "\n".join(lines)
+        + f"\n.ENDS {name}\n.END\n"
+    )
+
+
+def render_io_column_lvs_schematic(spec: IoColumnSpec, *, cell_name: str) -> str:
+    """Render one port's column IO flat, one MOS per fin, series nodes per fin."""
+    n_band, p_band = spec.mux.bands
+    series = block_series_nodes(spec)
+    lines = []
+    for device, d, g, s, flavor, fins, _ in block_devices(spec):
+        band = n_band if flavor == "n" else p_band
+        bulk = "VSS" if flavor == "n" else "VDD"
+        for fin in range(fins):
+            d_, s_ = (f"{net}_f{fin}" if net in series else net for net in (d, s))
+            lines.append(
+                f"{device}_f{fin} {d_} {g} {s_} {bulk} {band.spec.model} "
+                f"L={band.spec.gate_length}n W={FIN_WIDTH}n"
+            )
+    return (
+        "* ASAP7 column IO LVS reference: one MOS per FIN x GATE channel\n"
+        f".SUBCKT {cell_name} {' '.join(io_column_pins(spec))}\n"
+        + "\n".join(lines)
+        + f"\n.ENDS {cell_name}\n.END\n"
+    )
+
+
 def render_bitline_mux_group_lvs_schematic(
     spec: BitlineMuxSpec, *, cell_name: str
 ) -> str:
@@ -504,14 +619,16 @@ def normalize_asap7_cdl_reference(source: str | Path, output: str | Path) -> Pat
             continue
         try:
             fins = int(float(parameters["nfin"]))
+            fingers = int(float(parameters.get("nf", "1")))
             multiplier = int(float(parameters.get("m", "1")))
         except ValueError as error:
             raise ValueError(f"invalid ASAP7 MOS sizing in: {statement}") from error
-        if fins < 1 or multiplier < 1:
-            raise ValueError(f"NFIN and M must be positive in: {statement}")
+        if fins < 1 or fingers < 1 or multiplier < 1:
+            raise ValueError(f"NFIN, NF and M must be positive in: {statement}")
 
+        # A finger is a parallel device of NFIN fins, drawn as such.
         length = parameters.get("l", "20n")
-        for copy_index in range(fins * multiplier):
+        for copy_index in range(fins * fingers * multiplier):
             normalized.append(
                 f"{instance}__uf{copy_index + 1} {drain} {gate} {source_net} "
                 f"{bulk} {model} L={length} W={FIN_WIDTH}n"

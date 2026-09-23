@@ -81,6 +81,20 @@ def test_released_cdl_nfin_is_expanded_to_unit_fin_devices(tmp_path: Path):
     assert "NFIN" not in text.upper()
 
 
+def test_fingered_devices_expand_to_a_unit_fin_per_finger(tmp_path: Path):
+    # A driver slice's inverter: nfin fins in each of nf parallel fingers.
+    source = tmp_path / "reference.cdl"
+    source.write_text(
+        ".SUBCKT inv_fin_2n2p_2f A Y VDD VSS\n"
+        "M0 Y A VSS VSS nmos_rvt nfin=2 l=20n nf=2 m=1\n"
+        "M1 Y A VDD VDD pmos_rvt nfin=2 l=20n nf=2 m=1\n"
+        ".ENDS inv_fin_2n2p_2f\n"
+    )
+    text = normalize_asap7_cdl_reference(source, tmp_path / "unit.cdl").read_text()
+    assert text.count(" nmos_rvt ") == 4 and text.count(" pmos_rvt ") == 4
+    assert "M0__uf4 Y A VSS VSS nmos_rvt L=20n W=7n" in text
+
+
 def test_released_invxp33_lvs_when_public_release_is_available(
     tmp_path: Path, external_tool, require_klayout, released_library: Path
 ):
