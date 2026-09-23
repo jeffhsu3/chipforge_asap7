@@ -82,6 +82,11 @@ __all__ = [
     "build_bitline_mux_group",
 ]
 
+#: How far a group's sense lines stop short of its outer ends: half of M3's
+#: tip-to-tip space for two short edges (M3.S.4-5, 31 nm), rounded up, so
+#: two groups stacked end to end keep their sense lines apart.
+SENSE_END_CLEARANCE = 16
+
 BITLINE_MUX_PINS = ("BL", "BLN", "SA", "SAN", "PRECHN", "YSEL", "YSELN", "VDD", "VSS")
 
 _DEVICE_COLUMNS = 8  # gate pitches the six devices and their two end dummies take
@@ -510,9 +515,9 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
         square(cell, "V1", x[column], ty["BL"])
 
     # Shared nets, straight through on M3.  SA and SAN tap both bands of their
-    # own column; PRECHN taps its gate contact (below).
+    # own column (their tracks are drawn by the leaf, which knows whether its
+    # ends are a group's outer ends); PRECHN taps its gate contact (below).
     for net in ("SA", "SAN"):
-        m3_column(cell, tx[net], 0, height)
         landing(cell, n_band, tx[net])
         landing(cell, p_band, tx[net])
 
@@ -597,6 +602,7 @@ def build_bitline_mux(
     name: str | None = None,
     lib: Any = None,
     draw_pin_labels: bool = True,
+    open_ends: tuple[bool, bool] = (False, False),
 ) -> Any:
     """Draw `spec` and return the gdspy Cell (nanometre coordinates).
 
@@ -604,6 +610,13 @@ def build_bitline_mux(
     time mirrored about the VDD rail: everything that runs the height of a row
     on M3 meets itself there, which is all the wiring the copy needs apart from
     its bitlines.
+
+    ``SA`` and ``SAN`` run the leaf's height, except that an end marked in
+    `open_ends` (``(bottom, top)``) stops `SENSE_END_CLEARANCE` short: at a
+    group's outer ends, so that a group stacked on another's (the next bit's
+    column in an array of them) does not join their sense lines.  The select
+    and precharge tracks do run on; they are the same nets in every column
+    of a bank.
     """
     spec = spec or BitlineMuxSpec()
     gdspy = require_gdspy()
@@ -616,6 +629,14 @@ def build_bitline_mux(
         _draw_row(row, spec)
         cell.add(gdspy.CellReference(row))
         cell.add(gdspy.CellReference(row, origin=(0, spec.height), x_reflection=True))
+    bottom_open, top_open = open_ends
+    for net in ("SA", "SAN"):
+        m3_column(
+            cell,
+            spec.track_x[net],
+            SENSE_END_CLEARANCE if bottom_open else 0,
+            spec.height - (SENSE_END_CLEARANCE if top_open else 0),
+        )
     if spec.has_entry_columns:
         _draw_entry(cell, spec)
 
@@ -664,10 +685,17 @@ def build_bitline_mux_group(
 
     for i in range(spec.selects):
         leaf_spec = spec.for_row(i)
-        leaf = build_bitline_mux(
-            leaf_spec, name=f"{cell_name}__leaf{i}", lib=lib, draw_pin_labels=False
-        )
         flipped = bool(i % 2)
+        # The group's outer ends, in the leaf's own frame (a flipped leaf's
+        # bottom is on the group's top side).
+        outer = (i == 0, i == spec.selects - 1)
+        leaf = build_bitline_mux(
+            leaf_spec,
+            name=f"{cell_name}__leaf{i}",
+            lib=lib,
+            draw_pin_labels=False,
+            open_ends=outer[::-1] if flipped else outer,
+        )
         y0 = (i + 1) * height if flipped else i * height
         cell.add(gdspy.CellReference(leaf, origin=(0, y0), x_reflection=flipped))
     if draw_pin_labels:

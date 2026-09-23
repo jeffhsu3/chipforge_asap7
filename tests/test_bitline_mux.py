@@ -178,12 +178,39 @@ def test_upper_row_is_the_lower_one_mirrored_about_the_vdd_rail():
         boxes = _flat_boxes(cell, layer)
         mirrored = sorted((x0, 594 - y1, x1, 594 - y0) for x0, y0, x1, y1 in boxes)
         assert boxes == mirrored, layer
-    # The shared M3 tracks still run the full height, now as two halves.
-    for x_track in spec.track_x.values():
+    # The shared M3 tracks still run the full height: the row's as two halves,
+    # SA and SAN as one track the leaf draws over both rows.
+    for net, x_track in spec.track_x.items():
         spans = [
             (y0, y1) for x0, y0, x1, y1 in _flat_boxes(cell, "M3") if x0 == x_track - 9
         ]
-        assert spans == [(0, 297), (297, 594)]
+        if net in ("SA", "SAN"):
+            assert (0, 594) in spans, net
+        else:
+            assert spans == [(0, 297), (297, 594)], net
+
+
+def test_a_group_opens_its_sense_lines_at_its_outer_ends_only():
+    # Groups stacked end to end (a column per bit in an array) share their
+    # select and precharge tracks, which are one net per bank, but not their
+    # sense lines.
+    from chipforge_asap7.devices.bitline_mux import SENSE_END_CLEARANCE
+
+    group = build_bitline_mux_group(PORT_A, lib=_library())
+    height = PORT_A.selects * PORT_A.height
+    m3 = _flat_boxes(group, "M3")
+    for net, x_track in PORT_A.track_x.items():
+        on = [(y0, y1) for x0, y0, x1, y1 in m3 if x0 == x_track - 9]
+        low, high = min(y0 for y0, _ in on), max(y1 for _, y1 in on)
+        if net in ("SA", "SAN"):
+            assert (low, high) == (SENSE_END_CLEARANCE, height - SENSE_END_CLEARANCE), net
+            covered = sorted(on)  # and unbroken between them
+            reach = covered[0][1]
+            for y0, y1 in covered[1:]:
+                assert y0 <= reach, (net, y0, reach)
+                reach = max(reach, y1)
+        else:
+            assert (low, high) == (0, height), net
 
 
 @pytest.mark.parametrize("spec", [PORT_A, PORT_B], ids=["M2", "M4"])

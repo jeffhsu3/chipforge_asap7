@@ -58,7 +58,10 @@ def test_sense_lines_run_the_full_height_and_the_controls_leave_at_the_top(boxes
         assert (0, spec.height) in by_x[tx[net]]
     for net in ("D", "WRENA", "WRENAN"):
         (y0, y1) = max(by_x[tx[net]], key=lambda s: s[1] - s[0])
-        assert y1 == spec.height and 0 < y0 < spec.height / 2
+        # Short of the top edge by a tip-to-tip space, so a cell stacked
+        # above can keep metal on its bottom edge; the pin is still on it.
+        assert y1 == spec.height - 31 and 0 < y0 < spec.height / 2
+        assert y0 <= spec.pin_positions[net][1][1] <= y1
     assert tx["WRENAN"] - tx["D"] >= 3 * 54 and tx["WRENAN"] - tx["WRENA"] >= 2 * 54
     # W and WN climb from the bottom row's 80 nm track into the latch above.
     climbs = [

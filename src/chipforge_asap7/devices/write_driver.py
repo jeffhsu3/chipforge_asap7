@@ -63,6 +63,10 @@ _COLUMNS = 10  # diffusion columns; one dummy pitch each side
 _TIE_OFFSETS = (-19, 17, 53)
 
 
+#: How far the control columns stop short of the top edge: M3's tip-to-tip
+#: space for two short (<= 24 nm) edges facing each other (M3.S.4-5).
+TOP_CLEARANCE = 31
+
 @dataclass(frozen=True)
 class WriteDriverSpec:
     """A data latch and its transmission gates to the sense lines.
@@ -290,7 +294,11 @@ def build_write_driver(
     supply_contact(cell, k1, c[4])
 
     # Pins on M3: SA and SAN the full height so a column can run them through;
-    # D, WRENA and WRENAN from their ties up to the top edge.
+    # D, WRENA and WRENAN from their ties up to just short of the top edge.
+    # They are reached from above, not across the edge, and stopping an M3
+    # tip-to-tip space short lets a cell above keep metal on its own bottom
+    # edge (an IO column stacked on another bit's puts its precharge stub
+    # there).
     tx = spec.track_x
     m3_column(cell, tx["SA"], 0, height)
     m3_column(cell, tx["SAN"], 0, height)
@@ -304,7 +312,7 @@ def build_write_driver(
     sd_contact(cell, n0, c[0])
     landing(cell, n0, c[0])
     m3_column(
-        cell, tx["D"], y_n0 - CAP, height, vias=[tie_d]
+        cell, tx["D"], y_n0 - CAP, height - TOP_CLEARANCE, vias=[tie_d]
     )  # over its pad's landing too
     gate_contact(cell, seam0, [g(8)], g(8), tie_d - CAP)
     m2_track(cell, tie_d, c[0] - PAD, g(8) + PAD, vias=[g(8)])
@@ -331,7 +339,7 @@ def build_write_driver(
             g(stripes[-1]) + PAD,
             vias=[g(s) for s in stripes],
         )
-        m3_column(cell, tx[net], tie - CAP, height, vias=[tie])
+        m3_column(cell, tx[net], tie - CAP, height - TOP_CLEARANCE, vias=[tie])
 
     # W and WN.  Each starts on its pass gate's drain in the n band, runs along
     # the 80 nm track to the column of its transmission-gate pFET, and climbs
