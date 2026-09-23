@@ -21,10 +21,10 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .finfet import FinFETSpec
 from .sense_amp import (
     DEFAULT_N_FINS,
     DEFAULT_P_FINS,
-    SenseAmpSpec,
     sense_amp_transistors,
 )
 from .spice import (
@@ -134,11 +134,13 @@ def render_openfinram_sense_amp(
 
     if not nmos_model or not pmos_model:
         raise ValueError("nmos_model and pmos_model must be non-empty")
-    spec = SenseAmpSpec(n_fins=n_fins, p_fins=p_fins)
+    # FinFETSpec owns the legal ASAP7 fin range.
+    FinFETSpec(flavor="n", fins=n_fins)
+    FinFETSpec(flavor="p", fins=p_fins)
     lines = [".subckt sense_amp_sram sa san SAE SAPRECHN qa qan vdd vss"]
     for device in sense_amp_transistors():
         model = nmos_model if device.flavor == "n" else pmos_model
-        fins = spec.n_fins if device.flavor == "n" else spec.p_fins
+        fins = n_fins if device.flavor == "n" else p_fins
         lines.append(
             f"N{device.name} {device.drain} {device.gate} {device.source} "
             f"{device.bulk} {model} L=20n NFIN={fins}"

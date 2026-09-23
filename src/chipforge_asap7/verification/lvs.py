@@ -29,7 +29,7 @@ from ..devices.io_column import (
 from ..devices.nand import NAND_PINS, NandSpec
 from ..devices.output_latch import OUTPUT_LATCH_PINS, OutputLatchSpec
 from ..devices.row_support import RowSupportSpec
-from ..devices.sense_amp import SENSE_AMP_PINS, SenseAmpSpec, sense_amp_transistors
+from ..devices.sense_amp import SENSE_AMP_PINS
 from ..devices.sense_amp_row import SenseAmpRowSpec
 from ..devices.sizing import WORDLINES_PER_SLICE
 from ..devices.write_driver import WRITE_DRIVER_PINS, WriteDriverSpec
@@ -47,7 +47,6 @@ __all__ = [
     "render_nand_lvs_schematic",
     "render_nand_row_lvs_schematic",
     "render_row_support_lvs_schematic",
-    "render_sense_amp_lvs_schematic",
     "run_lvs",
 ]
 
@@ -127,40 +126,6 @@ def render_finfet_lvs_schematic(
     return (
         "* ASAP7 FinFET LVS reference: one MOS per FIN x GATE channel\n"
         f".SUBCKT {name} {d} {g} {s} {b}\n"
-        f"{body}\n"
-        f".ENDS {name}\n"
-        ".END\n"
-    )
-
-
-def render_sense_amp_lvs_schematic(
-    spec: SenseAmpSpec,
-    *,
-    cell_name: str | None = None,
-) -> str:
-    """Render the sense amplifier as one LVS MOS per physical fin.
-
-    The layout deck extracts each ``FIN x GATE`` intersection independently,
-    so every logical transistor is expanded to its requested integer fin
-    count.  This is the same unit-fin representation used by
-    :func:`render_finfet_lvs_schematic`.
-    """
-
-    name = cell_name or spec.cell_name
-    instances: list[str] = []
-    for device in sense_amp_transistors():
-        device_spec = spec.device_spec(device.flavor)
-        for fin in range(device_spec.fins):
-            instances.append(
-                f"M{device.name}_n{fin} {device.drain} {device.gate} "
-                f"{device.source} {device.bulk} {device_spec.model} "
-                f"L={device_spec.gate_length}n W={FIN_WIDTH}n"
-            )
-    body = "\n".join(instances)
-    pins = " ".join(SENSE_AMP_PINS)
-    return (
-        "* ASAP7 sense amplifier LVS reference: one MOS per physical fin\n"
-        f".SUBCKT {name} {pins}\n"
         f"{body}\n"
         f".ENDS {name}\n"
         ".END\n"

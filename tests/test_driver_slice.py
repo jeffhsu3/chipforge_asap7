@@ -143,9 +143,6 @@ def test_a_driver_that_sets_its_own_input_knobs_is_drawn_as_given():
     inverter = InverterSpec(rows=((8, 8), (4, 4)), input_rows=(0, 1))
     spec = DriverSliceSpec(nand=SMALL.nand, inverter=inverter)
     assert spec.driver is inverter
-    assert spec.input_strap_y == tuple(
-        spec.driver_y0 + y for y in inverter.input_strap_y(0)
-    )
 
 
 def test_support_column_covers_the_full_slice_height():

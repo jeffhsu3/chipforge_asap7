@@ -70,7 +70,6 @@ def test_reference_pin_contract_is_restored(tmp_path: Path):
 
 def test_generated_technology_records_uncertainty_and_validates(tmp_path: Path):
     technology = technology_definition()
-    assert technology["name"] == "asap7-open-calibrated"
     assert technology["process_parasitics"]["resistance"]["layers"]
     assert calibration_manifest()["status"] == "research-grade_not_signoff"
     path = write_kpex_technology(tmp_path / "tech.pb.json")

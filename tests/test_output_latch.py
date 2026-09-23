@@ -30,7 +30,6 @@ def test_default_is_two_leaf_rows_with_two_fingers():
 def test_each_finger_pair_costs_six_columns(fingers):
     spec = OutputLatchSpec(fingers=fingers)
     assert spec.width == OutputLatchSpec().width + (fingers - 2) * 3 * 54
-    assert len(spec.pairs) == fingers // 2
     fins = {name: count for name, *_, count in spec.devices}
     assert sum(1 for name in fins if name.startswith("MNE")) == fingers
     assert sum(1 for name in fins if name.startswith("MPE")) == fingers

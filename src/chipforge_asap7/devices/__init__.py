@@ -38,10 +38,7 @@ from .row_support import (
 )
 from .sense_amp import (
     SENSE_AMP_PINS,
-    SenseAmpPlacement,
-    SenseAmpSpec,
     SenseAmpTransistor,
-    build_sense_amp,
     sense_amp_transistors,
 )
 from .sense_amp_row import SenseAmpRowSpec, build_sense_amp_row
@@ -76,9 +73,7 @@ __all__ = [
     "RowBand",
     "RowStack",
     "RowSupportSpec",
-    "SenseAmpPlacement",
     "SenseAmpRowSpec",
-    "SenseAmpSpec",
     "SenseAmpTransistor",
     "Stage",
     "WriteDriverSpec",
@@ -98,7 +93,6 @@ __all__ = [
     "build_nand_row",
     "build_output_latch",
     "build_row_support",
-    "build_sense_amp",
     "build_sense_amp_row",
     "build_write_driver",
     "io_column_pins",

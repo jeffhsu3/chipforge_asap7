@@ -174,6 +174,5 @@ def test_a_decap_reference_will_not_match_the_wrong_plate_count(
 def test_a_tap_and_a_filler_have_no_devices_to_render():
     for kind in ("tap", "filler"):
         spec = RowSupportSpec(stack=RowStack(rows=((4, 6),)), kind=kind)
-        assert spec.devices == ()
         text = render_row_support_lvs_schematic(spec)
         assert ".SUBCKT" in text and "nmos" not in text

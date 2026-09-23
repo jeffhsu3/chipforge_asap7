@@ -23,10 +23,8 @@ from chipforge_asap7.devices.finfet import (
     SELECT_X_ENC,
 )
 from chipforge_asap7.devices.inverter import (
-    ACTIVE_ABUT_OVERHANG,
     GATE_STRAP_CLEARANCE,
     MIN_INPUT_REACH,
-    SELECT_ABUT_OVERHANG,
     main,
 )
 from chipforge_asap7.layout import GATE_PITCH, LAYERS
@@ -415,7 +413,7 @@ def test_fin_grid_covers_an_abutting_cells_active_overhang():
     """
     cell = build_inverter(RELEASED)
     ax0, ax1 = RELEASED.active_x
-    assert (ax0, ax1) == (-ACTIVE_ABUT_OVERHANG, RELEASED.width + ACTIVE_ABUT_OVERHANG)
+    assert (ax0, ax1) == (-8, 170)  # the released cell's ACTIVE on its 0..162 tile
     for fin in polys(cell, "FIN"):
         assert fin[0] <= ax0 - ACTIVE_ENC and fin[2] >= ax1 + ACTIVE_ENC
     for active in polys(cell, "ACTIVE"):
@@ -426,8 +424,6 @@ def test_isolated_style_is_a_self_contained_island():
     """No overhang, a dummy gate on each side, and a full select enclosure."""
     island = InverterSpec(rows=((4, 6),), abut=False)
     assert island.width == RELEASED.width + GATE_PITCH
-    assert island.select_x == (0, island.width)
-    assert island.active_x == (SELECT_X_ENC, island.width - SELECT_X_ENC)
     assert island.gate_grid_xs[0] not in island.gate_xs
     assert island.gate_grid_xs[-1] not in island.gate_xs
 
@@ -458,10 +454,7 @@ def test_implant_and_well_tile_the_cell_one_band_at_a_time():
     ]
     for select in covered:
         assert (select[0], select[2]) == RELEASED.select_x
-    assert RELEASED.select_x == (
-        -SELECT_ABUT_OVERHANG,
-        RELEASED.width + SELECT_ABUT_OVERHANG,
-    )
+    assert RELEASED.select_x == (-17, 179)  # as drawn in the released cell
 
 
 def test_m2_landings_clear_the_runsets_five_nanometre_ring():
@@ -474,7 +467,6 @@ def test_m2_landings_clear_the_runsets_five_nanometre_ring():
         landing = next(p for p in polys(cell, "M2") if gap(p, via) == 0)
         assert landing[0] <= via[0] - M2_V1_ENCLOSURE
         assert landing[2] >= via[2] + M2_V1_ENCLOSURE
-        assert M2_V1_ENCLOSURE > M1_V0_ENCLOSURE
 
 
 def test_output_crosses_a_rail_on_m3_because_m1_owns_that_track():

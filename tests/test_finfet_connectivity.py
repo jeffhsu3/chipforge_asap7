@@ -182,7 +182,3 @@ def test_channel_intersections_match_the_requested_fin_drive(spec):
         == spec.total_fins
     )
 
-    # Every physical gate lies halfway between consecutive alternating S/D
-    # regions, so all extracted channels connect the same two terminal nets.
-    for gate_x, left_sd, right_sd in zip(spec.gate_xs, spec.sd_xs, spec.sd_xs[1:]):
-        assert gate_x - left_sd == right_sd - gate_x

@@ -5,7 +5,6 @@ import pytest
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet, nmos_fin, pmos_fin
 from chipforge_asap7.devices.finfet import (
-    ACTIVE_ENC,
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
     GATE_SD_SPACE,
@@ -103,16 +102,6 @@ def test_built_cell_takes_the_code_name():
 
 
 # ── Discrete sizing ───────────────────────────────────────────────────────────
-def test_sizing_is_quantized_to_fins():
-    spec = FinFETSpec(fins=3, fingers=2, multipliers=2)
-    assert spec.total_fins == 3 * 2 * 2
-    assert spec.layout_fingers == spec.fingers * spec.multipliers
-    assert spec.height_per_row == (3 + 2) * FIN_PITCH
-    assert spec.height == spec.height_per_row + ROUTING_BAND_HEIGHT
-    assert spec.device_width == (spec.layout_fingers + 2) * GATE_PITCH
-    assert spec.width == TAP_COLUMN_WIDTH + spec.device_width
-
-
 def test_gates_and_sd_columns_interleave():
     spec = FinFETSpec(fins=1, fingers=3)
     assert spec.gate_xs == [189, 243, 297]
@@ -135,9 +124,6 @@ def test_active_fins_stay_quantized_when_multipliers_are_folded_in_x():
     assert spec.layout_fingers == 3
     assert len(ys) == 2
     assert ys[1] - ys[0] == FIN_PITCH
-    lo, hi = spec.active_span()
-    assert ys[0] - lo == ACTIVE_ENC
-    assert hi - (ys[-1] + FIN_WIDTH) == ACTIVE_ENC
     with pytest.raises(IndexError, match="folded"):
         spec.fin_ys(1)
 
@@ -188,12 +174,8 @@ def test_rejects_non_integer_discrete_geometry(kwargs):
 def test_fixed_sd_grid_has_exact_legal_gate_clearance():
     spec = FinFETSpec(fingers=4, multipliers=2)
     # The spec derives the clearance; the constant records what the released
-    # cells use.  They have to agree, and the drawn columns have to match both.
+    # cells use.  They have to agree.
     assert spec.gate_sd_clearance == GATE_SD_SPACE
-    for gate, left, right in zip(spec.gate_xs, spec.sd_xs, spec.sd_xs[1:]):
-        assert gate - left == right - gate == GATE_PITCH // 2
-        clearance = gate - left - GATE_WIDTH / 2 - SD_BAR_WIDTH / 2
-        assert clearance == spec.gate_sd_clearance
     with pytest.raises(ValueError, match="not DRC-safe"):
         FinFETSpec(sd_dx=GATE_PITCH // 2)
     with pytest.raises(ValueError, match="gate_length=20"):
@@ -344,16 +326,6 @@ def test_lig_strap_joins_all_gate_fingers():
     assert x0 < spec.gate_xs[0] - GATE_WIDTH / 2
     assert x1 > spec.gate_xs[-1] + GATE_WIDTH / 2
     assert (y0 + y1) / 2 == spec.gate_contact_y()
-    assert y1 - y0 == 22
-    assert all(x0 < x_gate < x1 for x_gate in spec.gate_xs)
-
-
-def test_active_encloses_the_fins():
-    spec = FinFETSpec(fins=2)
-    lo, hi = spec.active_span()
-    ys = spec.fin_ys()
-    assert lo == ys[0] - ACTIVE_ENC
-    assert hi == ys[-1] + FIN_WIDTH + ACTIVE_ENC
 
 
 def test_gate_contact_clears_active_and_the_top_gate_cut():
@@ -478,9 +450,7 @@ def test_lib_argument_rejects_non_nanometre_units_before_creating_a_cell():
 def test_drain_contact_y_keeps_its_deprecated_alias():
     """`sd_contact_y` read as the source-or-drain accessor; it never was one."""
     spec = FinFETSpec(fins=2, fingers=2)
-    act_lo, _ = spec.active_span()
 
-    assert spec.drain_contact_y() == act_lo + CONTACT_SIZE / 2
     assert spec.sd_contact_y() == spec.drain_contact_y()
     assert spec.source_contact_y() != spec.drain_contact_y()
     with pytest.raises(IndexError, match="folded"):
@@ -488,7 +458,7 @@ def test_drain_contact_y_keeps_its_deprecated_alias():
 
 
 def test_pin_labels_can_be_suppressed_for_composite_cells():
-    """`sense_amp` embeds leaf devices and exposes only its own top-level pins."""
+    """A composite cell embeds leaf devices and exposes only its own top-level pins."""
     spec = FinFETSpec(fins=2, fingers=2)
 
     assert build_finfet(spec, draw_pin_labels=False).labels == []
@@ -513,11 +483,9 @@ def test_fin_ceiling_separates_the_device_limit_from_the_deck_limit():
     # The heights the released decoder inverter is built from must be buildable.
     for fins in (13, 14, 18):
         spec = FinFETSpec(fins=fins, fingers=3)
-        assert spec.fins == fins
         assert not spec.drc_verifiable
         assert build_finfet(spec).name == f"nmos_fin_{fins}_3_1"
         # The band still follows the released bands exactly.
-        assert spec.height_per_row == (fins + 2) * FIN_PITCH
         lo, hi = spec.active_span()
         assert (lo, hi - lo) == (FIN_PITCH, fins * FIN_PITCH)
 

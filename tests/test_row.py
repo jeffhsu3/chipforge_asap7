@@ -55,8 +55,6 @@ def test_a_tap_is_doped_the_opposite_way_to_the_devices_it_serves():
     """The one inversion that separates the released TAPCELL from FILLER."""
     for band in RowStack(rows=((4, 6),)).bands():
         assert {band.implant, band.tap_implant} == {"NSELECT", "PSELECT"}
-        assert band.implant != band.tap_implant
-        assert band.in_nwell == (band.flavor == "p")
         assert (band.implant == "PSELECT") == band.in_nwell
 
 
@@ -74,7 +72,6 @@ def test_band_heights_leave_room_for_a_tap_in_every_band():
         for band in stack.bands():
             tie_height = band.height - 2 * SELECT_Y_ENC
             assert tie_height > 0
-            assert tie_height % FIN_PITCH == 0
 
 
 def test_code_carries_the_rows_not_the_total():

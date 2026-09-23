@@ -1,8 +1,7 @@
 """Parametric sense amplifier on the bitline leaf's row: the released latch, height matched to the IO.
 
-`chipforge_asap7.devices.sense_amp` draws the released ``sense_amp_sram`` as
-sixteen tiles on a grid of its own, 7020 x 999 nm, to be read against its
-schematic.  This is the same amplifier drawn as an IO cell: two dense rows of
+The released ``sense_amp_sram`` (its topology is in
+`chipforge_asap7.devices.sense_amp`) drawn as an IO cell: two dense rows of
 the leaf's ``(n, p)`` row, so it abuts the bitline leaf, the write driver and
 the output latch.
 

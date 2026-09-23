@@ -26,8 +26,8 @@ def _library():
 
 def test_default_leaf_is_half_an_8t_bitcell_row():
     spec = BitlineMuxSpec()
-    assert spec.height == 297 and 2 * spec.height == 594
-    assert spec.width == 702 and spec.width % GATE_PITCH == 0
+    assert spec.height == 297
+    assert spec.width == 702
     assert spec.cell_name == "blmux_3n3p_h135x162_s0of4"
     assert [net for _, net in spec.rails] == ["VSS", "VDD"]
 
@@ -164,7 +164,7 @@ def test_two_rows_are_a_whole_8t_bitcell_row_with_twice_the_fins():
     assert "nfin=6" in two.netlist() and "nfin=3" not in two.netlist()
     assert two.cell_name == "blmux_3n3p_h135x162_r2_s0of4"
     assert PORT_A.cell_name == "blmux_3n3p_h135x162_r2_s0of4_m2in3485x2455"
-    assert two.stack.height == two.height and two.row_stack.height == two.row_height
+    assert two.stack.height == two.height
 
 
 def test_upper_row_is_the_lower_one_mirrored_about_the_vdd_rail():

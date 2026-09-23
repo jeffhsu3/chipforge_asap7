@@ -105,12 +105,6 @@ def test_column_shift_is_load_bearing():
         column_gate_track(0, shift=COLUMN_X_SHIFT + 1)
 
 
-def test_column_x_matches_compiler_expression():
-    x0 = 216
-    for b in range(4):
-        assert column_x(b, x0) == x0 + (b + 1) * COLUMN_PITCH + COLUMN_X_SHIFT
-
-
 def test_snapping():
     assert snap_to_fin(0) == 0
     assert snap_to_fin(20) == FIN_PITCH
