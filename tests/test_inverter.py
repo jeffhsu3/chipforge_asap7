@@ -541,7 +541,7 @@ def test_cells_do_not_collide_in_the_global_library():
 
 def test_cli_writes_a_gds(tmp_path):
     out = tmp_path / "inv.gds"
-    main(["--rows", "18:18,13:13", "--fingers", "2", "--out", str(out)])
+    main(["--rows", "18", "18", "13", "13", "--fingers", "2", "--out", str(out)])
     assert out.is_file()
     library = gdspy.GdsLibrary(infile=str(out))
     assert RELEASED.cell_name in library.cells

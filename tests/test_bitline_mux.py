@@ -253,8 +253,13 @@ def test_a_grid_offset_moves_the_landings_against_the_flip():
     # for flipped ones.
     spec = replace(PORT_A, grid_offset=13.5)
     assert spec.entry_y == {"BL": 335.0, "BLN": 232.0}
-    assert spec.for_row(0).bitline_entry == (335.0, 232.0) and spec.for_row(0).grid_offset == 0
-    assert spec.for_row(1).bitline_entry == (362.0, 259.0) and spec.for_row(1).select == 1
+    assert (
+        spec.for_row(0).bitline_entry == (335.0, 232.0)
+        and spec.for_row(0).grid_offset == 0
+    )
+    assert (
+        spec.for_row(1).bitline_entry == (362.0, 259.0) and spec.for_row(1).select == 1
+    )
     assert spec.for_row(2) == replace(spec.for_row(0), select=2)
     library = _library()
     group = build_bitline_mux_group(spec, lib=library)
@@ -283,7 +288,10 @@ def test_a_grid_offset_moves_the_landings_against_the_flip():
             if x0 == 0
         }
         wanted = spec.for_row(i).entry_y
-        assert {round((y0 + y1) / 2, 1) for _, y0, _, y1 in bars} >= {wanted["BL"], wanted["BLN"]}
+        assert {round((y0 + y1) / 2, 1) for _, y0, _, y1 in bars} >= {
+            wanted["BL"],
+            wanted["BLN"],
+        }
     with pytest.raises(ValueError, match="needs a bitline_entry"):
         BitlineMuxSpec(grid_offset=13.5)
 

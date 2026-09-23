@@ -44,9 +44,7 @@ draws the diffusion stack that a band and a standalone tile have in common.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
@@ -59,6 +57,7 @@ from ..layout.rules import (
     M2_V1_ENCLOSURE,
     SHORT_M1_EDGE,
 )
+from .cli import parse_spec, write_gds
 from .finfet import (
     ACTIVE_ENC,
     DEVICE_GATE_CUT_HEIGHT,
@@ -764,74 +763,16 @@ def build_inverter_row(
     return row
 
 
-def _parse_rows(text: str) -> tuple[tuple[int, int], ...]:
-    """Parse ``"18:18,13:13"`` into ``((18, 18), (13, 13))``."""
-    rows = []
-    for field in text.split(","):
-        n, _, p = field.partition(":")
-        if not p:
-            raise argparse.ArgumentTypeError(
-                f"row {field!r} must be 'n_fins:p_fins', e.g. '18:18'"
-            )
-        try:
-            rows.append((int(n), int(p)))
-        except ValueError:
-            raise argparse.ArgumentTypeError(
-                f"row {field!r} must be 'n_fins:p_fins', e.g. '18:18'"
-            ) from None
-    return tuple(rows)
-
-
 def main(argv: list[str] | None = None) -> None:
-    """Write an inverter GDS: ``python -m chipforge_asap7.devices.inverter``."""
-    parser = argparse.ArgumentParser(
+    """Write an inverter GDS: ``asap7-inverter --rows 18 18 13 13``."""
+    args = parse_spec(
+        InverterSpec,
+        argv,
         description="Generate a stacked-band ASAP7 inverter, sized in fins.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--rows",
-        type=_parse_rows,
-        default="4:6",
-        help="Comma-separated n_fins:p_fins per row, bottom to top.",
-    )
-    parser.add_argument("--fingers", type=int, default=2, help="Gates per band.")
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument(
-        "--isolated",
-        action="store_true",
-        help="Draw a self-contained island instead of the abutting array style.",
-    )
-    parser.add_argument(
-        "--input-rows",
-        type=lambda text: tuple(int(row) for row in text.split(",")),
-        default=None,
-        help="Rows that get an M1 input landing, e.g. '0'; every row when omitted.",
-    )
-    parser.add_argument(
-        "--input-reach",
-        type=lambda text: tuple(int(nm) for nm in text.split(",")),
-        default=None,
-        help=f"M1 'below,above' each landing's seam in nm, e.g. "
-        f"'{MIN_INPUT_REACH},{MIN_INPUT_REACH}' for the bare via pad; the full strap when omitted.",
-    )
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-
-    rows = args.rows if isinstance(args.rows, tuple) else _parse_rows(args.rows)
-    spec = InverterSpec(
-        rows=rows,
-        fingers=args.fingers,
-        vt=args.vt,
-        abut=not args.isolated,
-        input_rows=args.input_rows,
-        input_reach=args.input_reach,
-    )
-    output = args.out or Path(f"{spec.cell_name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    build_inverter(spec, lib=library)
-    library.write_gds(str(output))
-    print(f"✓ {spec.cell_name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_inverter(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
     print(
         f"  {spec.pull_down_fins} pull-down / {spec.pull_up_fins} pull-up fins, "
         f"{len(spec.rows)} row(s) x {spec.fingers} fingers"

@@ -323,6 +323,6 @@ def test_cells_do_not_collide_in_the_global_library():
 
 def test_cli_writes_a_gds(tmp_path):
     out = tmp_path / "tap.gds"
-    main(["--kind", "tap", "--rows", "4:6", "--out", str(out)])
+    main(["--kind", "tap", "--stack.rows", "4", "6", "--out", str(out)])
     assert out.is_file()
     assert "tap_fin_4n6p_2cpp" in gdspy.GdsLibrary(infile=str(out)).cells

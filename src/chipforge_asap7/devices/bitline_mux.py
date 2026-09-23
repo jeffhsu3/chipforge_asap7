@@ -41,15 +41,14 @@ or M4, to the rows' own tracks.
 
 from __future__ import annotations
 
-import argparse
 import math
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
 from ..layout.rules import M1_MIN_SPACE, M4_PITCH, M4_X_GRID, TRACK_PITCH
+from .cli import Option, parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -164,7 +163,9 @@ class BitlineMuxSpec:
                 )
             object.__setattr__(self, "bitline_entry", entry)
         elif self.grid_offset:
-            raise ValueError("grid_offset places the array's bitlines, so it needs a bitline_entry")
+            raise ValueError(
+                "grid_offset places the array's bitlines, so it needs a bitline_entry"
+            )
         # RowStack and FinFETSpec reject what cannot be drawn.
         n_band, p_band = self.bands
         # Six M2 tracks have to fit between the two via rows; see `tracks_y`.
@@ -379,7 +380,12 @@ class BitlineMuxSpec:
         bl = via_y(n_band) + HALF + M1_MIN_SPACE + HALF + 3
         # 152: its V1 sits on the gate contact's M1 bar, above the LIG.
         ysel = self.seam_y + PAD
-        return {"BL": bl, "BLN": bl + TRACK_PITCH, "YSEL": ysel, "YSELN": ysel + TRACK_PITCH}
+        return {
+            "BL": bl,
+            "BLN": bl + TRACK_PITCH,
+            "YSEL": ysel,
+            "YSELN": ysel + TRACK_PITCH,
+        }
 
     @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
@@ -672,52 +678,20 @@ def build_bitline_mux_group(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a bitline-leaf GDS: ``python -m chipforge_asap7.devices.bitline_mux``."""
-    parser = argparse.ArgumentParser(
+    """Write a bitline-leaf GDS: ``asap7-bitline-mux --selects 4 --group``."""
+    args = parse_spec(
+        BitlineMuxSpec,
+        argv,
         description="Generate an ASAP7 precharge + column-mux leaf for one bitline pair.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        options=(
+            Option("group", bool, False, "Draw the whole stacked mux, not one leaf."),
+        ),
     )
-    parser.add_argument("--n-fins", type=int, default=3)
-    parser.add_argument("--p-fins", type=int, default=3)
-    parser.add_argument(
-        "--selects", type=int, default=4, help="Mux ratio: leaves sharing one SA/SAN."
-    )
-    parser.add_argument(
-        "--select", type=int, default=0, help="Which select this leaf answers to."
-    )
-    parser.add_argument(
-        "--band-height", default="135,162", help="n,p band heights in nm."
-    )
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument(
-        "--rows", type=int, choices=(1, 2), default=1, help="2 doubles the devices."
-    )
-    parser.add_argument(
-        "--bitline-entry", default=None, help="y_BL,y_BLN at the left edge, in nm."
-    )
-    parser.add_argument("--bitline-layer", choices=("M2", "M4"), default="M2")
-    parser.add_argument(
-        "--group", action="store_true", help="Draw the whole stacked mux, not one leaf."
-    )
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-    entry = args.bitline_entry
-    spec = BitlineMuxSpec(
-        n_fins=args.n_fins, p_fins=args.p_fins, selects=args.selects, select=args.select,
-        band_height=tuple(int(v) for v in args.band_height.split(",")), vt=args.vt,
-        rows=args.rows, bitline_layer=args.bitline_layer,
-        bitline_entry=entry and tuple(float(v) for v in entry.split(",")),
-    )  # fmt: skip
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    require_gdspy().current_library = library
-    cell = (build_bitline_mux_group if args.group else build_bitline_mux)(
-        spec, lib=library
-    )
-    output = args.out or Path(f"{cell.name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library.write_gds(str(output))
+    spec = args.spec
+    build = build_bitline_mux_group if args.group else build_bitline_mux
+    cell, out = write_gds(lambda lib: build(spec, lib=lib), args.out)
     leaves = spec.selects if args.group else 1
-    print(f"✓ {cell.name}: {spec.width} x {leaves * spec.height} nm -> {output}")
+    print(f"✓ {cell.name}: {spec.width} x {leaves * spec.height} nm -> {out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

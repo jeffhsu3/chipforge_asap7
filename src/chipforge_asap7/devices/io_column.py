@@ -26,15 +26,14 @@ block is DRC clean on its own (the latch-up rule reaches 30 um).
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
 from ..layout.rules import M4_PITCH
 from .bitline_mux import BitlineMuxSpec, build_bitline_mux_group
+from .cli import parse_spec, write_gds
 from .output_latch import OutputLatchSpec, build_output_latch
 from .row_support import RowSupportSpec, build_row_support
 from .rowcell import CAP, V3_M3_CAP, label, m3_column, m4_track
@@ -453,50 +452,16 @@ def build_io_column(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a column-IO GDS: ``python -m chipforge_asap7.devices.io_column``."""
-    parser = argparse.ArgumentParser(
+    """Write a column-IO GDS: ``asap7-io-column --mux.selects 8``."""
+    args = parse_spec(
+        IoColumnSpec,
+        argv,
         description="Generate one port's column IO for one data bit on the ASAP7 8T row.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--selects", type=int, default=4, help="Mux ratio: leaves in the group."
-    )
-    parser.add_argument(
-        "--bitline-entry",
-        default="348.5,245.5",
-        help="y_BL,y_BLN at the left edge, in nm.",
-    )
-    parser.add_argument("--bitline-layer", choices=("M2", "M4"), default="M2")
-    parser.add_argument(
-        "--sa-fingers",
-        type=int,
-        default=2,
-        help="Sense amplifier input and cross-coupled fingers.",
-    )
-    parser.add_argument("--tail-fingers", type=int, default=2)
-    parser.add_argument(
-        "--out-fingers", type=int, default=2, help="Output driver fingers."
-    )
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument("--no-tap", action="store_true")
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-    entry = tuple(float(v) for v in args.bitline_entry.split(","))
-    spec = IoColumnSpec(
-        mux=BitlineMuxSpec(rows=2, selects=args.selects, bitline_entry=entry, bitline_layer=args.bitline_layer, vt=args.vt),
-        sense_amp=SenseAmpRowSpec(n_fingers=args.sa_fingers, tail_fingers=args.tail_fingers, vt=args.vt),
-        write_driver=WriteDriverSpec(vt=args.vt),
-        output_latch=OutputLatchSpec(fingers=args.out_fingers, vt=args.vt),
-        tap=not args.no_tap,
-    )  # fmt: skip
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    require_gdspy().current_library = library
-    cell = build_io_column(spec, lib=library)
-    output = args.out or Path(f"{cell.name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library.write_gds(str(output))
-    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_io_column(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

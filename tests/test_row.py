@@ -1,5 +1,4 @@
-"""The shared row stack: band positions, rail polarity, and what validates when.
-"""
+"""The shared row stack: band positions, rail polarity, and what validates when."""
 
 from itertools import pairwise
 

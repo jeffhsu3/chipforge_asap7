@@ -16,7 +16,7 @@ chipforge, so any project can consume it.
 git clone https://github.com/jeffhsu3/chipforge_asap7.git
 cd chipforge_asap7
 python -m pip install .          # constants and grid math
-python -m pip install ".[gds]"  # also install gdspy for GDS drawing
+python -m pip install ".[gds]"  # also gdspy for drawing, tyro for the commands
 ```
 
 The repository currently requires GitHub access. To develop against a local
@@ -30,7 +30,8 @@ constants and every pure-geometry helper (`column_x`, `column_gate_track`,
 `spans_excluding`, `snap_to_*`) import and run with nothing else installed — so
 LEF / Liberty / sizing / DRC scripts that only need pitches and alignment math
 can depend on it cheaply. gdspy is the optional `gds` extra, imported lazily and
-only by the `draw_*` / `box` helpers; call `have_gdspy()` to check, or just call
+only by the `draw_*` / `box` helpers (the extra also brings tyro, which the
+`asap7-*` commands parse their options with); call `have_gdspy()` to check, or just call
 a drawing helper and get an actionable `ImportError`. The package ships
 `py.typed`, so its annotations are visible to consumers.
 

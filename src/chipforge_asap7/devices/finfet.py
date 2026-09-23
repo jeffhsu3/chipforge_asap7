@@ -1,6 +1,6 @@
 """Parametric ASAP7 FinFET, sized in fins rather than microns.
 
-The planar generator this mirrors (OpenFASOC glayout's `primitives/fet.py`)
+The planar generator this mirrors (glayout's `primitives/fet.py`)
 takes a continuous ``width`` in microns and snaps it to grid.  On a FinFET that
 knob does not exist: drive strength comes in whole fins, so the device is
 parameterised by three **discrete counts** and named after them —
@@ -51,7 +51,6 @@ FIN/ACTIVE/GATE channel intersection.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -71,6 +70,7 @@ from ..layout.rules import (
     M1_WIDTH,
     V0_LISD_ENCLOSURE,
 )
+from .cli import parse_spec, write_gds
 
 __all__ = [
     "ACTIVE_ENC",
@@ -252,7 +252,6 @@ class FinFETSpec:
                 f"({maximum} nm select band)"
             )
 
-    # ── Naming ────────────────────────────────────────────────────────────────
     @property
     def code(self) -> str:
         """Fin-count code: fins, fingers, multipliers — e.g. ``"122"``."""
@@ -277,7 +276,6 @@ class FinFETSpec:
         )
         return f"{self.flavor}mos{vt_tag}_fin_{self.code}{band_tag}"
 
-    # ── Geometry (pure arithmetic, no GDS library needed) ─────────────────────
     @property
     def finger_pitch(self) -> int:
         """Gate-to-gate pitch in nm."""
@@ -795,52 +793,17 @@ def _build(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a device GDS: ``python -m chipforge_asap7.devices --fins 2``."""
-    parser = argparse.ArgumentParser(
+    """Write a device GDS: ``asap7-finfet --fins 2 --fingers 2``."""
+    args = parse_spec(
+        FinFETSpec,
+        argv,
         description="Generate a parametric ASAP7 FinFET, sized in fins.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        # Each has one legal value, which the spec already defaults to.
+        hide=("finger_pitch_cpp", "gate_length", "sd_dx"),
     )
-    parser.add_argument("--flavor", choices=("n", "p"), default="n")
-    parser.add_argument(
-        "--vt", choices=tuple(VT_LAYERS), default="rvt", help="Threshold flavor."
-    )
-    parser.add_argument("--fins", type=int, default=1, help="Active fins per finger.")
-    parser.add_argument("--fingers", type=int, default=1, help="Gates sharing S/D.")
-    parser.add_argument(
-        "--multipliers",
-        type=int,
-        default=1,
-        help="Parallel copies folded into additional fingers.",
-    )
-    parser.add_argument(
-        "--finger-pitch-cpp",
-        type=int,
-        default=1,
-        help="Gate pitch in CPP; ASAP7 DRC requires 1.",
-    )
-    parser.add_argument(
-        "--gate-length",
-        type=int,
-        default=GATE_WIDTH,
-        help="Drawn gate width in nm; ASAP7 DRC requires 20.",
-    )
-    parser.add_argument("--out", default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-
-    spec = FinFETSpec(
-        flavor=args.flavor,
-        vt=args.vt,
-        fins=args.fins,
-        fingers=args.fingers,
-        multipliers=args.multipliers,
-        finger_pitch_cpp=args.finger_pitch_cpp,
-        gate_length=args.gate_length,
-    )
-    lib = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    build_finfet(spec, lib=lib)
-    out = args.out or f"{spec.cell_name}.gds"
-    lib.write_gds(out)
-    print(f"✓ {spec.cell_name}: {spec.width} x {spec.height} nm -> {out}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_finfet(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
     print(f"  {spec.total_fins} fins total ({spec.fins} per finger)")
     print(f"  {spec.netlist()}")
 

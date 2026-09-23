@@ -181,4 +181,3 @@ def test_channel_intersections_match_the_requested_fin_drive(spec):
         )
         == spec.total_fins
     )
-

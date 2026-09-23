@@ -34,9 +34,7 @@ has no released NAND to validate against.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
@@ -48,6 +46,7 @@ from ..layout.rules import (
     M1_WIDTH,
     TRACK_PITCH,
 )
+from .cli import parse_spec, write_gds
 from .finfet import (
     ACTIVE_ENC,
     DEVICE_GATE_CUT_HEIGHT,
@@ -562,57 +561,16 @@ def build_nand_row(
     return row
 
 
-def _parse_row(text: str) -> tuple[tuple[int, int], ...]:
-    n, _, p = text.partition(":")
-    if not p:
-        raise argparse.ArgumentTypeError(
-            f"row {text!r} must be 'n_fins:p_fins', e.g. '14:7'"
-        )
-    try:
-        return ((int(n), int(p)),)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"row {text!r} must be 'n_fins:p_fins', e.g. '14:7'"
-        ) from None
-
-
 def main(argv: list[str] | None = None) -> None:
-    """Write a NAND2 GDS: ``python -m chipforge_asap7.devices.nand``."""
-    parser = argparse.ArgumentParser(
+    """Write a NAND2 GDS: ``asap7-nand --rows 14 7``."""
+    args = parse_spec(
+        NandSpec,
+        argv,
         description="Generate an ASAP7 NAND2 in the released decoder's array style.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--row", type=_parse_row, default="14:7", help="n_fins:p_fins.")
-    parser.add_argument("--fingers", type=int, default=2, help="Gates per input.")
-    parser.add_argument("--vt", choices=tuple(VT_LAYERS), default="rvt")
-    parser.add_argument(
-        "--band-height",
-        type=int,
-        default=None,
-        help="Pin both bands to this height in nm (135 = the 270 nm row).",
-    )
-    parser.add_argument(
-        "--isolated",
-        action="store_true",
-        help="Draw a self-contained island instead of the abutting array style.",
-    )
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-
-    rows = args.row if isinstance(args.row, tuple) else _parse_row(args.row)
-    spec = NandSpec(
-        rows=rows,
-        fingers=args.fingers,
-        vt=args.vt,
-        abut=not args.isolated,
-        band_height=args.band_height,
-    )
-    output = args.out or Path(f"{spec.cell_name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    build_nand(spec, lib=library)
-    library.write_gds(str(output))
-    print(f"✓ {spec.cell_name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_nand(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
     print(
         f"  {spec.nfet_fins} nFET / {spec.pfet_fins} pFET fins, "
         f"{spec.fingers} finger(s) per input, {len(spec.tie_ys)} M2 input tie(s)"

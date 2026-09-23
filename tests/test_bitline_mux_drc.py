@@ -85,8 +85,18 @@ def test_stacking_leaves_adds_no_violation(selects, asap7_drc):
 
 @pytest.mark.parametrize(
     "spec",
-    [PORT_A, PORT_B, replace(PORT_A, grid_offset=13.5), replace(PORT_B, grid_offset=13.5)],
-    ids=["port_a_m2", "port_b_m4", "port_a_m2_on_the_array_grid", "port_b_m4_on_the_array_grid"],
+    [
+        PORT_A,
+        PORT_B,
+        replace(PORT_A, grid_offset=13.5),
+        replace(PORT_B, grid_offset=13.5),
+    ],
+    ids=[
+        "port_a_m2",
+        "port_b_m4",
+        "port_a_m2_on_the_array_grid",
+        "port_b_m4_on_the_array_grid",
+    ],
 )
 def test_two_row_leaves_and_their_groups_add_no_violation(spec, asap7_drc):
     library = _library()

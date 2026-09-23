@@ -27,10 +27,11 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-gds = ["gdspy>=1.6.13"]
+gds = ["gdspy>=1.6.13", "tyro>=1.0"]
 pex = ["klayout-pex>=0.3.12,<0.4; python_version >= '3.12'"]
 
 [project.scripts]
+asap7-finfet = "chipforge_asap7.devices.finfet:main"
 asap7-bitline-mux = "chipforge_asap7.devices.bitline_mux:main"
 asap7-inverter = "chipforge_asap7.devices.inverter:main"
 asap7-io-column = "chipforge_asap7.devices.io_column:main"

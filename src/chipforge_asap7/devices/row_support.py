@@ -47,14 +47,13 @@ column of its own; that is a bigger cell for the same job.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
 from ..layout.layers import PIN_LAYERS, box, require_gdspy
 from ..layout.rules import CONTACT_SIZE, M1_WIDTH
+from .cli import parse_spec, write_gds
 from .finfet import (
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
@@ -360,42 +359,15 @@ def build_row_support(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a row-support GDS: ``python -m chipforge_asap7.devices.row_support``."""
-    from .inverter import _parse_rows
-
-    parser = argparse.ArgumentParser(
+    """Write a row-support GDS: ``asap7-row-support --kind tap --stack.rows 4 6``."""
+    args = parse_spec(
+        RowSupportSpec,
+        argv,
         description="Generate an ASAP7 tap, filler or decap for a row stack.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--kind", choices=ROW_SUPPORT_KINDS, default="filler")
-    parser.add_argument(
-        "--rows",
-        type=_parse_rows,
-        default="4:6",
-        help="Comma-separated n_fins:p_fins per row, bottom to top.",
-    )
-    parser.add_argument("--vt", choices=tuple(VT_LAYERS), default="rvt")
-    parser.add_argument(
-        "--width-cpp",
-        type=int,
-        default=None,
-        help="Cell width in 54 nm gate pitches; defaults to the released width.",
-    )
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-
-    rows = args.rows if isinstance(args.rows, tuple) else _parse_rows(args.rows)
-    spec = RowSupportSpec(
-        stack=RowStack(rows=rows, vt=args.vt),
-        kind=args.kind,
-        width_cpp=args.width_cpp,
-    )
-    output = args.out or Path(f"{spec.cell_name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    build_row_support(spec, lib=library)
-    library.write_gds(str(output))
-    print(f"✓ {spec.cell_name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_row_support(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
     if spec.kind == "decap":
         fins = sum(count for _band, count in spec.devices)
         print(f"  {len(spec.gate_xs)} plates per band, {fins} unit-fin capacitors")

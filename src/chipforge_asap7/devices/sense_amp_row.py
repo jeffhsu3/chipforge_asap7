@@ -32,14 +32,13 @@ from the top; ``QA`` and ``QAN`` leave on M3 at the top.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
 from ..layout.rules import TRACK_PITCH
+from .cli import parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -474,40 +473,16 @@ def build_sense_amp_row(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a sense-amplifier GDS: ``python -m chipforge_asap7.devices.sense_amp_row``."""
-    parser = argparse.ArgumentParser(
+    """Write a sense-amplifier GDS: ``asap7-sense-amp-row --n-fingers 4``."""
+    args = parse_spec(
+        SenseAmpRowSpec,
+        argv,
         description="Generate an ASAP7 sense amplifier on the IO row.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--n-fins", type=int, default=3)
-    parser.add_argument("--p-fins", type=int, default=3)
-    parser.add_argument(
-        "--n-fingers",
-        type=int,
-        default=2,
-        help="Input and cross-coupled device fingers.",
-    )
-    parser.add_argument(
-        "--tail-fingers", type=int, default=2, help="SAE tail fingers, even."
-    )
-    parser.add_argument(
-        "--band-height", default="135,162", help="n,p band heights in nm."
-    )
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-    spec = SenseAmpRowSpec(
-        n_fins=args.n_fins, p_fins=args.p_fins, n_fingers=args.n_fingers, tail_fingers=args.tail_fingers,
-        band_height=tuple(int(v) for v in args.band_height.split(",")), vt=args.vt,
-    )  # fmt: skip
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    require_gdspy().current_library = library
-    cell = build_sense_amp_row(spec, lib=library)
-    output = args.out or Path(f"{cell.name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library.write_gds(str(output))
-    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_sense_amp_row(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

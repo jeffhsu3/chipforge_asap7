@@ -121,10 +121,6 @@ output differential reaches 80% of VDD. The default 100 mV input differential,
 CLI. Generated decks, waveforms, logs, resolution delays, peak currents, energy,
 and `results.json` are written under `build/sense_amp_spice/`.
 
-```bash
-python -m chipforge_asap7.devices --fins 2 --fingers 2 --multipliers 2
-```
-
 ## LVS of an assembled macro
 
 `run_lvs` proves a generated cell against a reference written for it.

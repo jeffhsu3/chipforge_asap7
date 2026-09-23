@@ -41,10 +41,8 @@ released slice and are not drawn here.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.layers import LAYERS, box, require_gdspy
@@ -55,6 +53,7 @@ from ..layout.rules import (
     M1_WIDTH,
     M2_V1_ENCLOSURE,
 )
+from .cli import Option, parse_spec, write_gds
 from .finfet import MAX_FINS
 from .inverter import MIN_INPUT_REACH, InverterSpec, build_inverter
 from .nand import NandSpec, build_nand
@@ -529,34 +528,35 @@ def build_driver_slice_support(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Size and write a slice: ``python -m chipforge_asap7.devices.driver_slice``."""
+    """Size and write a slice: ``asap7-wl-slice --wl-load-ff 22.8 --depth 32``."""
     from .sizing import size_decoder
 
-    parser = argparse.ArgumentParser(
+    args = parse_spec(
+        None,
+        argv,
         description="Size and draw a four-wordline ASAP7 driver slice.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        options=(
+            Option(
+                "wl_load_ff",
+                float,
+                22.8,
+                "Wordline load in fF (22.8 reproduces the released slice).",
+            ),
+            Option("depth", int, 32, "Number of wordlines."),
+            Option("stage_effort", float, 4.43, "Logical-effort stage effort."),
+            Option(
+                "vt",
+                Literal["rvt", "lvt", "slvt", "sram"],
+                "rvt",
+                "Threshold flavor of every device.",
+            ),
+        ),
     )
-    parser.add_argument(
-        "--wl-load-ff",
-        type=float,
-        default=22.8,
-        help="Wordline load in fF (22.8 reproduces the released slice).",
-    )
-    parser.add_argument("--depth", type=int, default=32, help="Number of wordlines.")
-    parser.add_argument("--stage-effort", type=float, default=4.43)
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-
     sizing = size_decoder(args.wl_load_ff, args.depth, stage_effort=args.stage_effort)
     spec = DriverSliceSpec.from_sizing(sizing, vt=args.vt)
-    output = args.out or Path(f"{spec.cell_name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    build_driver_slice(spec, lib=library)
-    library.write_gds(str(output))
+    cell, out = write_gds(lambda lib: build_driver_slice(spec, lib=lib), args.out)
     print(sizing.summary())
-    print(f"✓ {spec.cell_name}: {spec.width} x {spec.height} nm -> {output}")
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

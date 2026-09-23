@@ -26,14 +26,13 @@ a router reaches them clear of anything a block draws below.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
 from ..layout.rules import TRACK_PITCH
+from .cli import parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -376,32 +375,16 @@ def build_write_driver(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write a write-driver GDS: ``python -m chipforge_asap7.devices.write_driver``."""
-    parser = argparse.ArgumentParser(
+    """Write a write-driver GDS: ``asap7-write-driver --keeper-fins 1``."""
+    args = parse_spec(
+        WriteDriverSpec,
+        argv,
         description="Generate an ASAP7 write driver: data latch and transmission gates.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--n-fins", type=int, default=3)
-    parser.add_argument("--p-fins", type=int, default=3)
-    parser.add_argument("--keeper-fins", type=int, default=1)
-    parser.add_argument(
-        "--band-height", default="135,162", help="n,p band heights in nm."
-    )
-    parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
-    parser.add_argument("--out", type=Path, default=None, help="Output GDS path.")
-    args = parser.parse_args(argv)
-    spec = WriteDriverSpec(
-        n_fins=args.n_fins, p_fins=args.p_fins, keeper_fins=args.keeper_fins,
-        band_height=tuple(int(v) for v in args.band_height.split(",")), vt=args.vt,
-    )  # fmt: skip
-    library = require_gdspy().GdsLibrary(unit=1e-9, precision=1e-10)
-    require_gdspy().current_library = library
-    cell = build_write_driver(spec, lib=library)
-    output = args.out or Path(f"{cell.name}.gds")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    library.write_gds(str(output))
-    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {output}")
+    spec = args.spec
+    cell, out = write_gds(lambda lib: build_write_driver(spec, lib=lib), args.out)
+    print(f"✓ {cell.name}: {spec.width} x {spec.height} nm -> {out}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
