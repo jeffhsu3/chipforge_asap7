@@ -33,6 +33,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
+from ..layout.rules import TRACK_PITCH
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -40,7 +41,6 @@ from .rowcell import (
     HALF,
     ISLAND_OVERHANG,
     PAD,
-    TRACK,
     draw_frame,
     draw_rails,
     gate_contact,
@@ -104,7 +104,7 @@ class WriteDriverSpec:
         low, mid, high = self.tie_levels
         if (
             low - CAP < y_n + CAP + 18
-            or low < self.n_level + TRACK
+            or low < self.n_level + TRACK_PITCH
             or mid - CAP < self.n_level + CAP + 18
         ):
             raise ValueError(

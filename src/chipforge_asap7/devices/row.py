@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..layout.grid import FIN_PITCH
-from .finfet import ACTIVE_ENC, CONTACT_SIZE, FinFETSpec
+from ..layout.rules import CONTACT_SIZE
+from .finfet import ACTIVE_ENC, FinFETSpec
 
 __all__ = ["RowBand", "RowStack"]
 

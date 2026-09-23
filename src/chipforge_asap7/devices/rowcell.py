@@ -9,7 +9,7 @@ and M3 on vertical ones.  `chipforge_asap7.devices.bitline_mux`,
 lives here so that a fix to the frame, a rail contact or a via stack lands in
 all of them.
 
-Everything is in nanometres.
+All units is in nanometres.
 """
 
 from __future__ import annotations
@@ -18,32 +18,34 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
-from ..layout.layers import LAYERS, box, require_gdspy
-from .finfet import (
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import (
     CONTACT_SIZE,
+    M1_MIN_SPACE,
+    M1_V0_ENCLOSURE,
+    M2_V1_ENCLOSURE,
+    M4_WIDTH,
+    M4_X_GRID,
+    V3_M3_ENCLOSURE,
+    V3_M4_ENCLOSURE,
+)
+from .finfet import (
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
     LI_RAIL_HEIGHT,
-    M1_MIN_SPACE,
-    M1_V0_ENCLOSURE,
-    M1_WIDTH,
     POLY_OVERHANG,
     SD_BAR_WIDTH,
     VT_LAYERS,
     build_device_band,
 )
-from .inverter import ACTIVE_ABUT_OVERHANG, M2_V1_ENCLOSURE
+from .inverter import ACTIVE_ABUT_OVERHANG
 from .row import RowBand, RowStack
 
 __all__ = [
     "CAP",
     "HALF",
     "M4_HALF",
-    "M4_PITCH",
-    "M4_X_GRID",
     "PAD",
-    "PIN_LAYERS",
-    "TRACK",
     "V3_M3_CAP",
     "V3_M4_CAP",
     "draw_frame",
@@ -65,7 +67,6 @@ __all__ = [
 HALF = CONTACT_SIZE // 2  # 9: half a via, half an 18 nm track
 CAP = HALF + M1_V0_ENCLOSURE  # 14: metal past a via along its own track
 PAD = HALF + M2_V1_ENCLOSURE  # 17: M2 past a V1
-TRACK = M1_WIDTH + M1_MIN_SPACE  # 36: the M2 (and M3) track pitch
 HALF_SD = SD_BAR_WIDTH // 2
 HALF_LIG = GATE_LIG_HEIGHT // 2
 HALF_CUT = DEVICE_GATE_CUT_HEIGHT // 2
@@ -74,16 +75,9 @@ HALF_GATE = GATE_WIDTH // 2
 LIG_PAST_GATE = 1
 ISLAND_OVERHANG = ACTIVE_ABUT_OVERHANG  # ACTIVE past its end columns
 
-M4_HALF = 12  # M4 is 24 nm wide, and a V3 is exactly as tall as its M4
-M4_PITCH = 48
-M4_X_GRID = 24  # the public deck holds M4 vertices to a 24 nm grid in x
-V3_M3_CAP = M4_HALF + 5  # M3 past a V3, along the column
-V3_M4_CAP = HALF + 11  # M4 past a V3, along the track
-
-PIN_LAYERS = {
-    metal: (LAYERS[f"{metal}_PIN"]["layer"], LAYERS[f"{metal}_PIN"]["datatype"])
-    for metal in ("M1", "M2", "M3", "M4")
-}
+M4_HALF = M4_WIDTH // 2  # 12: a V3 is exactly as tall as its M4
+V3_M3_CAP = M4_HALF + V3_M3_ENCLOSURE  # 17: M3 past a V3, along the column
+V3_M4_CAP = HALF + V3_M4_ENCLOSURE  # 20: M4 past a V3, along the track
 
 
 def square(cell: Any, layer: str, x: float, y: float) -> None:

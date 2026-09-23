@@ -40,16 +40,19 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
-from ..layout.layers import LAYERS, box, require_gdspy
-from .finfet import (
-    ACTIVE_ENC,
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import (
     CONTACT_SIZE,
-    DEVICE_GATE_CUT_HEIGHT,
-    GATE_LIG_HEIGHT,
-    LI_RAIL_HEIGHT,
     M1_MIN_SPACE,
     M1_V0_ENCLOSURE,
     M1_WIDTH,
+    TRACK_PITCH,
+)
+from .finfet import (
+    ACTIVE_ENC,
+    DEVICE_GATE_CUT_HEIGHT,
+    GATE_LIG_HEIGHT,
+    LI_RAIL_HEIGHT,
     MAX_VERIFIABLE_FINS,
     POLY_OVERHANG,
     SD_BAR_WIDTH,
@@ -73,7 +76,7 @@ NAND_PINS = ("A", "B", "Y", "VDD", "VSS")
 #: An input whose gates cannot share one LIG pad is joined on an M2 bar with a
 #: V1 on each of its M1 gate bars.  The bars sit below the seam, one M1 track
 #: apart, so the gate bars that carry them stay clear of the drain-via rows.
-TIE_PITCH = M1_WIDTH + M1_MIN_SPACE  # 36
+TIE_PITCH = TRACK_PITCH
 #: LIG past the gate edge on a contact pad.  LIG.GATE.EX.1 asks for 1 nm and
 #: that is what the released decoder and standard cells draw; the 2 nm the
 #: standalone FinFET tile uses would put two 22 nm pads on adjacent gates
@@ -91,8 +94,7 @@ _M1_PAD = _HALF_CT + M1_V0_ENCLOSURE  # 14: M1 past a via along its own track
 #: carries no tie is 18 x 41 nm, clear of the 504 nm2 M1.A.1 minimum that an
 #: 18 x 28 pad would sit exactly on.
 _BAR_CAP_ABOVE = _HALF_M1 + M1_MIN_SPACE  # 27
-_M1_PIN_LAYER = LAYERS["M1_PIN"]["layer"]
-_M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
+_M1_PIN_LAYER, _M1_PIN_TEXTTYPE = PIN_LAYERS["M1"]
 
 Role = Literal["A", "B"]
 

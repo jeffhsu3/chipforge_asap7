@@ -3,11 +3,9 @@
 ASAP7 PDK layout collateral for the
 [chipforge](https://github.com/jeffhsu3/chipforge) hardware ML compiler.
 
-ASAP7 is chipforge core's **primary** PDK target, so — unlike `chipforge_gf180`
-— this package is *not* a set of compiler hook-point subclasses. Core keeps its
+ASAP7 is chipforge core's **primary** PDK target. Core keeps its
 ASAP7 SRAM wrapper, `sram_backend` strings and chip-top flows. What lives here
-is the ASAP7 *geometry* that core's hand-built array compilers keep re-deriving
-independently.
+is the ASAP7 *geometry* that core's hand-built array compilers.
 
 ## Install
 
@@ -962,18 +960,6 @@ landing reaching from the router's two landings to the gate contact. Built
 that way the inverter extracts to the reducer's numbers, and
 `tests/test_reduce.py` offers it back to the reducer, which takes nothing more
 from the input track and still refuses the gate tie.
-
-## Geometry parity
-
-These helpers were *copied* out of chipforge's compilers, which still carry
-their own inlined copies — so the two can drift. `tests/test_grid_parity.py`
-builds a real `ROM_FULL`, `BROM_ARRAY_SLAVE`, `PNMOS_FULL` and `ROM_BitCell`
-with those scripts, asserts identical array FIN / GATE / GATE_CUT polygon
-sets, and checks bitcell fin centering. It finds the chipforge checkout
-automatically (or set `CHIPFORGE_ROOT`) and skips cleanly when there isn't one,
-so the suite still passes standalone. The standalone FinFET intentionally uses
-the released standard-cell device/tap topology instead of the compact,
-macro-specific ROM bitcell topology.
 
 ## Development
 

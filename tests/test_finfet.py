@@ -6,23 +6,17 @@ import pytest
 from chipforge_asap7.devices import FinFETSpec, build_finfet, nmos_fin, pmos_fin
 from chipforge_asap7.devices.finfet import (
     ACTIVE_ENC,
-    CONTACT_SIZE,
     DEVICE_GATE_CUT_HEIGHT,
-    GATE_CUT_MIN_SPACE,
     GATE_LIG_HEIGHT,
     GATE_SD_SPACE,
     GATE_V0_DX,
     M1_BOUNDARY_INSET,
-    M1_MIN_SPACE,
-    M1_V0_ENCLOSURE,
-    M1_WIDTH,
     MAX_FINS,
     MAX_VERIFIABLE_FINS,
     POLY_OVERHANG,
     ROUTING_BAND_HEIGHT,
     SD_BAR_WIDTH,
     TAP_COLUMN_WIDTH,
-    V0_LISD_ENCLOSURE,
     main,
 )
 from chipforge_asap7.layout import (
@@ -31,6 +25,14 @@ from chipforge_asap7.layout import (
     GATE_PITCH,
     GATE_WIDTH,
     LAYERS,
+)
+from chipforge_asap7.layout.rules import (
+    CONTACT_SIZE,
+    GATE_CUT_MIN_SPACE,
+    M1_MIN_SPACE,
+    M1_V0_ENCLOSURE,
+    M1_WIDTH,
+    V0_LISD_ENCLOSURE,
 )
 
 
@@ -78,6 +80,13 @@ def test_cell_name_separates_a_non_default_row_height():
     build_finfet(default, lib=lib)
     build_finfet(taller, lib=lib)  # would raise if the names collided
     assert set(lib.cells) == {default.cell_name, taller.cell_name}
+
+
+def test_one_fin_default_row_height_leaves_room_for_the_body_tap():
+    spec = FinFETSpec(fins=1)
+
+    assert spec.default_height_per_row == 4 * FIN_PITCH
+    assert spec.default_height_per_row == 108
 
 
 def test_double_digit_counts_stay_unambiguous():
@@ -455,6 +464,15 @@ def test_lib_argument_registers_the_cell():
     lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     cell = nmos_fin(fins=2, lib=lib)
     assert lib.cells[cell.name] is cell
+
+
+def test_lib_argument_rejects_non_nanometre_units_before_creating_a_cell():
+    lib = gdspy.GdsLibrary()  # gdspy defaults to micrometre user coordinates
+
+    with pytest.raises(ValueError, match=r"lib\.unit must be 1e-09 metres"):
+        build_finfet(FinFETSpec(), lib=lib)
+
+    assert lib.cells == {}
 
 
 def test_drain_contact_y_keeps_its_deprecated_alias():

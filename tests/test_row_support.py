@@ -11,11 +11,9 @@ import pytest
 
 from chipforge_asap7.devices import RowStack, build_row_support
 from chipforge_asap7.devices.finfet import (
-    CONTACT_SIZE,
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
     LI_RAIL_HEIGHT,
-    M1_WIDTH,
     MAX_VERIFIABLE_FINS,
     SD_BAR_WIDTH,
     SELECT_X_ENC,
@@ -30,6 +28,7 @@ from chipforge_asap7.devices.row_support import (
     main,
 )
 from chipforge_asap7.layout import FIN_PITCH, GATE_PITCH, LAYERS
+from chipforge_asap7.layout.rules import CONTACT_SIZE, M1_WIDTH
 
 #: A 3-fin/3-fin stack is two 135 nm bands: the released 270 nm cell row.
 RELEASED_ROW = RowStack(rows=((3, 3),))

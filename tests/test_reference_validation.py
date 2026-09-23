@@ -79,7 +79,6 @@ def test_generated_finfet_stack_matches_released_invxp33_dimensions(
     from chipforge_asap7.devices import FinFETSpec, build_finfet
     from chipforge_asap7.devices.finfet import (
         ACTIVE_ENC,
-        CONTACT_SIZE,
         DEVICE_GATE_CUT_HEIGHT,
         GATE_LIG_HEIGHT,
         LI_RAIL_HEIGHT,
@@ -88,6 +87,7 @@ def test_generated_finfet_stack_matches_released_invxp33_dimensions(
         SELECT_Y_ENC,
     )
     from chipforge_asap7.layout import FIN_PITCH, FIN_WIDTH, GATE_WIDTH, LAYERS
+    from chipforge_asap7.layout.rules import CONTACT_SIZE
 
     gds = released_library / _RELEASED_GDS
     external_tool(

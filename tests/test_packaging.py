@@ -38,10 +38,12 @@ def test_public_api_is_importable():
     """Every name in `__all__` resolves — a stale re-export list breaks consumers."""
     missing = [name for name in layout.__all__ if not hasattr(layout, name)]
     assert not missing
-    # The two submodules stay reachable for callers that prefer explicit paths.
-    from chipforge_asap7.layout import grid, layers
+    # The submodules stay reachable for callers that prefer explicit paths.
+    from chipforge_asap7.layout import grid, layers, rules
 
-    assert set(grid.__all__) | set(layers.__all__) == set(layout.__all__)
+    assert set(grid.__all__) | set(layers.__all__) | set(rules.__all__) == set(
+        layout.__all__
+    )
 
 
 def test_version_matches_distribution_metadata():

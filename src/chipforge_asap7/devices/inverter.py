@@ -50,15 +50,19 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
-from ..layout.layers import LAYERS, box, require_gdspy
-from .finfet import (
-    ACTIVE_ENC,
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import (
     CONTACT_SIZE,
-    DEVICE_GATE_CUT_HEIGHT,
-    GATE_LIG_HEIGHT,
     M1_MIN_SPACE,
     M1_V0_ENCLOSURE,
     M1_WIDTH,
+    M2_V1_ENCLOSURE,
+    SHORT_M1_EDGE,
+)
+from .finfet import (
+    ACTIVE_ENC,
+    DEVICE_GATE_CUT_HEIGHT,
+    GATE_LIG_HEIGHT,
     MAX_VERIFIABLE_FINS,
     POLY_OVERHANG,
     SELECT_X_ENC,
@@ -85,12 +89,6 @@ __all__ = [
 ACTIVE_ABUT_OVERHANG = 8
 #: Implant and well overhang in the same style (-17..179 on that cell).
 SELECT_ABUT_OVERHANG = 17
-#: M2 end-cap around a V1.  V1.M2.EN.2 asks for 5 nm, but the runset builds
-#: its 5 nm ring with ``.sized(-2.5.nm).sized(2.5.nm)``, which erases a strip
-#: that is exactly 5 nm wide -- the neighbouring V1.M1.EN.1 keeps its 1 dbu of
-#: slack and this one does not.  Landing 8 nm clears the rule as written and as
-#: implemented; the released decoder inverter draws exactly 5 and trips it.
-M2_V1_ENCLOSURE = 8
 #: How far the input strap keeps clear of the S/D via rows, along its own
 #: track.  Only 4 nm separates it from a drain landing pad in X, so the
 #: Euclidean M1 spacing is bought entirely in Y: sqrt(4^2 + 23^2) = 23.3 nm
@@ -102,16 +100,14 @@ GATE_STRAP_CLEARANCE = M1_MIN_SPACE + M1_V0_ENCLOSURE
 #: leaves a nanometre less than this on its side of the seam, and there the
 #: via rows' clearance is the limit instead.
 MIN_INPUT_REACH = CONTACT_SIZE // 2 + M1_V0_ENCLOSURE
-#: M1.S.2: an edge under 36 nm needs 25 nm to its neighbour where a long one
-#: needs 18.  `GATE_STRAP_CLEARANCE` buys 23.3 nm from a drain pad, so a landing
-#: that short has to stop 2 nm further from the via rows than the strap does.
-SHORT_M1_EDGE = 36
+#: An M1 edge under `SHORT_M1_EDGE` needs 25 nm to its neighbour (M1.S.2).
+#: `GATE_STRAP_CLEARANCE` buys 23.3 nm from a drain pad, so a landing that
+#: short has to stop 2 nm further from the via rows than the strap does.
 _SHORT_EDGE_SETBACK = 2
 
 INVERTER_PINS = ("A", "Y", "VDD", "VSS")
 
-_M1_PIN_LAYER = LAYERS["M1_PIN"]["layer"]
-_M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
+_M1_PIN_LAYER, _M1_PIN_TEXTTYPE = PIN_LAYERS["M1"]
 
 
 @dataclass(frozen=True)

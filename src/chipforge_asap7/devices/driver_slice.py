@@ -48,13 +48,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.layers import LAYERS, box, require_gdspy
-from .finfet import CONTACT_SIZE, M1_MIN_SPACE, M1_V0_ENCLOSURE, M1_WIDTH, MAX_FINS
-from .inverter import (
+from ..layout.rules import (
+    CONTACT_SIZE,
+    M1_MIN_SPACE,
+    M1_V0_ENCLOSURE,
+    M1_WIDTH,
     M2_V1_ENCLOSURE,
-    MIN_INPUT_REACH,
-    InverterSpec,
-    build_inverter,
 )
+from .finfet import MAX_FINS
+from .inverter import MIN_INPUT_REACH, InverterSpec, build_inverter
 from .nand import NandSpec, build_nand
 from .row_support import RowSupportSpec, build_row_support
 from .sizing import WORDLINES_PER_SLICE, DecoderSizing

@@ -17,11 +17,7 @@ from chipforge_asap7.devices import (
 )
 from chipforge_asap7.devices.finfet import (
     ACTIVE_ENC,
-    CONTACT_SIZE,
     GATE_LIG_HEIGHT,
-    M1_MIN_SPACE,
-    M1_V0_ENCLOSURE,
-    M1_WIDTH,
     MAX_FINS,
     MAX_VERIFIABLE_FINS,
     SELECT_X_ENC,
@@ -29,12 +25,18 @@ from chipforge_asap7.devices.finfet import (
 from chipforge_asap7.devices.inverter import (
     ACTIVE_ABUT_OVERHANG,
     GATE_STRAP_CLEARANCE,
-    M2_V1_ENCLOSURE,
     MIN_INPUT_REACH,
     SELECT_ABUT_OVERHANG,
     main,
 )
 from chipforge_asap7.layout import GATE_PITCH, LAYERS
+from chipforge_asap7.layout.rules import (
+    CONTACT_SIZE,
+    M1_MIN_SPACE,
+    M1_V0_ENCLOSURE,
+    M1_WIDTH,
+    M2_V1_ENCLOSURE,
+)
 
 #: The released decoder inverter, as `InverterSpec` describes it.
 RELEASED = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)

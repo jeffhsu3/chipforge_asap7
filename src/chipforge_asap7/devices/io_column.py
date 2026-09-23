@@ -33,10 +33,11 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
+from ..layout.rules import M4_PITCH
 from .bitline_mux import BitlineMuxSpec, build_bitline_mux_group
 from .output_latch import OutputLatchSpec, build_output_latch
 from .row_support import RowSupportSpec, build_row_support
-from .rowcell import CAP, M4_PITCH, V3_M3_CAP, label, m3_column, m4_track
+from .rowcell import CAP, V3_M3_CAP, label, m3_column, m4_track
 from .sense_amp_row import SenseAmpRowSpec, build_sense_amp_row
 from .write_driver import WriteDriverSpec, build_write_driver
 

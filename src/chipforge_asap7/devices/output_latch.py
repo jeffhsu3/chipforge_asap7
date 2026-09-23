@@ -29,6 +29,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
+from ..layout.rules import TRACK_PITCH
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -36,7 +37,6 @@ from .rowcell import (
     HALF,
     ISLAND_OVERHANG,
     PAD,
-    TRACK,
     draw_frame,
     draw_rails,
     gate_contact,
@@ -93,7 +93,7 @@ class OutputLatchSpec:
         low, _, high = self.tie_levels
         # The lowest tie sits a track pitch above the 80 nm track, on which
         # QA ties from below.
-        if low - CAP < y_n + CAP + 18 or low < self.n_level + TRACK:
+        if low - CAP < y_n + CAP + 18 or low < self.n_level + TRACK_PITCH:
             raise ValueError(
                 f"an n band of {n_lo.height} nm leaves no room for the tie tracks"
             )

@@ -49,17 +49,15 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from .finfet import M1_MIN_SPACE, SELECT_X_ENC
+from ..layout.rules import M1_MIN_SPACE, M4_PITCH, M4_X_GRID, TRACK_PITCH
+from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
     CAP,
     HALF,
     ISLAND_OVERHANG,
     M4_HALF,
-    M4_PITCH,
-    M4_X_GRID,
     PAD,
-    TRACK,
     V3_M3_CAP,
     V3_M4_CAP,
     draw_frame,
@@ -206,13 +204,13 @@ class BitlineMuxSpec:
         for net, other in (("BL", "BLN"), ("BLN", "BL")):
             y = ys[net]
             for y_other in (*self.track_ys(other), ys[other], *ties):
-                if abs(y - y_other) < TRACK:
+                if abs(y - y_other) < TRACK_PITCH:
                     raise ValueError(
-                        f"{net} entering on M2 at y={y} is within {TRACK} nm of other "
+                        f"{net} entering on M2 at y={y} is within {TRACK_PITCH} nm of other "
                         f"M2 at y={y_other}"
                     )
             for y_own in self.track_ys(net):
-                if 0 < abs(y - y_own) < TRACK:
+                if 0 < abs(y - y_own) < TRACK_PITCH:
                     raise ValueError(
                         f"{net} entering on M2 at y={y} crowds its own track at y={y_own}; "
                         "enter on the track or a full pitch from it"
@@ -304,12 +302,12 @@ class BitlineMuxSpec:
     def columns_left(self) -> int:
         """Empty gate pitches left of the devices: ``YSEL`` tracks, entry columns."""
         tracks = self.selects + (2 if self.has_entry_columns else 0)
-        return max(0, math.ceil((TRACK * tracks - 81) / GATE_PITCH))
+        return max(0, math.ceil((TRACK_PITCH * tracks - 81) / GATE_PITCH))
 
     @property
     def columns_right(self) -> int:
         """Empty gate pitches right of the devices, for the ``YSELN`` tracks."""
-        return max(0, math.ceil((TRACK * self.selects - 27) / GATE_PITCH))
+        return max(0, math.ceil((TRACK_PITCH * self.selects - 27) / GATE_PITCH))
 
     @property
     def width(self) -> int:
@@ -339,8 +337,8 @@ class BitlineMuxSpec:
         x = self.sd_x
         tracks = {"SA": x["x0"], "SAN": x["x4"], "PRECHN": x["x2"]}
         for j in range(self.selects):
-            tracks[f"YSEL[{j}]"] = x["x0"] - TRACK * (j + 1)
-            tracks[f"YSELN[{j}]"] = x["xb"] + TRACK * (j + 1)
+            tracks[f"YSEL[{j}]"] = x["x0"] - TRACK_PITCH * (j + 1)
+            tracks[f"YSELN[{j}]"] = x["xb"] + TRACK_PITCH * (j + 1)
         return tracks
 
     @property
@@ -348,8 +346,8 @@ class BitlineMuxSpec:
         """X of the two entry columns, outside every select track; ``BL`` outermost."""
         x0 = self.sd_x["x0"]
         return {
-            "BL": x0 - TRACK * (self.selects + 2),
-            "BLN": x0 - TRACK * (self.selects + 1),
+            "BL": x0 - TRACK_PITCH * (self.selects + 2),
+            "BLN": x0 - TRACK_PITCH * (self.selects + 1),
         }
 
     @property
@@ -381,7 +379,7 @@ class BitlineMuxSpec:
         bl = via_y(n_band) + HALF + M1_MIN_SPACE + HALF + 3
         # 152: its V1 sits on the gate contact's M1 bar, above the LIG.
         ysel = self.seam_y + PAD
-        return {"BL": bl, "BLN": bl + TRACK, "YSEL": ysel, "YSELN": ysel + TRACK}
+        return {"BL": bl, "BLN": bl + TRACK_PITCH, "YSEL": ysel, "YSELN": ysel + TRACK_PITCH}
 
     @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:

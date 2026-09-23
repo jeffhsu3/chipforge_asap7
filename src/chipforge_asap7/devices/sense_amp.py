@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_PITCH, FIN_WIDTH, GATE_PITCH
-from ..layout.layers import LAYERS, box, require_gdspy
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import CONTACT_SIZE, TRACK_PITCH
 from .finfet import ACTIVE_ENC, FinFETSpec
 from .finfet import build_finfet as build_leaf_finfet
 
@@ -41,9 +42,9 @@ __all__ = [
 DEFAULT_N_FINS = 12
 DEFAULT_P_FINS = 4
 
-ROUTE_WIDTH = 18
-ROUTE_PITCH = 36
-ROUTE_ENDCAP = ROUTE_WIDTH // 2 + 5
+ROUTE_WIDTH = CONTACT_SIZE  # wires as wide as the V1/V2 landing on them
+ROUTE_PITCH = TRACK_PITCH
+ROUTE_ENDCAP = ROUTE_WIDTH // 2 + 5  # V1.M2.EN.2 / V2.M3.EN.2
 DEVICE_SLOT_PITCH = 8 * GATE_PITCH
 DEVICE_LEFT_MARGIN = GATE_PITCH
 PIN_ACCESS_LENGTH = 2 * ROUTE_PITCH
@@ -105,8 +106,7 @@ _PLACEMENT_ORDER = (
     "N13",
 )
 
-_M2_PIN_LAYER = LAYERS["M2_PIN"]["layer"]
-_M2_PIN_TEXTTYPE = LAYERS["M2_PIN"]["datatype"]
+_M2_PIN_LAYER, _M2_PIN_TEXTTYPE = PIN_LAYERS["M2"]
 
 
 @dataclass(frozen=True)

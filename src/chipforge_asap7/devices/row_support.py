@@ -53,13 +53,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
-from ..layout.layers import LAYERS, box, require_gdspy
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import CONTACT_SIZE, M1_WIDTH
 from .finfet import (
-    CONTACT_SIZE,
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
     LI_RAIL_HEIGHT,
-    M1_WIDTH,
     MAX_VERIFIABLE_FINS,
     POLY_OVERHANG,
     SD_BAR_WIDTH,
@@ -91,8 +90,7 @@ DEFAULT_WIDTH_CPP = {"filler": 2, "tap": 2, "decap": 6}
 #: placed between; on its own it does not pass.
 MINIMUM_WIDTH_CPP = {"filler": 2, "tap": 2, "decap": 3}
 
-_M1_PIN_LAYER = LAYERS["M1_PIN"]["layer"]
-_M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
+_M1_PIN_LAYER, _M1_PIN_TEXTTYPE = PIN_LAYERS["M1"]
 
 
 @dataclass(frozen=True)

@@ -62,7 +62,15 @@ from ..layout.grid import (
     GATE_PITCH,
     GATE_WIDTH,
 )
-from ..layout.layers import LAYERS, box, require_gdspy
+from ..layout.layers import PIN_LAYERS, box, require_gdspy
+from ..layout.rules import (
+    CONTACT_SIZE,
+    GATE_CUT_MIN_SPACE,
+    M1_MIN_SPACE,
+    M1_V0_ENCLOSURE,
+    M1_WIDTH,
+    V0_LISD_ENCLOSURE,
+)
 
 __all__ = [
     "ACTIVE_ENC",
@@ -97,13 +105,6 @@ __all__ = [
 ]
 
 # ── Device rules (nm), matching the released ASAP7 7.5-track cells ─────
-CONTACT_SIZE = 18  # V0 square between local interconnect and M1
-# V0.M1.AUX.3 requires M1 to be exactly as wide as the V0 landing on it,
-# measured across the M1 track, so these two are equal by rule and not by
-# coincidence.  Metal shapes are still drawn from M1_WIDTH and vias from
-# CONTACT_SIZE, so neither one silently resizes the other.
-M1_WIDTH = CONTACT_SIZE  # M1 landing pad width
-M1_V0_ENCLOSURE = 5  # V0.M1.EN.1: M1 end-cap past V0 along the track
 M1_BOUNDARY_INSET = 18  # M1.S.1 clearance the drain pad keeps from the cell edge
 SD_BAR_WIDTH = 24  # LISD source/drain bar width (x_sd +/- 12)
 GATE_SD_SPACE = 5  # gate-edge to LISD-edge spacing in the ASAP7 cells
@@ -141,15 +142,8 @@ MAX_VERIFIABLE_FINS = 12
 # than a rule; raise it if a design needs more.
 MAX_FINS = 18
 
-# ── Runset limits the fixed geometry above has no slack against ───────────
-# The drawn cell sits exactly on these three rules.  `test_finfet` asserts the
-# drawn margins against them so a geometry edit fails immediately instead of
-# waiting for the next machine that happens to have KLayout installed.
-GATE_CUT_MIN_SPACE = 35  # GCUT.S.3
-M1_MIN_SPACE = 18  # M1.S.1, both edges > 36 nm
-V0_LISD_ENCLOSURE = 3  # V0.LISD.EN.2, on at least two opposite sides
-
 _ISOLATION_FINS = 2  # one select-enclosure fin pitch above and below ACTIVE
+_GDS_UNIT_METERS = 1e-9  # every coordinate emitted by this module is in nm
 #: Threshold flavor -> its layout marker layer, or None for the RVT default.
 VT_LAYERS: dict[str, str | None] = {
     "rvt": None,
@@ -157,8 +151,7 @@ VT_LAYERS: dict[str, str | None] = {
     "slvt": "SLVT",
     "sram": "SRAMVT",
 }
-_M1_PIN_LAYER = LAYERS["M1_PIN"]["layer"]
-_M1_PIN_TEXTTYPE = LAYERS["M1_PIN"]["datatype"]
+_M1_PIN_LAYER, _M1_PIN_TEXTTYPE = PIN_LAYERS["M1"]
 
 
 @dataclass(frozen=True)
@@ -175,7 +168,9 @@ class FinFETSpec:
         sd_dx: retained for API compatibility; non-``None`` values are rejected
             because an off-grid S/D column cannot be DRC clean.
         row_height: height of the ACTIVE/select band.  Defaults to
-            ``(fins + 2) * FIN_PITCH`` and may be enlarged by whole fin pitches.
+            ``max(fins + 2, 4) * FIN_PITCH`` and may be enlarged by whole fin
+            pitches.  The four-pitch floor gives a one-fin device enough room
+            for its minimum-area body tap.
         vt: threshold-voltage model: ``"rvt"``, ``"lvt"``, ``"slvt"`` or
             ``"sram"``.  Non-RVT choices also add the corresponding marker.
     """
@@ -537,13 +532,21 @@ def build_finfet(
     Args:
         spec: the device to draw.
         name: cell name; defaults to `spec.cell_name`.
-        lib: a `gdspy.GdsLibrary` to create the cell in.  When omitted the cell
-            is standalone (`exclude_from_current=True`), so building several
-            devices in one process cannot collide in gdspy's global library.
+        lib: a `gdspy.GdsLibrary` with ``unit=1e-9`` in which to create the
+            cell.  When omitted the cell is standalone
+            (`exclude_from_current=True`), so building several devices in one
+            process cannot collide in gdspy's global library.  The returned
+            cell still uses nanometres as its user coordinates and must
+            eventually be written through a library with ``unit=1e-9``.
         draw_pin_labels: emit the leaf-level ``D/G/S/B`` labels.  Composite
             cells disable these and expose only their own top-level pins.
     """
     gdspy = require_gdspy()
+    if lib is not None and lib.unit != _GDS_UNIT_METERS:
+        raise ValueError(
+            "build_finfet emits nanometre coordinates; lib.unit must be "
+            f"{_GDS_UNIT_METERS:g} metres, got {lib.unit!r}"
+        )
     cell_name = name or spec.cell_name
     cell = (
         lib.new_cell(cell_name)

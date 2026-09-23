@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from types import ModuleType
 
-__all__ = ["LAYERS", "box", "have_gdspy", "layer", "require_gdspy"]
+__all__ = ["LAYERS", "PIN_LAYERS", "box", "have_gdspy", "layer", "require_gdspy"]
 
 LAYERS: dict[str, dict[str, int]] = {
     "NWELL": {"layer": 1, "datatype": 0},
@@ -72,6 +72,12 @@ LAYERS: dict[str, dict[str, int]] = {
     "BOUNDARY": {"layer": 100, "datatype": 0},
     "SRAMVT": {"layer": 110, "datatype": 0},
     "DIEAREA": {"layer": 235, "datatype": 5},
+}
+
+#: Metal -> the ``(layer, texttype)`` its pin labels go on.
+PIN_LAYERS: dict[str, tuple[int, int]] = {
+    metal: (LAYERS[f"{metal}_PIN"]["layer"], LAYERS[f"{metal}_PIN"]["datatype"])
+    for metal in ("M1", "M2", "M3", "M4")
 }
 
 _gdspy_module: ModuleType | None = None
