@@ -22,6 +22,14 @@ the cell's own metal, labelled once here.
 
 A tap in the spare row pair ties the block's wells and substrate, so the
 block is DRC clean on its own (the latch-up rule reaches 30 um).
+
+``two_sided`` puts a second group on the logic column's other side, mirrored
+in x so its bitlines enter from the right: one amplifier, driver and latch
+for two arrays that face each other (two banks of one port, only one of which
+a cycle accesses).  The ``SA``/``SAN`` lines carry on across the logic column
+to the second group's tracks; its pins are the first group's with ``_R``
+(``BL_R[i]``, ``YSEL_R[i]``, ``PRECHN_R``), since each array is precharged
+and selected on its own.
 """
 
 from __future__ import annotations
@@ -74,6 +82,8 @@ class IoColumnSpec:
             M3, so that one phase precharges low and evaluates high, and the
             block has an ``SAE`` pin only.  That is how the released
             composite drives it.
+        two_sided: a second group, mirrored, on the logic column's right,
+            sharing the amplifier, driver and latch (pins suffixed ``_R``).
     """
 
     mux: BitlineMuxSpec = field(default_factory=_default_mux)
@@ -82,6 +92,7 @@ class IoColumnSpec:
     output_latch: OutputLatchSpec = field(default_factory=OutputLatchSpec)
     tap: bool = True
     one_sense_phase: bool = False
+    two_sided: bool = False
 
     def __post_init__(self) -> None:
         rows = {
@@ -129,7 +140,16 @@ class IoColumnSpec:
 
     @property
     def width(self) -> int:
+        return self.mux.width * (2 if self.two_sided else 1) + self.logic_width
+
+    @property
+    def right_group_x(self) -> int:
+        """Left edge of the mirrored second group (its original right edge)."""
         return self.mux.width + self.logic_width
+
+    def right_x(self, x: float) -> float:
+        """A point of the group, in the block, as the mirrored second group puts it."""
+        return self.right_group_x + (self.mux.width - x)
 
     @property
     def placements(self) -> dict[str, tuple[int, int]]:
@@ -172,19 +192,26 @@ class IoColumnSpec:
             self.write_driver.track_x,
             self.output_latch.track_x,
         )
+        def group(net: str) -> list[float]:
+            """The net's track in each group."""
+            xs = [mux_x[net]]
+            if self.two_sided:
+                xs.append(self.right_x(mux_x[net]))
+            return xs
+
         return {
             "SA": [
-                (sa_y + _ROUTE_OFFSET, [mux_x["SA"], x_logic + sa_x["SA"]]),
-                (wd_y + _ROUTE_OFFSET, [mux_x["SA"], x_logic + wd_x["SA"]]),
+                (sa_y + _ROUTE_OFFSET, [*group("SA"), x_logic + sa_x["SA"]]),
+                (wd_y + _ROUTE_OFFSET, [*group("SA"), x_logic + wd_x["SA"]]),
             ],
             "SAN": [
                 (
                     sa_y + _ROUTE_OFFSET + M4_PITCH,
-                    [mux_x["SAN"], x_logic + sa_x["SAN"]],
+                    [*group("SAN"), x_logic + sa_x["SAN"]],
                 ),
                 (
                     wd_y + _ROUTE_OFFSET + M4_PITCH,
-                    [mux_x["SAN"], x_logic + wd_x["SAN"]],
+                    [*group("SAN"), x_logic + wd_x["SAN"]],
                 ),
             ],
             "QA": [(ol_y + M4_PITCH, [x_logic + sa_x["QA"], x_logic + ol_x["QA"]])],
@@ -200,6 +227,7 @@ class IoColumnSpec:
             f"iocol_x{mux.selects}_r{mux.rows}_h{mux.band_height[0]}x{mux.band_height[1]}"
             f"{mux._variant_tag}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}_ol{ol.fingers}"
             f"{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
+            f"{'_2s' if self.two_sided else ''}"
         )
 
     @property
@@ -230,11 +258,12 @@ class IoColumnSpec:
                     pins[pin] = (metal, (ox + x, oy + y))
 
         group = self.mux.group_pin_positions()
-        take(
-            group,
-            place["mux"],
-            [p for p in group if p.startswith(("BL", "YSEL")) or p == "PRECHN"],
-        )
+        group_pins = [p for p in group if p.startswith(("BL", "YSEL")) or p == "PRECHN"]
+        take(group, place["mux"], group_pins)
+        if self.two_sided:
+            for pin in group_pins:
+                metal, (x, y) = group[pin]
+                pins[_right_pin(pin)] = (metal, (self.right_x(x), y))
         if self.one_sense_phase:
             # One net: pin it on the top stub, clear of the SA/SAN lines that
             # cross the amplifier's bottom row.
@@ -257,6 +286,12 @@ class IoColumnSpec:
         return pins
 
 
+def _right_pin(pin: str) -> str:
+    """The second group's name for a group pin: ``BL[2]`` -> ``BL_R[2]``, ``PRECHN`` -> ``PRECHN_R``."""
+    base, bracket, index = pin.partition("[")
+    return f"{base}_R{bracket}{index}"
+
+
 def _block_devices(
     spec: IoColumnSpec,
 ) -> list[tuple[str, str, str, str, str, int, str]]:
@@ -273,6 +308,10 @@ def _block_devices(
         for name, d, g, s, flavor, fins in spec.mux.devices:
             nets = [f"{n}[{i}]" if n in per_leaf else n for n in (d, g, s)]
             devices.append((f"M{i}_{name[1:]}", *nets, flavor, fins, f"mux{i}"))
+            if spec.two_sided:  # the same leaf in the second group, on its own pins
+                right = [_right_pin(n) if n in per_leaf or n == "PRECHN" else n for n in (d, g, s)]
+                right = [f"{n}[{i}]" if n.endswith("_R") and n != "PRECHN_R" else n for n in right]
+                devices.append((f"M{i}R_{name[1:]}", *right, flavor, fins, f"muxR{i}"))
     shared = {"SA", "SAN", "QA", "QAN", "VDD", "VSS"}
     pins = {"SAE", "SAPRECHN", "D", "WRENA", "WRENAN", "OE", "OEB", "Q"}
     for tag, cell in (
@@ -322,9 +361,13 @@ def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
         for pin in ("BL", "BLN", "YSEL", "YSELN")
     ]
     phases = ("SAE",) if spec.one_sense_phase else ("SAE", "SAPRECHN")
+    right = []
+    if spec.two_sided:
+        right = [_right_pin(p) for p in per_leaf] + ["PRECHN_R"]
     return (
         *per_leaf,
         "PRECHN",
+        *right,
         *phases,
         "D",
         "WRENA",
@@ -387,6 +430,13 @@ def build_io_column(
     }
     for key, placed in cells.items():
         cell.add(gdspy.CellReference(placed, origin=place[key]))
+    if spec.two_sided:
+        # A reflection in y then a half turn is a mirror in x.
+        cell.add(
+            gdspy.CellReference(
+                cells["mux"], origin=(spec.width, 0), rotation=180, x_reflection=True
+            )
+        )
 
     # Support: fillers beside the narrower cells, and in the spare pairs a tap
     # first, then fillers.  A support cell is two pitches or more, which is

@@ -30,6 +30,13 @@ EIGHT = IoColumnSpec(
     sense_amp=SenseAmpRowSpec(n_fingers=4, tail_fingers=4),
     output_latch=OutputLatchSpec(fingers=4),
 )
+# Port B of two banks facing each other: one amplifier, driver and latch for
+# a group on each side (the OpenFinRAM 8T bitcell's M4 bitlines, on its fin grid).
+TWO_SIDED = IoColumnSpec(
+    mux=BitlineMuxSpec(rows=2, bitline_entry=(510, 78), bitline_layer="M4", grid_offset=13.5),
+    one_sense_phase=True,
+    two_sided=True,
+)
 
 
 def _library():
@@ -39,7 +46,7 @@ def _library():
 
 
 @pytest.mark.parametrize(
-    "spec", [PORT_A, PORT_B, EIGHT], ids=lambda spec: spec.cell_name
+    "spec", [PORT_A, PORT_B, EIGHT, TWO_SIDED], ids=lambda spec: spec.cell_name
 )
 def test_block_is_drc_clean_with_its_tap(spec, asap7_drc):
     library = _library()
@@ -54,7 +61,7 @@ def test_without_a_tap_only_the_latch_up_rule_fires(asap7_drc):
 
 
 @pytest.mark.parametrize(
-    "spec", [PORT_A, PORT_B, EIGHT], ids=lambda spec: spec.cell_name
+    "spec", [PORT_A, PORT_B, EIGHT, TWO_SIDED], ids=lambda spec: spec.cell_name
 )
 def test_block_matches_its_flat_unit_fin_reference(
     spec, tmp_path: Path, require_klayout
@@ -75,7 +82,8 @@ def test_block_matches_its_flat_unit_fin_reference(
         timeout=1800,
     )
     assert result.matched
-    fins = spec.mux.selects * sum(f for *_, f in spec.mux.devices) + sum(
+    groups = 2 if spec.two_sided else 1
+    fins = groups * spec.mux.selects * sum(f for *_, f in spec.mux.devices) + sum(
         sum(f for *_, f in part.devices)
         for part in (spec.sense_amp, spec.write_driver, spec.output_latch)
     )
@@ -101,6 +109,33 @@ def test_the_outputs_crossed_do_not_match(tmp_path: Path, require_klayout):
         crossed.append(line)
     reference = tmp_path / "reference.spice"
     reference.write_text("\n".join(crossed) + "\n")
+    assert not run_lvs(
+        gds,
+        reference,
+        tmp_path / "lvs",
+        cell_name=cell.name,
+        tie_bodies=True,
+        flat=True,
+        timeout=1800,
+    ).matched
+
+
+def test_a_second_group_on_its_own_sense_lines_does_not_match(tmp_path: Path, require_klayout):
+    """The shared amplifier is checked: a reference whose second group has sense lines of its own fails."""
+    spec = TWO_SIDED
+    library = _library()
+    cell = build_io_column(spec, lib=library)
+    gds = tmp_path / "block.gds"
+    library.write_gds(str(gds))
+    text = render_io_column_lvs_schematic(spec, cell_name=cell.name)
+    split = [
+        line.replace(" SA ", " SA_OWN ").replace(" SAN ", " SAN_OWN ")
+        if line.split(" ", 1)[0].split("_")[0].endswith("R") else line
+        for line in text.splitlines()
+    ]
+    assert split != text.splitlines()
+    reference = tmp_path / "reference.spice"
+    reference.write_text("\n".join(split) + "\n")
     assert not run_lvs(
         gds,
         reference,

@@ -583,3 +583,15 @@ OpenFinRAM's `iocol_sram_8t_a/b` are this block (built there at the
 bitcell's bitline heights, port A mirrored), and its netlist is what the
 compiler's deck instantiates. Two blocks built into one gdspy library share
 their logic cells and supports.
+
+`two_sided=True` puts a second group on the logic column's right, mirrored in
+x so its bitlines enter from that side, and carries the `SA`/`SAN` M4 lines
+on across the logic column to its tracks: one amplifier, write driver and
+output latch for two arrays that face each other, such as two banks of one
+port, of which a cycle accesses one. Each group keeps its own precharge and
+selects (the second's pins are the first's with `_R`: `BL_R[i]`,
+`YSEL_R[i]`, `PRECHN_R`). For the four-leaf block that is 2376 nm wide
+instead of two blocks' 3240. The sense lines now also carry the second
+group's unselected leaves and the wire across the core. The tests hold it to
+the runset and to its flat reference, and a reference whose second group has
+sense lines of its own is the case that fails.
