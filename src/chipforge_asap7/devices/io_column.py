@@ -1,6 +1,7 @@
 """The column IO of one port for one data bit: mux group, sense amplifier, write driver, output latch.
 
-`IoColumnSpec` takes the four IO cells drawn on one row and places them::
+`IoColumnSpec` places a mux group beside a logic column of three cells. The
+default block has one group::
 
     ┌──────────────┬───────────────────┐  ← top = the mux group's height
     │              │ write driver  fill│  row pair 3
@@ -11,8 +12,24 @@
     └──────────────┴───────────────────┘
     ↑ bitlines enter here, from the array
 
-The group's ``SA``/``SAN``/``PRECHN`` and select tracks run its full height
-on M3; the logic cells' pins are M3 stubs and columns.  What joins them is
+With ``two_sided=True``, a mirrored group occupies the other side::
+
+    ← left array bitlines                         right array bitlines →
+    ┌──────────────┬───────────────────┬──────────────┐
+    │              │ write driver  fill│              │  row pair 3
+    │ left bitline │ tap        fillers│ right bitline│  row pair 2
+    │ mux group    │ output latch  fill│ mux group    │  row pair 1
+    │              │ sense amp     fill│ (mirrored)   │  row pair 0
+    └──────────────┴───────────────────┴──────────────┘
+
+The groups share the logic column and its ``SA``/``SAN`` lines. Each group has
+its own bitlines, selects and ``PRECHN``; the right group's pins carry ``_R``
+(``BL_R[i]``, ``YSEL_R[i]``, ``PRECHN_R``). This serves two facing arrays of one
+port, only one of which a cycle accesses.
+
+The groups' ``PRECHN`` and select tracks run their full height on M3;
+``SA``/``SAN`` stop short at the outer ends so stacked blocks stay separate.
+The logic cells' pins are M3 stubs and columns. What joins them is
 drawn here on M4, the one layer none of the cells use: a horizontal wire
 with a V3 on each M3 it meets, at a height where both exist.  ``SA``/``SAN``
 reach the sense amplifier's stubs and the write driver's columns from the
@@ -22,14 +39,6 @@ the cell's own metal, labelled once here.
 
 A tap in the spare row pair ties the block's wells and substrate, so the
 block is DRC clean on its own (the latch-up rule reaches 30 um).
-
-``two_sided`` puts a second group on the logic column's other side, mirrored
-in x so its bitlines enter from the right: one amplifier, driver and latch
-for two arrays that face each other (two banks of one port, only one of which
-a cycle accesses).  The ``SA``/``SAN`` lines carry on across the logic column
-to the second group's tracks; its pins are the first group's with ``_R``
-(``BL_R[i]``, ``YSEL_R[i]``, ``PRECHN_R``), since each array is precharged
-and selected on its own.
 """
 
 from __future__ import annotations
@@ -63,6 +72,7 @@ _ROUTE_OFFSET = (
 _SA_TIE_ABOVE = (
     17  # the amplifier's SAPRECHN tie, below its top row's seam (its _TIE_OFFSETS[1])
 )
+_MUX_LEAF_NETS = ("BL", "BLN", "YSEL", "YSELN")
 
 
 def _default_mux() -> BitlineMuxSpec:
@@ -192,6 +202,7 @@ class IoColumnSpec:
             self.write_driver.track_x,
             self.output_latch.track_x,
         )
+
         def group(net: str) -> list[float]:
             """The net's track in each group."""
             xs = [mux_x[net]]
@@ -286,10 +297,25 @@ class IoColumnSpec:
         return pins
 
 
+def _mux_net(
+    net: str, leaf_index: int | None = None, *, side: Literal["left", "right"]
+) -> str:
+    """Name a mux net in the block; sense and supply nets stay shared."""
+    suffix = "_R" if side == "right" else ""
+    if net in _MUX_LEAF_NETS:
+        if leaf_index is None:
+            raise ValueError(f"{net} needs a leaf index")
+        return f"{net}{suffix}[{leaf_index}]"
+    if net == "PRECHN":
+        return f"PRECHN{suffix}"
+    return net
+
+
 def _right_pin(pin: str) -> str:
-    """The second group's name for a group pin: ``BL[2]`` -> ``BL_R[2]``, ``PRECHN`` -> ``PRECHN_R``."""
-    base, bracket, index = pin.partition("[")
-    return f"{base}_R{bracket}{index}"
+    """Map a group pin to its right-side name using the mux naming rule."""
+    net, bracket, index = pin.partition("[")
+    leaf_index = int(index.removesuffix("]")) if bracket else None
+    return _mux_net(net, leaf_index, side="right")
 
 
 def _block_devices(
@@ -303,15 +329,15 @@ def _block_devices(
     are uncontacted diffusion).
     """
     devices = []
-    per_leaf = {"BL", "BLN", "YSEL", "YSELN"}
+    sides = ("left", "right") if spec.two_sided else ("left",)
     for i in range(spec.mux.selects):
         for name, d, g, s, flavor, fins in spec.mux.devices:
-            nets = [f"{n}[{i}]" if n in per_leaf else n for n in (d, g, s)]
-            devices.append((f"M{i}_{name[1:]}", *nets, flavor, fins, f"mux{i}"))
-            if spec.two_sided:  # the same leaf in the second group, on its own pins
-                right = [_right_pin(n) if n in per_leaf or n == "PRECHN" else n for n in (d, g, s)]
-                right = [f"{n}[{i}]" if n.endswith("_R") and n != "PRECHN_R" else n for n in right]
-                devices.append((f"M{i}R_{name[1:]}", *right, flavor, fins, f"muxR{i}"))
+            for side in sides:
+                suffix = "R" if side == "right" else ""
+                nets = [_mux_net(net, i, side=side) for net in (d, g, s)]
+                devices.append(
+                    (f"M{i}{suffix}_{name[1:]}", *nets, flavor, fins, f"mux{suffix}{i}")
+                )
     shared = {"SA", "SAN", "QA", "QAN", "VDD", "VSS"}
     pins = {"SAE", "SAPRECHN", "D", "WRENA", "WRENAN", "OE", "OEB", "Q"}
     for tag, cell in (
@@ -356,14 +382,18 @@ def block_netlist(spec: IoColumnSpec, name: str | None = None) -> str:
 def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
     """The block's pins: the group's per-leaf ones, its precharge, the three cells' controls, supplies."""
     per_leaf = [
-        f"{pin}[{i}]"
+        _mux_net(pin, i, side="left")
         for i in range(spec.mux.selects)
-        for pin in ("BL", "BLN", "YSEL", "YSELN")
+        for pin in _MUX_LEAF_NETS
     ]
     phases = ("SAE",) if spec.one_sense_phase else ("SAE", "SAPRECHN")
     right = []
     if spec.two_sided:
-        right = [_right_pin(p) for p in per_leaf] + ["PRECHN_R"]
+        right = [
+            _mux_net(pin, i, side="right")
+            for i in range(spec.mux.selects)
+            for pin in _MUX_LEAF_NETS
+        ] + [_mux_net("PRECHN", side="right")]
     return (
         *per_leaf,
         "PRECHN",

@@ -440,7 +440,6 @@ class FinFETSpec:
         """Fins in the whole device — what actually sets drive strength."""
         return self.fins * self.fingers * self.multipliers
 
-    # ── Netlist ───────────────────────────────────────────────────────────────
     @property
     def model(self) -> str:
         """ASAP7 BSIM-CMG model-card name."""
@@ -460,7 +459,6 @@ class FinFETSpec:
         )
 
 
-# ── Layout ────────────────────────────────────────────────────────────────────
 def build_device_band(
     cell: Any,
     spec: FinFETSpec,

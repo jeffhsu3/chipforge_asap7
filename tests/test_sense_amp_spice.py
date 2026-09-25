@@ -37,6 +37,7 @@ def test_sa_high_deck_has_correct_stimulus_and_timing(tmp_path: Path):
     assert "0.495n 0 0.5n 0.7" in deck
     assert "0.515n 0 0.52n 0.7" in deck
     assert "wrdata sa_high.dat" in deck
+    assert "write sa_high.raw" in deck
     assert "SA > SAN -> QA high" in deck
 
 

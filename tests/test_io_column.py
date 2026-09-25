@@ -11,6 +11,7 @@ from chipforge_asap7.devices import (
     OutputLatchSpec,
     SenseAmpRowSpec,
     WriteDriverSpec,
+    block_netlist,
     build_io_column,
     io_column_pins,
 )
@@ -58,6 +59,22 @@ def test_pins_are_the_leaves_per_leaf_pins_the_controls_and_the_rails():
     assert "SAPRECHN" not in one and one["SAE"][1][1] > positions["SAE"][1][1]
     # Nine rails, each labelled.
     assert sum(1 for p in positions if p.startswith(("VDD", "VSS"))) == 9
+
+
+def test_two_sided_mux_uses_separate_array_pins_and_shared_sense_lines():
+    spec = IoColumnSpec(two_sided=True)
+    pins = io_column_pins(spec)
+    assert {"BL_R[0]", "YSEL_R[0]", "PRECHN_R"} <= set(pins)
+    assert set(pins) <= {pin.split(".")[0] for pin in spec.pin_positions}
+
+    devices = {
+        line.split()[0]: line.split()
+        for line in block_netlist(spec).splitlines()
+        if line.startswith("M")
+    }
+    assert devices["M0_NT"][1:4] == ["BL[0]", "YSEL[0]", "SA"]
+    assert devices["M0R_NT"][1:4] == ["BL_R[0]", "YSEL_R[0]", "SA"]
+    assert devices["M0R_PPT"][1:4] == ["BL_R[0]", "PRECHN_R", "VDD"]
 
 
 def test_routes_join_the_tracks_where_both_ends_exist():

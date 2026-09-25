@@ -247,9 +247,11 @@ set wr_vecnames
 dc Vgate {gate_sweep}
 let drain_current_a = {drain_current}
 wrdata transfer.dat drain_current_a
+write transfer.raw
 dc Vdrain {drain_sweep}
 let drain_current_a = {drain_current}
 wrdata output.dat drain_current_a
+write output.raw
 quit
 .endc
 .end
@@ -295,6 +297,7 @@ set wr_vecnames
 dc Vgate {gate_sweep}
 let supply_current_a = -i(Vsupply)
 wrdata switch.dat v(d) supply_current_a
+write switch.raw
 quit
 .endc
 .end
@@ -461,6 +464,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--openvaf", default="openvaf")
     parser.add_argument("--ngspice", default="ngspice")
     parser.add_argument("--out", type=Path, default=Path("build/finfet_spice"))
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Also draw the run to a PNG beside results.json (needs the plot extra).",
+    )
     args = parser.parse_args(argv)
 
     spec = FinFETSpec(
@@ -501,6 +509,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_ohms=args.load_ohms,
     )
     print(json.dumps(asdict(result), indent=2))
+    if args.plot:
+        # A failing run is the one most worth looking at, so plot either way.
+        from .spice_plots import plot_finfet_dc
+
+        print(f"plot: {plot_finfet_dc(output_dir.resolve())}")
     print(f"artifacts: {output_dir.resolve()}")
     return 0 if result.passed else 1
 

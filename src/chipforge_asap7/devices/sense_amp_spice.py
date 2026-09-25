@@ -226,6 +226,7 @@ set wr_vecnames
 tran {step_ps:g}p {stop_ns:g}n uic
 let supply_current_a = -i(Vsupply)
 wrdata {case}.dat v(sa) v(san) v(SAPRECHN) v(SAE) v(qa) v(qan) supply_current_a
+write {case}.raw
 quit
 .endc
 .end
@@ -494,6 +495,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--openvaf", default="openvaf")
     parser.add_argument("--ngspice", default="ngspice")
     parser.add_argument("--out", type=Path, default=Path("build/sense_amp_spice"))
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Also draw the run to a PNG beside results.json (needs the plot extra).",
+    )
     args = parser.parse_args(argv)
 
     model_card = args.model_card or find_default_model_card()
@@ -531,6 +537,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         step_ps=args.step_ps,
     )
     print(json.dumps(asdict(result), indent=2))
+    if args.plot:
+        # A failing run is the one most worth looking at, so plot either way.
+        from .spice_plots import plot_sense_amp
+
+        print(f"plot: {plot_sense_amp(output_dir)}")
     print(f"artifacts: {output_dir}")
     return 0 if result.passed else 1
 

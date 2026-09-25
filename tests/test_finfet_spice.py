@@ -55,6 +55,9 @@ def test_characterization_deck_has_one_dut_and_two_dc_sweeps(tmp_path: Path):
     assert "NFIN=2 L=20n NF=3" in deck
     assert "dc Vgate 0 0.7 0.01" in deck
     assert "dc Vdrain 0 0.7 0.01" in deck
+    # Every node of each sweep is kept for a waveform viewer.
+    assert "write transfer.raw" in deck
+    assert "write output.raw" in deck
     assert "let drain_current_a = -i(Vdrain)" in deck
     assert "not GDS extraction/LVS" in deck
 
@@ -82,6 +85,7 @@ def test_switch_fixture_is_one_transistor_plus_a_load(tmp_path: Path):
     assert deck.count("Ndut0 ") == 1
     assert "Rload vdd d 100000" in deck
     assert "wrdata switch.dat v(d) supply_current_a" in deck
+    assert "write switch.raw" in deck
 
 
 def test_pmos_decks_reverse_the_biases(tmp_path: Path):

@@ -17,6 +17,7 @@ git clone https://github.com/jeffhsu3/chipforge_asap7.git
 cd chipforge_asap7
 python -m pip install .          # constants and grid math
 python -m pip install ".[gds]"  # also gdspy for drawing, tyro for the commands
+python -m pip install ".[plot]"  # matplotlib, to plot the SPICE benches
 ```
 
 The repository currently requires GitHub access. To develop against a local

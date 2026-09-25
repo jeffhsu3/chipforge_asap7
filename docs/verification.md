@@ -27,7 +27,8 @@ uv run python -m chipforge_asap7.devices.spice \
 ```
 
 The output directory contains the two runnable `.sp` decks, Id-Vg/Id-Vd/switch
-data, simulator logs, and `results.json`. This is a **compact-model test**, not
+data (as `.dat` columns and full `.raw` files), simulator logs, and
+`results.json`. This is a **compact-model test**, not
 a post-layout proof. The generated GDS is covered by the KLayout DRC and
 layout-connectivity regressions described in
 [the cell generators](devices.md). A formal post-layout proof
@@ -120,6 +121,37 @@ output differential reaches 80% of VDD. The default 100 mV input differential,
 12-fin nFETs, 4-fin pFETs, and 1 fF output loads can all be overridden from the
 CLI. Generated decks, waveforms, logs, resolution delays, peak currents, energy,
 and `results.json` are written under `build/sense_amp_spice/`.
+
+### Looking at the results
+
+Both benches take `--plot` (with the `plot` extra installed) and draw the run
+to a PNG beside `results.json`, with the bench's own pass criteria drawn on it.
+They plot whether the run passed or not, since a failing run is the one worth
+looking at:
+
+- `dc.png` for a FinFET: Id-Vg on a log axis with the off and on currents the
+  verdict is read from, Id-Vd, and the switch's output against the levels it
+  must reach. Both flavours are drawn against |Vgs| and |Vds|, so an nFET
+  and a pFET read the same way.
+- `transient.png` for the sense amplifier: one column per input polarity, from
+  just before precharge releases to after the decision, with the controls,
+  the inputs, the outputs against the 20 % / 80 % thresholds and the measured
+  resolution point, and the supply current.
+
+```bash
+uv run python -m chipforge_asap7.devices.sense_amp_spice --plot
+uv run python -m chipforge_asap7.devices.spice_plots build/sense_amp_spice build/finfet_spice/nmos_fin_111
+```
+
+The second form re-plots finished runs without simulating again.
+
+Each deck also saves every node of its analysis to a `.raw` file
+(`transfer.raw`, `sa_high.raw`, ...), including the internal nodes the `.dat`
+columns leave out, such as the latch's `N52`/`N57`. Open it in an analog
+waveform viewer (xschem's, gaw) or read it in Python with `spicelib`, when a
+case fails for a reason the fixed plots do not show. For a quick look without
+either, `ngspice` interactive mode can load it: `load sa_high.raw` then
+`plot v(qa) v(qan)`.
 
 ## LVS of an assembled macro
 
