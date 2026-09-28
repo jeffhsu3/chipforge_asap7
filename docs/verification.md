@@ -4,8 +4,7 @@
 
 A transistor still needs a small netlist for simulation: the instance line
 names D/G/S/B and selects the compact model, while voltage sources define the
-biases to sweep. GDS contains polygons, not semiconductor equations or input
-stimuli, so SPICE cannot consume it directly.
+biases to sweep. GDS is not enough for everything (yet).
 
 The DC bench below uses one FinFET for Id-Vg and Id-Vd characterization, then a
 second one-transistor fixture with a resistor load to confirm that the output
@@ -126,8 +125,7 @@ and `results.json` are written under `build/sense_amp_spice/`.
 
 Both benches take `--plot` (with the `plot` extra installed) and draw the run
 to a PNG beside `results.json`, with the bench's own pass criteria drawn on it.
-They plot whether the run passed or not, since a failing run is the one worth
-looking at:
+They plot whether the run passed or not:
 
 - `dc.png` for a FinFET: Id-Vg on a log axis with the off and on currents the
   verdict is read from, Id-Vd, and the switch's output against the levels it
