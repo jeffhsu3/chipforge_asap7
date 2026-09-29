@@ -33,8 +33,7 @@ nomenclature as OpenFinRAM's `sram_cell_6t_122` (`nfin_pu=1, nfin_pd=2,
 nfin_pg=2`), rather than the planar `W=3u` style. Counts of 10 or more switch
 to `_`-separated fields (`12_2_1`) so `1,12,1` and `11,2,1` can't collide.
 
-Fins sit on the 27 nm fin pitch, gates on the 54 nm contacted-poly pitch, and
-source/drain columns midway between gates — fingers share the column between
+Source/drain columns sit midway between gates and fingers share the column between
 them. Multipliers are folded into additional physical fingers, preserving
 `fins * fingers * multipliers` channel intersections in one interdigitated row.
 LIG joins every active gate, and standard-cell-style M1 conductors physically
@@ -43,11 +42,29 @@ column exposes the real B terminal, so the generated cell has four independent
 M1 pins: D, G, S and B.
 
 The geometry is based on the released `INVxp33_ASAP7_75t_R` and
-`TAPCELL_ASAP7_75t_R`: full FIN/GATE manufacturing grids, edge dummy gates,
+`TAPCELL_ASAP7_75t_R`: full FIN/GATE grids, edge dummy gates,
 fin-quantized ACTIVE, legal select/well enclosure, split gate cuts, 24 nm LISD,
 matching 24 nm SDT source/drain markers, 18 nm V0, and minimum-area M1
 landings. RVT is the default; `vt="lvt"`,
 `"slvt"` and `"sram"` select the matching model and marker.
+
+### FinFET showcase
+
+The inspection set in [`build/finfet_samples/`](../build/finfet_samples) illustrates how fin counts, finger counts, multiplier folding, and threshold voltage variants map onto physical ASAP7 silicon geometries:
+
+![ASAP7 Parametric FinFET Inspection Showcase](images/finfet_showcase.png)
+
+| Device | Configuration | Size (nm) | Model / VT | Architectural Highlights |
+| --- | --- | ---: | --- | --- |
+| `nmos_fin_111` | 1 fin, 1 finger, 1 multiplier | 108 × 81 | `nmos_rvt` | Minimal unit FinFET; 1 channel intersection, edge dummy gates |
+| `nmos_fin_231` | 2 fins, 3 fingers, 1 multiplier | 216 × 108 | `nmos_rvt` | 3 shared fingers; interdigitated source/drain columns on M1 |
+| `nmos_lvt_fin_342` | 3 fins, 4 fingers, 2 multipliers | 270 × 270 | `nmos_lvt` | Multipliers folded into 8 physical fingers; LVT marker layer |
+| `pmos_fin_221` | 2 fins, 2 fingers, 1 multiplier | 162 × 108 | `pmos_rvt` | PMOS device with NWELL enclosure and PSELECT implant |
+| `pmos_slvt_fin_332` | 3 fins, 3 fingers, 2 multipliers | 216 × 270 | `pmos_slvt` | 3-fin PMOS with folded multipliers and SLVT marker layer |
+| `nmos_sram_fin_212` | 2 fins, 1 finger, 2 multipliers | 108 × 216 | `nmos_sram` | Folded multiplier NMOS with SRAMVT threshold marker |
+
+The top cell `FINFET_SHOWCASE` in `build/finfet_samples/finfet_showcase.gds` places all six inspection devices side-by-side to a common scale. Each cell demonstrates the full 27 nm FIN and 54 nm GATE manufacturing grids, split gate cuts (GCUT), local interconnect (LIG/LISD), and contacts (V0) to M1 landing pads.
+
 
 The generator only accepts the DRC-legal device grid: 20 nm gate length, one
 54 nm CPP, one through `MAX_FINS` (18) fins, and no arbitrary `sd_dx`.

@@ -3,9 +3,11 @@
 ASAP7 PDK layout collateral for the
 [chipforge](https://github.com/jeffhsu3/chipforge) hardware ML compiler.
 
-ASAP7 is chipforge core's **primary** PDK target. Core keeps its
+ASAP7 is a chipforge core PDK target and critical for deteremining the size and types of models that are hardcodable. Core keeps its
 ASAP7 SRAM wrapper, `sram_backend` strings and chip-top flows. What lives here
 is the ASAP7 *geometry* that core's hand-built array compilers.
+
+chipforge_asap7 is also a critical dependency for opensource FinFET compilers (primarily 8T versions, see OpenFinRAM)
 
 ## Install
 
@@ -20,7 +22,7 @@ python -m pip install ".[gds]"  # also gdspy for drawing, tyro for the commands
 python -m pip install ".[plot]"  # matplotlib, to plot the SPICE benches
 ```
 
-The repository currently requires GitHub access. To develop against a local
+To develop against a local
 checkout, run `python -m pip install -e ".[gds]"` from the repository root.
 The package is licensed under [BSD 3-Clause](LICENSE); see
 [third-party notices](THIRD_PARTY_NOTICES.md) for the ASAP7 attribution.
