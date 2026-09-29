@@ -6,11 +6,23 @@ A transistor still needs a small netlist for simulation: the instance line
 names D/G/S/B and selects the compact model, while voltage sources define the
 biases to sweep. GDS is not enough for everything (yet).
 
-The DC bench below uses one FinFET for Id-Vg and Id-Vd characterization, then a
-second one-transistor fixture with a resistor load to confirm that the output
-node switches. It translates the ASAP7 BSIM-CMG 107 HSPICE model declaration to
-ngspice's OSDI syntax without changing the model parameters. On this workspace,
-the model card and matching Verilog-A source are discovered automatically:
+The direct current bench below uses one FinFET for Id-Vg and Id-Vd
+characterization, then a second one-transistor fixture with a resistor load to
+confirm that the output node switches. It translates the ASAP7 BSIM-CMG 107
+HSPICE model declaration to ngspice's OSDI syntax. The card's model-level
+`L=21 nm` default is removed; the generated DUT instead uses the drawn
+`FinFETSpec.gate_length`, which is `20 nm`. Account for this length override
+when comparing the curves with simulations using the card's default length.
+
+Install an OSDI-capable `ngspice` executable and the `openvaf` compiler on
+`PATH`; these external tools are not installed by `uv`. OpenVAF compiles the
+BSIM-CMG 107 Verilog-A source into an OSDI library. A compatible precompiled
+library can be supplied with `--osdi /path/to/BSIMCMG107.osdi` instead of
+`--bsimcmg-source`, in which case OpenVAF is not needed. The bench also accepts
+`--ngspice` and `--openvaf` for executables outside `PATH`.
+
+On this workspace, the model card and matching Verilog-A source are discovered
+automatically:
 
 ```bash
 uv run python -m chipforge_asap7.devices.spice
@@ -30,9 +42,12 @@ data (as `.dat` columns and full `.raw` files), simulator logs, and
 `results.json`. This is a **compact-model test**, not
 a post-layout proof. The generated GDS is covered by the KLayout DRC and
 layout-connectivity regressions described in
-[the cell generators](devices.md). A formal post-layout proof
-is provided by the open flow below; it remains a calibrated research flow
-rather than a replacement for the unpublished sign-off decks.
+[the cell generators](devices.md). The open flow below compares extracted
+transistor topology against a reference netlist, extracts calibrated parasitics,
+and checks a released inverter against reference capacitance, resistance, and
+timing bounds. These checks provide research-grade validation within those
+assumptions, rather than a general proof of post-layout electrical correctness
+or a replacement for the unpublished sign-off decks.
 
 ## Open LVS and PEX
 
@@ -55,10 +70,14 @@ ASAP7 release:
 5. `INVxp33_ASAP7_75t_R` is correlated against the released xACT3D netlist,
    TT NLDM Liberty table, and a BSIM-CMG 107/OpenVAF transient.
 
-KPEX 0.3.12 requires Python 3.12 or newer:
+KPEX 0.3.12 requires Python 3.12 or newer. Install the KLayout executable
+(0.30 or newer) separately and put `klayout` on `PATH`, or set `KLAYOUT_BIN`.
+The Python extras do not install that executable. The reference-inverter
+timing check also needs the ngspice and OSDI setup described above, and `7z`
+on `PATH` to read the released compressed Liberty file.
 
 ```bash
-uv sync --extra gds --extra pex
+uv sync --python 3.12 --extra gds --extra pex
 
 # FasterCap is LGPL-2.1 and built from its three pinned upstream repositories.
 # System prerequisites: cmake, g++, git, wxWidgets development headers, Eigen.
@@ -88,8 +107,12 @@ Or run the released inverter extraction and all reference checks in one command:
 uv run python -m chipforge_asap7.verification reference-inverter \
   --asap7-root /path/to/asap7 \
   --model-card /path/to/7nm_TT_160803.pm \
+  --bsimcmg-source /path/to/bsimcmg_107.0.0/code \
   --out build/pex/reference_inv
 ```
+
+Here too, `--osdi /path/to/BSIMCMG107.osdi` can replace `--bsimcmg-source`
+when a compatible library is already compiled.
 
 Each run retains the LVS database/log, generated KPEX technology JSON,
 FasterCap geometry/log/raw and symmetrized matrices, distributed-R protobuf and
@@ -218,11 +241,16 @@ the cell is still right.
    pinned: never deleted, only shrunk to a landing around the label.
 2. **No DRC category is worse** than in the unedited layout
    (`verification.drc.run_drc`, the public KLayout runset).
-3. **Extraction agrees.** No net's worst resistance rises more than
-   `r_tolerance` (5 %): from the pin to each device terminal, or, on a net with
-   no pin, from each driving diffusion to each gate. And the
+3. **Extraction agrees within the configured tolerances.** Each net's worst
+   resistance must stay at or below `R_baseline * (1 + r_tolerance) + 0.05 ohm`,
+   where the baseline is the unedited layout and `r_tolerance` defaults to
+   5 %. Resistance is measured from the pin to each device terminal, or, on
+   a net with no pin, from each driving diffusion to each gate. The
    switched-capacitance cost, in which signal-to-signal coupling counts as
-   Miller capacitance, does not go up.
+   Miller capacitance, may exceed the best cost observed so far by up to
+   `cost_tolerance` (3 % by default) to accommodate field-solver variation.
+   Use `--r-tolerance` and `--cost-tolerance`, or the corresponding
+   `ReductionConfig` fields, to change these relative limits.
 
 Deletion runs over vias, then metals, then LIG, to a fixed point; probes run in
 parallel. Then each surviving wire has its ends pulled in by a parallel

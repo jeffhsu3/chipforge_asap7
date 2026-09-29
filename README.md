@@ -3,7 +3,7 @@
 ASAP7 PDK layout collateral for the
 [chipforge](https://github.com/jeffhsu3/chipforge) hardware ML compiler.
 
-ASAP7 is a chipforge core PDK target and critical for deteremining the size and types of models that are hardcodable. Core keeps its
+ASAP7 is a chipforge core PDK target and critical for deteremining the size and types of models that are hardcodable and is loosely based around [gLayout](https://github.com/ReaLLMASIC/gLayout). Core keeps its
 ASAP7 SRAM wrapper, `sram_backend` strings and chip-top flows. What lives here
 is the ASAP7 *geometry* that core's hand-built array compilers.
 
