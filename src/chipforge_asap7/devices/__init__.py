@@ -28,6 +28,11 @@ from .io_column import (
     build_io_column,
     io_column_pins,
 )
+from .io_column_staggered import (
+    StaggeredIoColumnSpec,
+    build_staggered_io_column,
+    staggered_block_netlist,
+)
 from .nand import NAND_PINS, NandSpec, build_nand, build_nand_row
 from .output_latch import OUTPUT_LATCH_PINS, OutputLatchSpec, build_output_latch
 from .row import RowBand, RowStack
@@ -76,6 +81,7 @@ __all__ = [
     "SenseAmpRowSpec",
     "SenseAmpTransistor",
     "Stage",
+    "StaggeredIoColumnSpec",
     "WriteDriverSpec",
     "bitline_mux_group_pins",
     "block_netlist",
@@ -94,6 +100,7 @@ __all__ = [
     "build_output_latch",
     "build_row_support",
     "build_sense_amp_row",
+    "build_staggered_io_column",
     "build_write_driver",
     "io_column_pins",
     "nmos_fin",
@@ -101,4 +108,5 @@ __all__ = [
     "sense_amp_transistors",
     "size_decoder",
     "split_fins_into_rows",
+    "staggered_block_netlist",
 ]
