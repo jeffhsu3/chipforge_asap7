@@ -23,6 +23,7 @@ from chipforge_asap7.verification.lvs import render_io_column_lvs_schematic, run
 
 FOUR = StaggeredIoColumnSpec()
 EIGHT = StaggeredIoColumnSpec(selects=8)
+SIXTEEN = StaggeredIoColumnSpec(selects=16)
 
 
 def _library():
@@ -52,7 +53,7 @@ def test_leaves_alternate_columns_on_the_rows_they_serve():
 
 
 def test_joins_keep_clear_of_the_bitlines_crossing_column_e():
-    for spec in (FOUR, EIGHT):
+    for spec in (FOUR, EIGHT, SIXTEEN):
         crossing = [y for row in spec.rows_of("O") for y in spec.bitline_ys(row).values()]
         for y in spec.joins.values():
             assert all(abs(y - b) >= 48 for b in crossing)
@@ -87,7 +88,7 @@ def test_impossible_blocks_are_rejected(kwargs, message):
 
 
 
-@pytest.mark.parametrize("spec", [FOUR, EIGHT], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("spec", [FOUR, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
 def test_block_is_drc_clean(spec, asap7_drc):
     library = _library()
     cell = build_staggered_io_column(spec, lib=library)
@@ -103,7 +104,7 @@ def test_stacked_blocks_are_drc_clean(asap7_drc):
     assert asap7_drc(library, top, tag="stack") == []
 
 
-@pytest.mark.parametrize("spec", [FOUR, EIGHT], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("spec", [FOUR, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
 def test_block_matches_its_flat_unit_fin_reference(spec, tmp_path: Path, require_klayout):
     library = _library()
     cell = build_staggered_io_column(spec, lib=library)
