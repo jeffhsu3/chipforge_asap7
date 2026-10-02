@@ -69,6 +69,7 @@ LAYERS: dict[str, dict[str, int]] = {
     "PAD": {"layer": 96, "datatype": 0},
     "SLVT": {"layer": 97, "datatype": 0},
     "LVT": {"layer": 98, "datatype": 0},
+    "SRAMDRC": {"layer": 99, "datatype": 0},
     "BOUNDARY": {"layer": 100, "datatype": 0},
     "SRAMVT": {"layer": 110, "datatype": 0},
     "DIEAREA": {"layer": 235, "datatype": 5},
