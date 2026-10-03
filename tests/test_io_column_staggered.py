@@ -47,6 +47,9 @@ def test_leaves_alternate_columns_on_the_rows_they_serve():
         assert all(y0 < y < y1 for y in spec.bitline_ys(row).values())
     # Odd rows are the array's rows mirrored.
     assert spec.bitline_ys(1) == {"BL": 353.5, "BLN": 456.5}
+    # Their M4 is on whole nanometres, half a nanometre off the M2.
+    assert spec.m4_ys(0) == {"BL": 187, "BLN": 84}
+    assert spec.m4_ys(1) == {"BL": 353, "BLN": 456}
     # Column E answers YSEL[0], [2]; column O YSEL[1], [3].
     assert [spec.global_select("E", k) for k in range(2)] == [0, 2]
     assert [spec.global_select("O", k) for k in range(2)] == [1, 3]
@@ -54,7 +57,7 @@ def test_leaves_alternate_columns_on_the_rows_they_serve():
 
 def test_joins_keep_clear_of_the_bitlines_crossing_column_e():
     for spec in (FOUR, EIGHT, SIXTEEN):
-        crossing = [y for row in spec.rows_of("O") for y in spec.bitline_ys(row).values()]
+        crossing = [y for row in spec.rows_of("O") for y in spec.m4_ys(row).values()]
         for y in spec.joins.values():
             assert all(abs(y - b) >= 48 for b in crossing)
             assert all(abs(y - s) >= 48 for s in spec.sense_line_ys)

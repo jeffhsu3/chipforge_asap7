@@ -166,8 +166,13 @@ class StaggeredIoColumnSpec:
         return self.selects // 2
 
     def column_leaf(self, k: int) -> BitlineMuxSpec:
-        """Leaf ``k`` of either column: local select ``k`` of the column's, bitlines on M4."""
-        y_bl, y_bln = (y - self.leaf_offset for y in self.bitline_entry)
+        """Leaf ``k`` of either column: local select ``k`` of the column's, bitlines on M4.
+
+        The M4 runs on a whole nanometre half a nanometre off a bitline the
+        array draws on a half (the 6T cell's), so that a macro router never
+        meets half-nanometre metal: the lift's M3 stub takes up the half.
+        """
+        y_bl, y_bln = (y - self.leaf_offset + (0.5 if y % 1 else 0.0) for y in self.bitline_entry)
         return replace(
             self.leaf,
             selects=self.per_column,
@@ -286,6 +291,12 @@ class StaggeredIoColumnSpec:
             return {"BL": base + self.row_pitch - y_bl, "BLN": base + self.row_pitch - y_bln}
         return {"BL": base + y_bl, "BLN": base + y_bln}
 
+    def m4_ys(self, row: int) -> dict[str, float]:
+        """Where row `row`'s bitlines run on M4, from the lift to their leaf: its entry as placed."""
+        _, y, mirrored = self.leaf_origin(row)
+        entry = self.column_leaf(0).entry_y
+        return {net: (y - entry[net]) if mirrored else (y + entry[net]) for net in ("BL", "BLN")}
+
     def track_x(self, column: str, net: str) -> float:
         """Block x of a column's M3 track (`net` as the leaf names it, e.g. ``YSEL[0]``)."""
         x_e, x_o = self.column_x
@@ -303,7 +314,7 @@ class StaggeredIoColumnSpec:
         least an M4 pitch from all of those, where both columns' sense
         tracks exist.
         """
-        crossing = [y for row in self.rows_of("O") for y in self.bitline_ys(row).values()]
+        crossing = [y for row in self.rows_of("O") for y in self.m4_ys(row).values()]
         crossing += self.sense_line_ys
         lo = max(self.leaf_span(0)[0], self.leaf_span(1)[0]) + V3_M3_CAP
         hi = min(self.leaf_span(self.selects - 2)[1], self.leaf_span(self.selects - 1)[1])
@@ -495,11 +506,13 @@ def build_staggered_io_column(
     for row in range(spec.selects):
         x_leaf, _, _ = spec.leaf_origin(row)
         entry = spec.column_leaf(0).entry_x
-        for net, y in spec.bitline_ys(row).items():
-            box(cell, "M2", 0, y - HALF, _LIFT_X + PAD, y + HALF)
-            square(cell, "V2", _LIFT_X, y)
+        m4 = spec.m4_ys(row)
+        for net, y_m2 in spec.bitline_ys(row).items():
+            y = m4[net]
+            box(cell, "M2", 0, y_m2 - HALF, _LIFT_X + PAD, y_m2 + HALF)
+            square(cell, "V2", _LIFT_X, y_m2)
             box(cell, "V3", _LIFT_X - HALF, y - M4_HALF, _LIFT_X + HALF, y + M4_HALF)
-            m3_column(cell, _LIFT_X, y - V3_M3_CAP, y + V3_M3_CAP)
+            m3_column(cell, _LIFT_X, min(y, y_m2) - V3_M3_CAP, max(y, y_m2) + V3_M3_CAP)
             # Past the leaf's own M4, so the wire's far end is the block's, on grid.
             end = x_leaf + entry[net] + V3_M4_CAP
             x0 = _LIFT_X - V3_M4_CAP
