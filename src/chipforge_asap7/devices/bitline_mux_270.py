@@ -71,6 +71,7 @@ PRECHN_TRACK = 51
 FIRST_SELECT_TRACK = 123  # the released cell's: 87 would meet the PRECHN tie's M2
 FIRST_YSEL_TRACK = 267  # the released cell's first YSEL track
 SD_HALF = 12
+RAIL_V1_FIRST = 27  # rail V1s every two gate pitches from here, between the rail V0s
 M2_PAST_V2 = 17
 
 
@@ -290,6 +291,10 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
         box(cell, "M2", 0, y - HALF, w, y + HALF)
         for x in range(SD["P_VDD"], w - HALF, GATE_PITCH):
             _v0(cell, x, y)
+        # The M2 rail is the M1 rail's twin, not floating metal: abutted
+        # leaves (and blocks) otherwise merge two isolated pieces of it.
+        for x in range(RAIL_V1_FIRST, w - HALF, 2 * GATE_PITCH):
+            square(cell, "V1", x, y)
 
     # VDD: both strips' precharge source, joined by an M1 strap at x = 36.
     _v0(cell, SD["P_VDD"], 39)

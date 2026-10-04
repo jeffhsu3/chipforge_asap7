@@ -17,7 +17,8 @@ The leaves are a `build_sideways_mux_group` raised `grid_offset` (half a fin
 pitch) onto the array's fin grid, so the group overhangs the block's top by
 that much, and the next block's starts where it ends; odd leaves are swapped
 to meet the array's mirrored odd rows.  The bitlines enter each leaf on M2 at
-the array's own heights: no lift, no M4.
+the array's own heights, across `entry_margin` (the array's last column
+reaches past its edge): no lift, no M4.
 
 The logic is `StaggeredIoColumnSpec`'s: the 594 nm row pairs of the write
 driver, sense amplifier and output latch (mirrored) side by side, ``SA`` and
@@ -70,18 +71,28 @@ class SidewaysIoColumnSpec:
         bitline_entry: ``(y_BL, y_BLN)`` of an unmirrored array row's M2
             bitlines, from the row's bottom.  The 6T cell's are the default.
         grid_offset: how far up the leaves sit on the array's fin grid.
+        entry_margin: the bitlines cross this much of the block on M2 before
+            the leaves: the array's last column (its tap, its dummy rows'
+            supply stubs) reaches past its edge, and its well must stay a
+            well spacing from the leaves'.
         sense_amp, write_driver, output_latch: as in `IoColumnSpec`.
-        tap: a tap at the end of the logic row.
+        tap: a tap at the end of the logic row (beside each cell, stacked).
+        stack_logic: the three cells one above the other in one column
+            (write driver, sense amplifier, output latch) instead of side by
+            side in one pair; ``None`` stacks them when the block is tall
+            enough (8:1 and up).
         one_sense_phase: ``SAPRECHN`` strapped to ``SAE``; pin ``SAE`` only.
     """
 
     selects: int = 4
     bitline_entry: tuple[float, float] = (186.5, 83.5)
     grid_offset: float = 13.5
+    entry_margin: int = 108
     sense_amp: SenseAmpRowSpec = field(default_factory=SenseAmpRowSpec)
     write_driver: WriteDriverSpec = field(default_factory=WriteDriverSpec)
     output_latch: OutputLatchSpec = field(default_factory=OutputLatchSpec)
     tap: bool = True
+    stack_logic: bool | None = None
     one_sense_phase: bool = True
     two_sided = False
     row_pitch = ROW
@@ -94,7 +105,10 @@ class SidewaysIoColumnSpec:
         if len(rows) != 1:
             raise ValueError(f"the three logic cells are not on one row: {sorted(rows)}")
         self.leaves  # the leaf rejects an entry it cannot take
-        if self.logic_top + 2 * M4_PITCH + V3_M3_CAP > self.height:
+        if self.stacked:
+            if self.logic_top > self.height:
+                raise ValueError(f"the stacked logic needs {self.logic_top} nm; the block is {self.height}")
+        elif self.logic_top + 2 * M4_PITCH + V3_M3_CAP > self.height:
             raise ValueError(
                 f"the logic pair and its output lines need {self.logic_top + 2 * M4_PITCH + V3_M3_CAP} nm; "
                 f"the block is {self.height}"
@@ -117,7 +131,7 @@ class SidewaysIoColumnSpec:
 
     @property
     def gap_x(self) -> int:
-        return self.leaves.width
+        return self.entry_margin + self.leaves.width
 
     @property
     def straps(self) -> dict[str, float]:
@@ -134,37 +148,67 @@ class SidewaysIoColumnSpec:
         return [(self.grid_offset + k * ROW, "VDD" if k % 2 else "VSS") for k in range(self.selects + 1)]
 
     @property
+    def pair_height(self) -> int:
+        return self.write_driver.height
+
+    @property
+    def stacked(self) -> bool:
+        if self.stack_logic is not None:
+            return self.stack_logic
+        return self.height - self.grid_offset - 2 * FIN_PITCH >= 3 * self.pair_height
+
+    @property
     def logic_y(self) -> float:
-        """Bottom of the logic pair: on the leaves' fin grid, its rails three fin pitches from theirs."""
+        """Bottom of the logic: on the leaves' fin grid, its rails clear of theirs.
+
+        Three fin pitches beside one pair; two when stacked, since the logic's
+        297 nm rows drift 27 nm a row against the leaves' 270 nm and seven
+        rails cannot all keep three (two leave 36 nm of M1 between rails).
+        """
+        clear = (2 if self.stacked else 3) * FIN_PITCH
+        rows = 7 if self.stacked else 3
         y = self.grid_offset + 2 * FIN_PITCH
         rails = [r for r, _ in self.leaf_rails]
-        while any(abs(y + k * self.write_driver.stack.height / 2 - r) < 3 * FIN_PITCH for r in rails for k in range(3)):
+        while any(abs(y + k * self.pair_height / 2 - r) < clear for r in rails for k in range(rows)):
             y += FIN_PITCH
         return y
 
     @property
     def logic_rails(self) -> list[tuple[float, str]]:
-        return [(self.logic_y + y, net) for y, net in self.write_driver.stack.rails]
+        rows = 7 if self.stacked else 3
+        return [(self.logic_y + k * self.pair_height / 2, "VDD" if k % 2 else "VSS") for k in range(rows)]
 
     @property
     def logic_top(self) -> float:
-        return self.logic_y + self.sense_amp.height
+        return self.logic_y + (3 if self.stacked else 1) * self.pair_height
 
     @property
     def placements(self) -> dict[str, tuple[float, float]]:
         x, y = self.logic_x, self.logic_y
-        wd, sa = self.write_driver.width, self.sense_amp.width
+        wd, sa, ol = self.write_driver.width, self.sense_amp.width, self.output_latch.width
+        if self.stacked:
+            # Bottom to top: driver, amplifier, latch (as drawn, its QA/QAN
+            # stubs down to the amplifier's); a tap right of each.
+            h = self.pair_height
+            return {
+                "write_driver": (x, y),
+                "sense_amp": (x, y + h),
+                "output_latch": (x, y + 2 * h),
+                "tap": (x + wd, y),
+                "tap_sense_amp": (x + sa, y + h),
+                "tap_output_latch": (x + ol, y + 2 * h),
+            }
         return {
             "write_driver": (x, y),
             "sense_amp": (x + wd, y),
             "output_latch": (x + wd + sa, y),  # mirrored: this is its bottom-left
-            "tap": (x + wd + sa + self.output_latch.width, y),
+            "tap": (x + wd + sa + ol, y),
         }
 
     @property
     def width(self) -> int:
         tap = 2 * GATE_PITCH if self.tap else 0
-        return int(self.placements["tap"][0] + tap)
+        return int(max(x for key, (x, _) in self.placements.items() if key.startswith("tap")) + tap)
 
     @property
     def cell_name(self) -> str:
@@ -185,7 +229,7 @@ class SidewaysIoColumnSpec:
         return {"BL": base + y_bl, "BLN": base + y_bln}
 
     def track_x(self, net: str) -> float:
-        return self.leaves.track_x[net]
+        return self.entry_margin + self.leaves.track_x[net]
 
     @property
     def sense_line_ys(self) -> tuple[float, float]:
@@ -200,6 +244,18 @@ class SidewaysIoColumnSpec:
         wd_x, sa_x, ol_x = (place[k][0] for k in ("write_driver", "sense_amp", "output_latch"))
         sa, wd, ol = self.sense_amp.track_x, self.write_driver.track_x, self.output_latch.track_x
         y_sa, y_san = self.sense_line_ys
+        if self.stacked:
+            # Each cell its own lines, at the heights it takes them side by side.
+            dy = place["sense_amp"][1] - place["write_driver"][1]
+            seam = math.ceil(place["output_latch"][1])
+            return {
+                "SA": [(y_sa, [self.track_x("SA"), wd_x + wd["SA"]]),
+                       (y_sa + dy, [self.track_x("SA"), sa_x + sa["SA"]])],
+                "SAN": [(y_san, [self.track_x("SAN"), wd_x + wd["SAN"]]),
+                        (y_san + dy, [self.track_x("SAN"), sa_x + sa["SAN"]])],
+                # QAN's stubs meet through the seam; QA's jog on it.
+                "QA": [(seam, [sa_x + sa["QA"], ol_x + ol["QA"]])],
+            }  # fmt: skip
         top_line = math.ceil(self.logic_top)
         return {
             "SA": [(y_sa, [self.track_x("SA"), wd_x + wd["SA"], sa_x + sa["SA"]])],
@@ -227,9 +283,9 @@ class SidewaysIoColumnSpec:
         for row in range(self.selects):
             for net in ("YSEL", "YSELN"):
                 metal, (x, y) = group[f"{net}[{row}]"]
-                pins[f"{net}[{row}]"] = (metal, (x, y + self.grid_offset))
+                pins[f"{net}[{row}]"] = (metal, (self.entry_margin + x, y + self.grid_offset))
         metal, (x, y) = group["PRECHN"]
-        pins["PRECHN"] = (metal, (x, y + self.grid_offset))
+        pins["PRECHN"] = (metal, (self.entry_margin + x, y + self.grid_offset))
         place = self.placements
 
         def take(spec, key, names, mirrored=False):
@@ -245,7 +301,7 @@ class SidewaysIoColumnSpec:
         else:
             take(self.sense_amp, "sense_amp", ("SAE", "SAPRECHN"))
         take(self.write_driver, "write_driver", ("D", "WRENA", "WRENAN"))
-        take(self.output_latch, "output_latch", ("OE", "OEB", "Q"), mirrored=True)
+        take(self.output_latch, "output_latch", ("OE", "OEB", "Q"), mirrored=not self.stacked)
         for net, x in self.straps.items():
             pins[net] = ("M3", (x, self.height / 2))
         return pins
@@ -287,11 +343,11 @@ def build_sideways_io_column(
     # ── Leaves: one group, half a fin pitch up ────────────────────────────────
     leaves = spec.leaves
     group = reuse(leaves.group_cell_name, lambda: build_sideways_mux_group(leaves, lib=lib, draw_pin_labels=False))
-    cell.add(gdspy.CellReference(group, origin=(0, spec.grid_offset)))
+    cell.add(gdspy.CellReference(group, origin=(spec.entry_margin, spec.grid_offset)))
     # The array's bitline bars end at the block's edge; carry each to its leaf's.
     for row in range(spec.selects):
         for y in spec.bitline_ys(row).values():
-            box(cell, "M2", 0, y - HALF, PAD + HALF, y + HALF)
+            box(cell, "M2", 0, y - HALF, spec.entry_margin + PAD + HALF, y + HALF)
 
     # ── Logic ─────────────────────────────────────────────────────────────────
     place = spec.placements
@@ -305,20 +361,28 @@ def build_sideways_io_column(
     }  # fmt: skip
     for key, placed in logic.items():
         x, y = place[key]
-        if key == "output_latch":
+        if key == "output_latch" and not spec.stacked:
             cell.add(gdspy.CellReference(placed, origin=(x, y + spec.output_latch.height), x_reflection=True))
         else:
             cell.add(gdspy.CellReference(placed, origin=(x, y)))
     if spec.tap:
         tap_spec = RowSupportSpec(stack=spec.write_driver.stack, kind="tap", width_cpp=2)
         tap = reuse(tap_spec.cell_name, lambda: build_row_support(tap_spec, lib=lib))
-        cell.add(gdspy.CellReference(tap, origin=place["tap"]))
+        for key, origin in place.items():
+            if key.startswith("tap"):
+                cell.add(gdspy.CellReference(tap, origin=origin))
 
     # ── Routes ────────────────────────────────────────────────────────────────
     top = spec.logic_top
     for net, lines in spec.routes.items():
         for y, xs in lines:
-            if net in ("QA", "QAN"):
+            if net in ("QA", "QAN") and spec.stacked:
+                # On the seam: the amplifier's riser ends there from below,
+                # the latch's stub from above; each reaches across to the via.
+                amp, latch = xs
+                m3_column(cell, amp, y - CAP, y + V3_M3_CAP)
+                m3_column(cell, latch, y - V3_M3_CAP, y + CAP)
+            elif net in ("QA", "QAN"):
                 # The amplifier's risers and the mirrored latch's stubs end on
                 # the pair's top edge: carry both up to the line.
                 for x in xs:
@@ -330,10 +394,7 @@ def build_sideways_io_column(
 
     # ── Supplies: every rail into the gap, to its net's strap ─────────────────
     straps = spec.straps
-    # The leaves' top rail is half a fin pitch above the block: the next
-    # block's bottom one, strapped there.
-    inside = [(y, net) for y, net in spec.leaf_rails if y < spec.height]
-    rails = {"leaves": (inside, spec.gap_x, +1), "logic": (spec.logic_rails, spec.logic_x, -1)}
+    rails = {"leaves": (spec.leaf_rails, spec.gap_x, +1), "logic": (spec.logic_rails, spec.logic_x, -1)}
     extensions: dict[str, list[tuple[float, float, float]]] = {"VSS": [], "VDD": []}
     vias: dict[float, list[float]] = {}
     for found, x_edge, sign in rails.values():
@@ -355,8 +416,11 @@ def build_sideways_io_column(
                 lo, hi = max(a0, b0), min(a1, b1)
                 if hi > lo and 0 < abs(ya - yb) < 4 * HALF:
                     box(cell, "M1", lo, min(ya, yb), hi, max(ya, yb))
+    # The straps reach the leaves' top rail, half a fin pitch above the block
+    # (the next block's bottom one): strapped in both, so neither block has a
+    # rail of its own that only its neighbour ties.
     for x in straps.values():
-        m3_column(cell, x, 0, spec.height)
+        m3_column(cell, x, 0, spec.height + spec.grid_offset + CAP)
 
     if draw_pin_labels:
         for pin, (metal, origin) in spec.pin_positions.items():

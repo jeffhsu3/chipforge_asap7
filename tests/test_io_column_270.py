@@ -37,7 +37,7 @@ def _library():
 def test_one_column_is_narrower_than_the_staggered_two(spec):
     staggered = StaggeredIoColumnSpec(selects=spec.selects)
     assert spec.height == staggered.height == spec.selects * 270
-    assert spec.width < staggered.width - 900
+    assert spec.width <= staggered.width - 800
 
 
 def test_each_row_enters_its_leaf_at_the_arrays_own_heights():
@@ -66,6 +66,20 @@ def test_pins_and_netlist_are_the_staggered_blocks():
         body = [line for line in sideways_block_netlist(spec, name="b").splitlines() if line[:1] == "M"]
         reference = [line for line in staggered_block_netlist(staggered, name="b").splitlines() if line[:1] == "M"]
         assert body == reference
+
+
+def test_deep_muxes_stack_the_logic_in_one_column():
+    """8:1 and up are tall enough for driver, amplifier and latch one above the other."""
+    assert not FOUR.stacked and EIGHT.stacked and SIXTEEN.stacked
+    for spec in (EIGHT, SIXTEEN):
+        place = spec.placements
+        xs = {place[k][0] for k in ("write_driver", "sense_amp", "output_latch")}
+        assert len(xs) == 1
+        ys = [place[k][1] for k in ("write_driver", "sense_amp", "output_latch")]
+        assert ys == [spec.logic_y + k * spec.pair_height for k in range(3)]
+        assert spec.logic_top <= spec.height
+        assert spec.width <= spec.logic_x + spec.output_latch.width + 108
+    assert SidewaysIoColumnSpec(selects=8, stack_logic=False).width > EIGHT.width + 1000
 
 
 def test_rejected_specs():
