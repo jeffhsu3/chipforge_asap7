@@ -78,11 +78,16 @@ M2_PAST_V2 = 17
 class SidewaysMuxSpec:
     """One 270 nm leaf: precharge and column select for one bitline pair.
 
-    `select` is the leaf's index among `selects`; a mirrored leaf (odd rows
-    of a group, as the array's odd rows are mirrored) swaps BL and BLN in y,
-    which the group does by reflection.  `bitline_entry` is where the array
-    delivers (BL, BLN), measured from the row's bottom on the array's grid;
-    `grid_offset` is how far up the leaf sits on that grid.
+    `select` is the leaf's index among `selects`.  `bitline_entry` is where
+    an unmirrored array row delivers (BL, BLN), from the row's bottom, and
+    `grid_offset` how far up the leaf sits on the array's grid.
+
+    A `swapped` leaf serves a mirrored array row (the odd rows), whose BL is
+    low and BLN high: it is the same layout with the nets swapped -- BL and
+    SA on the lower strip, BLN and SAN on the upper, VDD on the bottom rail
+    and VSS on the top -- as the released ``_v2`` leaf is.  Reflecting the
+    leaf instead would put it half a fin pitch on the wrong side of its row
+    (it sits `grid_offset` up), 27 nm into the next leaf.
     """
 
     selects: int = 4
@@ -91,6 +96,7 @@ class SidewaysMuxSpec:
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     bitline_entry: tuple[float, float] = (186.5, 83.5)
     grid_offset: float = 13.5
+    swapped: bool = False
     _stack: RowStack = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -145,44 +151,56 @@ class SidewaysMuxSpec:
     @property
     def cell_name(self) -> str:
         vt = "" if self.vt == "rvt" else f"_{self.vt}"
-        return f"bitline_mux270_s{self.select}of{self.selects}{vt}"
+        return f"bitline_mux270_s{self.select}of{self.selects}{vt}{'_sw' if self.swapped else ''}"
 
     @property
     def group_cell_name(self) -> str:
         vt = "" if self.vt == "rvt" else f"_{self.vt}"
         return f"bitline_mux270_x{self.selects}{vt}"
 
-    def for_select(self, index: int) -> SidewaysMuxSpec:
-        return SidewaysMuxSpec(self.selects, index, self.fins, self.vt, self.bitline_entry, self.grid_offset)
+    def for_select(self, index: int, swapped: bool | None = None) -> SidewaysMuxSpec:
+        swapped = self.swapped if swapped is None else swapped
+        return SidewaysMuxSpec(self.selects, index, self.fins, self.vt, self.bitline_entry, self.grid_offset, swapped)
+
+    @property
+    def strip_nets(self) -> tuple[tuple[str, str], tuple[str, str]]:
+        """``((bitline, sense line) of the lower strip, of the upper strip)``."""
+        low, high = ("BLN", "SAN"), ("BL", "SA")
+        return (high, low) if self.swapped else (low, high)
+
+    @property
+    def rails(self) -> tuple[tuple[int, str], tuple[int, str]]:
+        return ((0, "VDD"), (ROW, "VSS")) if self.swapped else ((0, "VSS"), (ROW, "VDD"))
 
     # ── Pins ──────────────────────────────────────────────────────────────────
     @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
         tx = self.track_x
-        return {
-            "BL": ("M2", (HALF, M2_Y["BL"])),
-            "BLN": ("M2", (HALF, M2_Y["BLN"])),
-            "SA": ("M3", (tx["SA"], M2_Y["SA"])),
-            "SAN": ("M3", (tx["SAN"], M2_Y["SAN"])),
+        (bl_low, sa_low), (bl_high, sa_high) = self.strip_nets
+        pins = {
+            bl_low: ("M2", (HALF, M2_Y["BLN"])),
+            bl_high: ("M2", (HALF, M2_Y["BL"])),
+            sa_low: ("M3", (tx[sa_low], M2_Y["SAN"])),
+            sa_high: ("M3", (tx[sa_high], M2_Y["SA"])),
             "PRECHN": ("M3", (tx["PRECHN"], M2_Y["PRECHN"])),
             "YSEL": ("M3", (tx[f"YSEL[{self.select}]"], M2_Y["YSEL"])),
             "YSELN": ("M3", (tx[f"YSELN[{self.select}]"], M2_Y["YSELN"])),
-            "VSS": ("M1", (self.width / 2, 0)),
-            "VDD": ("M1", (self.width / 2, ROW)),
         }
+        for y, net in self.rails:
+            pins[net] = ("M1", (self.width / 2, y))
+        return pins
 
     def group_pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
-        """Pins of the stacked group: leaf ``i`` at ``y = i * 270``, odd leaves mirrored."""
+        """Pins of the stacked group: leaf ``i`` at ``y = i * 270``, odd leaves swapped."""
         pins: dict[str, tuple[str, tuple[float, float]]] = {}
         tx = self.track_x
         for i in range(self.selects):
-            def y(local: float) -> float:
-                return (i + 1) * ROW - local if i % 2 else i * ROW + local
-
-            pins[f"BL[{i}]"] = ("M2", (HALF, y(M2_Y["BL"])))
-            pins[f"BLN[{i}]"] = ("M2", (HALF, y(M2_Y["BLN"])))
-            pins[f"YSEL[{i}]"] = ("M3", (tx[f"YSEL[{i}]"], y(M2_Y["YSEL"])))
-            pins[f"YSELN[{i}]"] = ("M3", (tx[f"YSELN[{i}]"], y(M2_Y["YSELN"])))
+            leaf = self.for_select(i, swapped=bool(i % 2))
+            for net in ("BL", "BLN"):
+                metal, (x, y) = leaf.pin_positions[net]
+                pins[f"{net}[{i}]"] = (metal, (x, i * ROW + y))
+            pins[f"YSEL[{i}]"] = ("M3", (tx[f"YSEL[{i}]"], i * ROW + M2_Y["YSEL"]))
+            pins[f"YSELN[{i}]"] = ("M3", (tx[f"YSELN[{i}]"], i * ROW + M2_Y["YSELN"]))
         pins["SA"] = ("M3", (tx["SA"], M2_Y["SA"]))
         pins["SAN"] = ("M3", (tx["SAN"], M2_Y["SAN"]))
         pins["PRECHN"] = ("M3", (tx["PRECHN"], M2_Y["PRECHN"]))
@@ -255,8 +273,12 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
         for x in SD.values():
             box(cell, "SDT", x - SD_HALF, lo, x + SD_HALF, hi)
             box(cell, "LISD", x - SD_HALF, lo, x + SD_HALF, hi)
-    # The upper strip's VDD column runs on to the VDD rail.
-    box(cell, "LISD", SD["P_VDD"] - SD_HALF, STRIPS[1][1], SD["P_VDD"] + SD_HALF, ROW)
+    # The precharge source runs on to the VDD rail: the top one, or a swapped
+    # leaf's bottom one.
+    if spec.swapped:
+        box(cell, "LISD", SD["P_VDD"] - SD_HALF, 0, SD["P_VDD"] + SD_HALF, STRIPS[0][0])
+    else:
+        box(cell, "LISD", SD["P_VDD"] - SD_HALF, STRIPS[1][1], SD["P_VDD"] + SD_HALF, ROW)
 
     # Rails: LIG and M1 on both edges, M2 over them; V0 every gate pitch.
     # (Edge to edge, as a standard cell's: the released leaf's start 16 nm in,
@@ -317,7 +339,8 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
         box(cell, "M2", 0, M2_Y[net] - HALF, 122, M2_Y[net] + HALF)
 
     # Sense lines: both sides' columns on one M1 bar, out on M2 to their tracks.
-    for net, y in (("SAN", 89), ("SA", 181)):
+    (_, sa_low), (_, sa_high) = spec.strip_nets
+    for net, y in ((sa_low, M2_Y["SAN"]), (sa_high, M2_Y["SA"])):
         _v0(cell, SD["P_SA"], y)
         _v0(cell, SD["N_SA"], y)
         box(cell, "M1", 148, y - HALF, 284, y + HALF)
@@ -364,9 +387,11 @@ def build_sideways_mux_group(
     lib: Any = None,
     draw_pin_labels: bool = True,
 ) -> Any:
-    """Stack `spec.selects` leaves, leaf ``i`` at ``y = 270 i``, odd ones mirrored.
+    """Stack `spec.selects` leaves, leaf ``i`` at ``y = 270 i``, odd ones swapped.
 
-    The precharge and select tracks meet end to end.  ``SA`` and ``SAN`` run
+    As the array's rows alternate mirrored, the leaves alternate swapped
+    (see `SidewaysMuxSpec`), so each meets its row's bitlines and every two
+    neighbours share a rail of one net.  The precharge and select tracks meet end to end.  ``SA`` and ``SAN`` run
     the group's height but stop `SENSE_END_CLEARANCE` short of its ends, so a
     group stacked on another's (the next bit's) keeps its own sense lines.
     `spec.select` is ignored.
@@ -377,11 +402,9 @@ def build_sideways_mux_group(
     cell = _new_cell(cell_name, lib)
     for i in range(spec.selects):
         leaf = _new_cell(f"{cell_name}__leaf{i}", lib)
-        _draw_leaf(leaf, spec.for_select(i), sense_tracks=False)
+        _draw_leaf(leaf, spec.for_select(i, swapped=bool(i % 2)), sense_tracks=False)
         box(leaf, "BOUNDARY", 0, 0, spec.width, ROW)
-        flipped = bool(i % 2)
-        y0 = (i + 1) * ROW if flipped else i * ROW
-        cell.add(gdspy.CellReference(leaf, origin=(0, y0), x_reflection=flipped))
+        cell.add(gdspy.CellReference(leaf, origin=(0, i * ROW)))
     top = spec.selects * ROW
     for net in ("SA", "SAN"):
         x = spec.track_x[net]

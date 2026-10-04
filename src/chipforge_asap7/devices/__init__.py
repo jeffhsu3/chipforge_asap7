@@ -7,6 +7,7 @@ from .bitline_mux import (
     build_bitline_mux,
     build_bitline_mux_group,
 )
+from .io_column_270 import SidewaysIoColumnSpec, build_sideways_io_column, sideways_block_netlist
 from .bitline_mux_270 import (
     SidewaysMuxSpec,
     build_sideways_mux,
@@ -74,6 +75,7 @@ __all__ = [
     "WRITE_DRIVER_PINS",
     "BitlineMuxSpec",
     "SidewaysMuxSpec",
+    "SidewaysIoColumnSpec",
     "DecoderSizing",
     "DriverSliceSpec",
     "FinFETSpec",
@@ -92,11 +94,13 @@ __all__ = [
     "WriteDriverSpec",
     "bitline_mux_group_pins",
     "sideways_mux_group_pins",
+    "sideways_block_netlist",
     "block_netlist",
     "block_series_nodes",
     "build_bitline_mux",
     "build_bitline_mux_group",
     "build_sideways_mux",
+    "build_sideways_io_column",
     "build_sideways_mux_group",
     "build_device_band",
     "build_driver_slice",

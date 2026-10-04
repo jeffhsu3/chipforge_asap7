@@ -41,9 +41,9 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
 
 
-@pytest.mark.parametrize("selects", [1, 2, 4, 8, 16])
-def test_terminated_leaf_is_clean(selects, asap7_drc):
-    spec = SidewaysMuxSpec(selects=selects, select=selects - 1)
+@pytest.mark.parametrize("selects, swapped", [(1, False), (2, False), (4, False), (4, True), (8, True), (16, False)])
+def test_terminated_leaf_is_clean(selects, swapped, asap7_drc):
+    spec = SidewaysMuxSpec(selects=selects, select=selects - 1, swapped=swapped)
     library = _library()
     leaf = build_sideways_mux(spec, lib=library)
     support = {kind: build_row_support(RowSupportSpec(stack=ROW_270, kind=kind), lib=library)

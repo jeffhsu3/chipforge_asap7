@@ -48,12 +48,22 @@ def test_the_bitlines_land_where_the_6t_cell_puts_them():
     assert tuple(y + spec.grid_offset for y in (173, 70)) == spec.bitline_entry
 
 
-def test_a_group_mirrors_alternate_leaves_as_the_array_mirrors_its_rows():
+def test_a_group_swaps_alternate_leaves_as_the_array_mirrors_its_rows():
     pins = SidewaysMuxSpec().group_pin_positions()
     assert pins["BL[0]"][1][1] == 173 and pins["BLN[0]"][1][1] == 70
-    # Leaf 1 is flipped about y = 540: BLN now above BL.
-    assert pins["BL[1]"][1][1] == 540 - 173 and pins["BLN[1]"][1][1] == 540 - 70
-    assert pins["BLN[1]"][1][1] > pins["BL[1]"][1][1]
+    # Leaf 1 is swapped, not reflected: BL on its lower strip, still on the grid.
+    assert pins["BL[1]"][1][1] == 270 + 70 and pins["BLN[1]"][1][1] == 270 + 173
+    # A mirrored array row's bitlines, half a fin pitch up: where they land.
+    offset = SidewaysMuxSpec().grid_offset
+    assert pins["BL[1]"][1][1] + offset == 540 - 186.5
+    assert pins["BLN[1]"][1][1] + offset == 540 - 83.5
+
+
+def test_a_swapped_leaf_swaps_its_nets_and_rails():
+    plain, swapped = SidewaysMuxSpec(), SidewaysMuxSpec(swapped=True)
+    assert swapped.devices == plain.devices
+    for a, b in (("BL", "BLN"), ("SA", "SAN"), ("VDD", "VSS")):
+        assert swapped.pin_positions[a][1][1] == plain.pin_positions[b][1][1]
 
 
 def test_it_is_bitline_mux_specs_six_devices_and_pins():

@@ -28,7 +28,8 @@ def _library():
 
 @pytest.mark.parametrize(
     "spec",
-    [SidewaysMuxSpec(selects=1), SidewaysMuxSpec(), SidewaysMuxSpec(selects=16, select=11)],
+    [SidewaysMuxSpec(selects=1), SidewaysMuxSpec(), SidewaysMuxSpec(swapped=True),
+     SidewaysMuxSpec(selects=16, select=11)],
     ids=lambda spec: spec.cell_name,
 )
 def test_leaf_matches_its_unit_fin_reference(spec, tmp_path: Path, require_klayout):
