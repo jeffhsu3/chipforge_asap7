@@ -12,6 +12,7 @@ import gdspy
 import pytest
 
 from chipforge_asap7.devices import (
+    OutputLatch270Spec,
     SidewaysIoColumnSpec,
     StaggeredIoColumnSpec,
     build_sideways_io_column,
@@ -22,7 +23,8 @@ from chipforge_asap7.devices import (
 from chipforge_asap7.devices.rowcell import label
 from chipforge_asap7.verification.lvs import render_io_column_lvs_schematic, run_lvs
 
-FOUR = SidewaysIoColumnSpec()
+FOUR = SidewaysIoColumnSpec(compact=True)
+FOUR_WIDE = SidewaysIoColumnSpec()  # the two-row cells side by side
 EIGHT = SidewaysIoColumnSpec(selects=8)
 SIXTEEN = SidewaysIoColumnSpec(selects=16)
 
@@ -51,21 +53,51 @@ def test_each_row_enters_its_leaf_at_the_arrays_own_heights():
             assert group[f"{net}[{row}]"][1][1] + spec.grid_offset == y
 
 
-def test_the_logic_sits_on_the_leaves_fin_grid_clear_of_their_rails():
-    spec = FOUR
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE], ids=("compact", "wide"))
+def test_the_logic_sits_on_the_leaves_fin_grid_clear_of_their_rails(spec):
     assert (spec.logic_y - spec.grid_offset) % 27 == 0
+    clear = (2 if spec.is_compact else 3) * 27
     for y, _ in spec.logic_rails:
-        assert all(abs(y - r) >= 3 * 27 for r, _ in spec.leaf_rails)
+        assert all(abs(y - r) >= clear for r, _ in spec.leaf_rails)
+
+
+def _devices(netlist: str) -> list[str]:
+    return [line for line in netlist.splitlines() if line[:1] == "M"]
 
 
 def test_pins_and_netlist_are_the_staggered_blocks():
     """A drop-in for `StaggeredIoColumnSpec`: same pins, same devices."""
-    for spec in (FOUR, SIXTEEN):
+    for spec in (FOUR_WIDE, SIXTEEN):
         staggered = StaggeredIoColumnSpec(selects=spec.selects)
         assert set(spec.pin_positions) == set(io_column_pins(spec)) == set(io_column_pins(staggered))
-        body = [line for line in sideways_block_netlist(spec, name="b").splitlines() if line[:1] == "M"]
-        reference = [line for line in staggered_block_netlist(staggered, name="b").splitlines() if line[:1] == "M"]
-        assert body == reference
+        body = _devices(sideways_block_netlist(spec, name="b"))
+        assert body == _devices(staggered_block_netlist(staggered, name="b"))
+
+
+def test_compact_block_is_the_staggered_one_but_for_its_latch():
+    """Same pins, the same leaves, amplifier and write driver; the latch is the 270 nm one's devices."""
+    staggered = StaggeredIoColumnSpec(selects=4)
+    assert set(FOUR.pin_positions) == set(io_column_pins(FOUR)) == set(io_column_pins(staggered))
+    body = _devices(sideways_block_netlist(FOUR, name="b"))
+    reference = _devices(staggered_block_netlist(staggered, name="b"))
+    assert [d for d in body if not d.startswith("Mol_")] == [d for d in reference if not d.startswith("Mol_")]
+    assert len([d for d in body if d.startswith("Mol_")]) == len(OutputLatch270Spec().devices)
+
+
+def test_compact_block_puts_the_driver_under_the_amplifier_and_the_latch_beside():
+    spec = FOUR
+    assert spec.is_compact and not FOUR_WIDE.is_compact and not EIGHT.is_compact
+    place = spec.placements
+    wd_x, wd_y = place["write_driver"]
+    sa_x, sa_y = place["sense_amp"]
+    assert wd_x == sa_x and sa_y == wd_y + 270
+    assert spec.logic_top <= spec.height
+    # The latch on the leaves' rails, past the logic column's taps and the inner straps over them.
+    assert place["output_latch"] == (spec.latch_x, spec.grid_offset)
+    assert all(sa_x + spec.sense_amp.width < x < spec.latch_x for x in spec.inner_straps.values())
+    assert spec.width == spec.latch_x + 432 <= FOUR_WIDE.width - 900
+    with pytest.raises(ValueError, match="4:1 block or taller"):
+        SidewaysIoColumnSpec(selects=2, compact=True)
 
 
 def test_deep_muxes_stack_the_logic_in_one_column():
@@ -89,7 +121,7 @@ def test_rejected_specs():
         SidewaysIoColumnSpec(bitline_entry=(190, 83.5))
 
 
-@pytest.mark.parametrize("spec", [FOUR, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
 def test_block_is_drc_clean(spec, asap7_drc):
     library = _library()
     cell = build_sideways_io_column(spec, lib=library)
@@ -105,7 +137,7 @@ def test_stacked_blocks_are_drc_clean(asap7_drc):
     assert asap7_drc(library, top, tag="stack") == []
 
 
-@pytest.mark.parametrize("spec", [FOUR, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
 def test_block_matches_its_flat_unit_fin_reference(spec, tmp_path: Path, require_klayout):
     library = _library()
     cell = build_sideways_io_column(spec, lib=library)

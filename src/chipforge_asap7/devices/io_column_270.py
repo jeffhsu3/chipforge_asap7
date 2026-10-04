@@ -25,6 +25,14 @@ driver, sense amplifier and output latch (mirrored) side by side, ``SA`` and
 ``SAN`` reaching them on M4 from the leaves' tracks, ``QA``/``QAN`` crossing
 on M4 above them.  Supplies: every rail runs into the gap, to a VSS and a VDD
 M3 strap there that run the block's height.
+
+``compact=True`` (4:1) stacks the one-row write driver (mirrored) under the
+sense amplifier and puts the output latch's four 270 nm rows beside them on
+the leaves' own rails; a second strap pair over the logic column's taps feeds
+the latch, whose rails reach it across the taps::
+
+        │ leaves │gap│ sense amp     │tap│ latch │
+        │        │   │ write driver  │   │       │
 """
 
 from __future__ import annotations
@@ -41,10 +49,12 @@ from .bitline_mux_270 import ROW, SidewaysMuxSpec, build_sideways_mux_group
 from .cli import parse_spec, write_gds
 from .io_column import _block_devices, io_column_pins
 from .output_latch import OutputLatchSpec, build_output_latch
+from .output_latch_270 import OutputLatch270Spec, build_output_latch_270
 from .row_support import RowSupportSpec, build_row_support
 from .rowcell import CAP, HALF, PAD, V3_M3_CAP, label, m3_column, m4_track, square
 from .sense_amp_row import SenseAmpRowSpec, build_sense_amp_row
 from .write_driver import WriteDriverSpec, build_write_driver
+from .write_driver_270 import WriteDriver270Spec, build_write_driver_270
 
 __all__ = ["SidewaysIoColumnSpec", "build_sideways_io_column", "sideways_block_netlist"]
 
@@ -81,6 +91,11 @@ class SidewaysIoColumnSpec:
             (write driver, sense amplifier, output latch) instead of side by
             side in one pair; ``None`` stacks them when the block is tall
             enough (8:1 and up).
+        compact: the one-row write driver under the sense amplifier, and the
+            output latch on four 270 nm rows beside them (`WriteDriver270Spec`,
+            `OutputLatch270Spec`, which replace the default two cells); 4:1,
+            the one block height they fit, is where it pays: 1998 nm wide
+            against 2862.
         one_sense_phase: ``SAPRECHN`` strapped to ``SAE``; pin ``SAE`` only.
     """
 
@@ -94,6 +109,7 @@ class SidewaysIoColumnSpec:
     tap: bool = True
     stack_logic: bool | None = None
     one_sense_phase: bool = True
+    compact: bool = False
     two_sided = False
     row_pitch = ROW
 
@@ -101,6 +117,16 @@ class SidewaysIoColumnSpec:
         object.__setattr__(self, "bitline_entry", tuple(self.bitline_entry))
         if self.selects < 2 or self.selects % 2:
             raise ValueError(f"selects must be even and at least 2, got {self.selects}")
+        if self.is_compact:
+            self._take_compact_cells()
+            if self.height < 4 * ROW:
+                raise ValueError(f"the compact logic needs a 4:1 block or taller, got {self.selects}:1")
+            if self.logic_top > self.height:
+                raise ValueError(f"the compact logic needs {self.logic_top} nm; the block is {self.height}")
+            self.leaves  # the leaf rejects an entry it cannot take
+            return
+        if isinstance(self.write_driver, WriteDriver270Spec) or isinstance(self.output_latch, OutputLatch270Spec):
+            raise ValueError("the 270 nm write driver and output latch are the compact block's (compact=True)")
         rows = {(spec.band_height, spec.vt) for spec in (self.sense_amp, self.write_driver, self.output_latch)}
         if len(rows) != 1:
             raise ValueError(f"the three logic cells are not on one row: {sorted(rows)}")
@@ -113,6 +139,23 @@ class SidewaysIoColumnSpec:
                 f"the logic pair and its output lines need {self.logic_top + 2 * M4_PITCH + V3_M3_CAP} nm; "
                 f"the block is {self.height}"
             )
+
+    @property
+    def is_compact(self) -> bool:
+        return self.compact
+
+    def _take_compact_cells(self) -> None:
+        """Swap the default two-row cells for their 270 nm ones (same devices for the driver)."""
+        for name, default, compact in (
+            ("write_driver", WriteDriverSpec, WriteDriver270Spec),
+            ("output_latch", OutputLatchSpec, OutputLatch270Spec),
+        ):
+            given = getattr(self, name)
+            if isinstance(given, compact):
+                continue
+            if given != default(vt=given.vt):
+                raise ValueError(f"the compact block draws its own {name}; got {given}")
+            object.__setattr__(self, name, compact(vt=given.vt))
 
     # ── The parts ─────────────────────────────────────────────────────────────
     @property
@@ -153,6 +196,8 @@ class SidewaysIoColumnSpec:
 
     @property
     def stacked(self) -> bool:
+        if self.is_compact:
+            return False
         if self.stack_logic is not None:
             return self.stack_logic
         return self.height - self.grid_offset - 2 * FIN_PITCH >= 3 * self.pair_height
@@ -165,27 +210,65 @@ class SidewaysIoColumnSpec:
         297 nm rows drift 27 nm a row against the leaves' 270 nm and seven
         rails cannot all keep three (two leave 36 nm of M1 between rails).
         """
-        clear = (2 if self.stacked else 3) * FIN_PITCH
-        rows = 7 if self.stacked else 3
+        clear = (2 if self.stacked or self.is_compact else 3) * FIN_PITCH
         y = self.grid_offset + 2 * FIN_PITCH
         rails = [r for r, _ in self.leaf_rails]
-        while any(abs(y + k * self.pair_height / 2 - r) < clear for r in rails for k in range(rows)):
+        while any(abs(y + dy - r) < clear for r in rails for dy, _ in self._logic_rail_offsets):
             y += FIN_PITCH
         return y
 
     @property
-    def logic_rails(self) -> list[tuple[float, str]]:
+    def _logic_rail_offsets(self) -> list[tuple[float, str]]:
+        """The logic column's rails from its bottom."""
+        if self.is_compact:
+            # The driver mirrored (VDD below), then the amplifier's pair.
+            wd, sa = self.write_driver.height, self.sense_amp.height
+            return [(0, "VDD"), (wd, "VSS"), (wd + sa / 2, "VDD"), (wd + sa, "VSS")]
         rows = 7 if self.stacked else 3
-        return [(self.logic_y + k * self.pair_height / 2, "VDD" if k % 2 else "VSS") for k in range(rows)]
+        return [(k * self.pair_height / 2, "VDD" if k % 2 else "VSS") for k in range(rows)]
+
+    @property
+    def logic_rails(self) -> list[tuple[float, str]]:
+        return [(self.logic_y + dy, net) for dy, net in self._logic_rail_offsets]
 
     @property
     def logic_top(self) -> float:
+        if self.is_compact:
+            return self.logic_y + self.write_driver.height + self.sense_amp.height
         return self.logic_y + (3 if self.stacked else 1) * self.pair_height
+
+    # ── The compact block's latch column ──────────────────────────────────────
+    @property
+    def latch_x(self) -> int:
+        """The latch column: right of the logic column's taps (the inner straps run over them)."""
+        return self.logic_x + self.sense_amp.width + 2 * GATE_PITCH
+
+    @property
+    def latch_rails(self) -> list[tuple[float, str]]:
+        """The latch's rails, the leaves' own (it sits on their grid); its top one is the next block's."""
+        return [(self.grid_offset + k * ROW, "VDD" if k % 2 else "VSS") for k in range(4)]
+
+    @property
+    def inner_straps(self) -> dict[str, float]:
+        """A VSS and a VDD strap over the logic column's taps: the latch's supplies, and the column's."""
+        x = self.logic_x + self.sense_amp.width
+        return {"VSS": x + 36, "VDD": x + 72}
 
     @property
     def placements(self) -> dict[str, tuple[float, float]]:
         x, y = self.logic_x, self.logic_y
         wd, sa, ol = self.write_driver.width, self.sense_amp.width, self.output_latch.width
+        if self.is_compact:
+            # The driver mirrored under the amplifier (this is its bottom-left);
+            # the latch on the leaves' rails, its taps its own.
+            h = self.write_driver.height
+            return {
+                "write_driver": (x, y),
+                "sense_amp": (x, y + h),
+                "output_latch": (self.latch_x, self.grid_offset),
+                "tap": (x + wd, y),
+                "tap_sense_amp": (x + sa, y + h),
+            }
         if self.stacked:
             # Bottom to top: driver, amplifier, latch (as drawn, its QA/QAN
             # stubs down to the amplifier's); a tap right of each.
@@ -207,6 +290,8 @@ class SidewaysIoColumnSpec:
 
     @property
     def width(self) -> int:
+        if self.is_compact:
+            return self.latch_x + self.output_latch.width
         tap = 2 * GATE_PITCH if self.tap else 0
         return int(max(x for key, (x, _) in self.placements.items() if key.startswith("tap")) + tap)
 
@@ -214,6 +299,11 @@ class SidewaysIoColumnSpec:
     def cell_name(self) -> str:
         sa, wd, ol = self.sense_amp, self.write_driver, self.output_latch
         y_bl, y_bln = (round(10 * y) for y in self.bitline_entry)
+        if self.is_compact:
+            return (
+                f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_c270"
+                f"{'' if self.one_sense_phase is False else '_1ph'}"
+            )
         return (
             f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}"
             f"_ol{ol.fingers}{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
@@ -244,6 +334,16 @@ class SidewaysIoColumnSpec:
         wd_x, sa_x, ol_x = (place[k][0] for k in ("write_driver", "sense_amp", "output_latch"))
         sa, wd, ol = self.sense_amp.track_x, self.write_driver.track_x, self.output_latch.track_x
         y_sa, y_san = self.sense_line_ys
+        if self.is_compact:
+            # The driver's lines between its own enables' M4 (mirrored: WRENAN
+            # low, WRENA high), the amplifier's at the heights it takes them,
+            # QA/QAN over the column's top to the latch's inputs.
+            return {
+                "SA": [(y, [self.track_x("SA"), x]) for y, x in self._compact_sense_lines["SA"]],
+                "SAN": [(y, [self.track_x("SAN"), x]) for y, x in self._compact_sense_lines["SAN"]],
+                "QA": [(self._qa_lines[0], [sa_x + sa["QA"], ol_x + ol["QA"]])],
+                "QAN": [(self._qa_lines[1], [sa_x + sa["QAN"], ol_x + ol["QAN"]])],
+            }
         if self.stacked:
             # Each cell its own lines, at the heights it takes them side by side.
             dy = place["sense_amp"][1] - place["write_driver"][1]
@@ -263,6 +363,32 @@ class SidewaysIoColumnSpec:
             "QA": [(top_line + M4_PITCH, [sa_x + sa["QA"], ol_x + ol["QA"]])],
             "QAN": [(top_line + 2 * M4_PITCH, [sa_x + sa["QAN"], ol_x + ol["QAN"]])],
         }
+
+    @property
+    def _compact_sense_lines(self) -> dict[str, list[tuple[int, float]]]:
+        """``net -> [(y, x of the cell's M3)]``: the driver's and the amplifier's sense-line taps."""
+        place = self.placements
+        wd_x, wd_y = place["write_driver"]
+        sa_x, sa_y = place["sense_amp"]
+        wd, sa = self.write_driver, self.sense_amp
+        # Mirrored, the driver's WRENAN line is 30 nm over its bottom and its
+        # SA M3 runs 24-138 nm over it: SA two M4 pitches above that line
+        # (one leaves the line's end too near WRENAN's, M4.S.3), SAN a pitch
+        # above SA.
+        y = math.ceil(wd_y) + 30 + 2 * M4_PITCH - 22
+        lines = {
+            "SA": [(y, wd_x + wd.track_x["SA"])],
+            "SAN": [(y + M4_PITCH, wd_x + wd.track_x["SAN"])],
+        }
+        y = math.ceil(sa_y)
+        lines["SA"].append((y + 2 * M4_PITCH, sa_x + sa.track_x["SA"]))
+        lines["SAN"].append((y + 3 * M4_PITCH, sa_x + sa.track_x["SAN"]))
+        return lines
+
+    @property
+    def _qa_lines(self) -> tuple[int, int]:
+        top = math.ceil(self.logic_top)
+        return (top + M4_PITCH, top + 2 * M4_PITCH)
 
     @property
     def sense_phase_strap(self) -> tuple[float, float, float] | None:
@@ -300,8 +426,8 @@ class SidewaysIoColumnSpec:
             pins["SAE"] = (metal, (ox + x, oy + y))
         else:
             take(self.sense_amp, "sense_amp", ("SAE", "SAPRECHN"))
-        take(self.write_driver, "write_driver", ("D", "WRENA", "WRENAN"))
-        take(self.output_latch, "output_latch", ("OE", "OEB", "Q"), mirrored=not self.stacked)
+        take(self.write_driver, "write_driver", ("D", "WRENA", "WRENAN"), mirrored=self.is_compact)
+        take(self.output_latch, "output_latch", ("OE", "OEB", "Q"), mirrored=not (self.stacked or self.is_compact))
         for net, x in self.straps.items():
             pins[net] = ("M3", (x, self.height / 2))
         return pins
@@ -351,21 +477,38 @@ def build_sideways_io_column(
 
     # ── Logic ─────────────────────────────────────────────────────────────────
     place = spec.placements
+    compact = spec.is_compact
+    wd, ol = spec.write_driver, spec.output_latch
+    if compact:
+        assert isinstance(wd, WriteDriver270Spec) and isinstance(ol, OutputLatch270Spec)
+        build_wd = lambda: build_write_driver_270(wd, lib=lib, draw_pin_labels=False)  # noqa: E731
+        build_ol = lambda: build_output_latch_270(ol, lib=lib, draw_pin_labels=False)  # noqa: E731
+    else:
+        build_wd = lambda: build_write_driver(wd, lib=lib, draw_pin_labels=False)  # noqa: E731
+        build_ol = lambda: build_output_latch(ol, lib=lib, draw_pin_labels=False)  # noqa: E731
     logic = {
-        "write_driver": reuse(spec.write_driver.cell_name,
-                              lambda: build_write_driver(spec.write_driver, lib=lib, draw_pin_labels=False)),
+        "write_driver": reuse(wd.cell_name, build_wd),
         "sense_amp": reuse(spec.sense_amp.cell_name,
                            lambda: build_sense_amp_row(spec.sense_amp, lib=lib, draw_pin_labels=False)),
-        "output_latch": reuse(spec.output_latch.cell_name,
-                              lambda: build_output_latch(spec.output_latch, lib=lib, draw_pin_labels=False)),
+        "output_latch": reuse(ol.cell_name, build_ol),
     }  # fmt: skip
     for key, placed in logic.items():
         x, y = place[key]
-        if key == "output_latch" and not spec.stacked:
-            cell.add(gdspy.CellReference(placed, origin=(x, y + spec.output_latch.height), x_reflection=True))
+        if key == "output_latch" and not (spec.stacked or compact):
+            cell.add(gdspy.CellReference(placed, origin=(x, y + ol.height), x_reflection=True))
+        elif key == "write_driver" and compact:
+            # VDD below, its VSS rail the amplifier's bottom one.
+            cell.add(gdspy.CellReference(placed, origin=(x, y + wd.height), x_reflection=True))
         else:
             cell.add(gdspy.CellReference(placed, origin=(x, y)))
-    if spec.tap:
+    if spec.tap and compact:
+        for key, stack, mirrored in (("tap", wd.stack, True), ("tap_sense_amp", spec.sense_amp.stack, False)):
+            tap_spec = RowSupportSpec(stack=stack, kind="tap", width_cpp=2)
+            tap = reuse(tap_spec.cell_name, lambda tap_spec=tap_spec: build_row_support(tap_spec, lib=lib))
+            x, y = place[key]
+            height = stack.height
+            cell.add(gdspy.CellReference(tap, origin=(x, y + height if mirrored else y), x_reflection=mirrored))
+    elif spec.tap:
         tap_spec = RowSupportSpec(stack=spec.write_driver.stack, kind="tap", width_cpp=2)
         tap = reuse(tap_spec.cell_name, lambda: build_row_support(tap_spec, lib=lib))
         for key, origin in place.items():
@@ -376,7 +519,13 @@ def build_sideways_io_column(
     top = spec.logic_top
     for net, lines in spec.routes.items():
         for y, xs in lines:
-            if net in ("QA", "QAN") and spec.stacked:
+            if net in ("QA", "QAN") and compact:
+                # The amplifier's riser from its top edge; the latch's input
+                # from the latch's bottom edge, up its own (otherwise free) column.
+                amp, latch = xs
+                m3_column(cell, amp, top - CAP, y + V3_M3_CAP)
+                m3_column(cell, latch, spec.grid_offset, y + V3_M3_CAP)
+            elif net in ("QA", "QAN") and spec.stacked:
                 # On the seam: the amplifier's riser ends there from below,
                 # the latch's stub from above; each reaches across to the via.
                 amp, latch = xs
@@ -416,6 +565,20 @@ def build_sideways_io_column(
                 lo, hi = max(a0, b0), min(a1, b1)
                 if hi > lo and 0 < abs(ya - yb) < 4 * HALF:
                     box(cell, "M1", lo, min(ya, yb), hi, max(ya, yb))
+    if compact:
+        # The inner pair, over the logic column's taps: a via on each of the
+        # column's rails (the taps carry them), the latch's rails carried left
+        # to theirs.
+        inner = spec.inner_straps
+        for y, net in spec.logic_rails + spec.latch_rails:
+            x_strap = inner[net]
+            if (y, net) in spec.latch_rails:
+                box(cell, "M1", x_strap - HALF - _RAIL_OVERHANG, y - HALF, spec.latch_x, y + HALF)
+            square(cell, "V1", x_strap, y)
+            box(cell, "M2", x_strap - _PAD_HALF_X, y - HALF, x_strap + _PAD_HALF_X, y + HALF)
+            square(cell, "V2", x_strap, y)
+        for x in inner.values():
+            m3_column(cell, x, 0, spec.height + spec.grid_offset + CAP)
     # The straps reach the leaves' top rail, half a fin pitch above the block
     # (the next block's bottom one): strapped in both, so neither block has a
     # rail of its own that only its neighbour ties.
