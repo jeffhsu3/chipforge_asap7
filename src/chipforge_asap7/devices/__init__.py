@@ -7,6 +7,12 @@ from .bitline_mux import (
     build_bitline_mux,
     build_bitline_mux_group,
 )
+from .bitline_mux_270 import (
+    SidewaysMuxSpec,
+    build_sideways_mux,
+    build_sideways_mux_group,
+    sideways_mux_group_pins,
+)
 from .driver_slice import (
     DRIVER_SLICE_PINS,
     DriverSliceSpec,
@@ -67,6 +73,7 @@ __all__ = [
     "SENSE_AMP_PINS",
     "WRITE_DRIVER_PINS",
     "BitlineMuxSpec",
+    "SidewaysMuxSpec",
     "DecoderSizing",
     "DriverSliceSpec",
     "FinFETSpec",
@@ -84,10 +91,13 @@ __all__ = [
     "StaggeredIoColumnSpec",
     "WriteDriverSpec",
     "bitline_mux_group_pins",
+    "sideways_mux_group_pins",
     "block_netlist",
     "block_series_nodes",
     "build_bitline_mux",
     "build_bitline_mux_group",
+    "build_sideways_mux",
+    "build_sideways_mux_group",
     "build_device_band",
     "build_driver_slice",
     "build_driver_slice_support",
