@@ -97,6 +97,9 @@ class SidewaysIoColumnSpec:
             the one block height they fit, is where it pays: 1998 nm wide
             against 2862.
         one_sense_phase: ``SAPRECHN`` strapped to ``SAE``; pin ``SAE`` only.
+        local_ysel: each leaf makes its own ``YSEL`` from ``YSELN`` (see
+            `SidewaysMuxSpec`): the block has no ``YSEL`` pins, and from 8:1
+            its leaves are narrower.
     """
 
     selects: int = 4
@@ -110,6 +113,7 @@ class SidewaysIoColumnSpec:
     stack_logic: bool | None = None
     one_sense_phase: bool = True
     compact: bool = False
+    local_ysel: bool = False
     two_sided = False
     row_pitch = ROW
 
@@ -160,12 +164,14 @@ class SidewaysIoColumnSpec:
     # ── The parts ─────────────────────────────────────────────────────────────
     @property
     def leaves(self) -> SidewaysMuxSpec:
-        return SidewaysMuxSpec(selects=self.selects, bitline_entry=self.bitline_entry, grid_offset=self.grid_offset)
+        return SidewaysMuxSpec(selects=self.selects, bitline_entry=self.bitline_entry, grid_offset=self.grid_offset,
+                               local_ysel=self.local_ysel)  # fmt: skip
 
     @property
-    def mux(self) -> BitlineMuxSpec:
-        """The mux as `IoColumnSpec`'s netlist helpers enumerate it: the leaves' six devices a select."""
-        return BitlineMuxSpec(selects=self.selects)
+    def mux(self) -> BitlineMuxSpec | SidewaysMuxSpec:
+        """The mux as `IoColumnSpec`'s netlist helpers enumerate it: the leaves' six devices a
+        select (eight, and no ``YSEL`` pins, with `local_ysel`)."""
+        return self.leaves if self.local_ysel else BitlineMuxSpec(selects=self.selects)
 
     # ── Sizes ─────────────────────────────────────────────────────────────────
     @property
@@ -302,11 +308,12 @@ class SidewaysIoColumnSpec:
         if self.is_compact:
             return (
                 f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_c270"
-                f"{'' if self.one_sense_phase is False else '_1ph'}"
+                f"{'' if self.one_sense_phase is False else '_1ph'}{'_ly' if self.local_ysel else ''}"
             )
         return (
             f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}"
             f"_ol{ol.fingers}{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
+            f"{'_ly' if self.local_ysel else ''}"
         )
 
     # ── Where things are ──────────────────────────────────────────────────────
@@ -406,7 +413,7 @@ class SidewaysIoColumnSpec:
                 pins[f"{net}[{row}]"] = ("M2", (PAD, y))
         group = self.leaves.group_pin_positions()
         for row in range(self.selects):
-            for net in ("YSEL", "YSELN"):
+            for net in ("YSELN",) if self.local_ysel else ("YSEL", "YSELN"):
                 metal, (x, y) = group[f"{net}[{row}]"]
                 pins[f"{net}[{row}]"] = (metal, (self.entry_margin + x, y + self.grid_offset))
         metal, (x, y) = group["PRECHN"]

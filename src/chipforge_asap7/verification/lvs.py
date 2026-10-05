@@ -10,11 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..devices.bitline_mux import (
-    BITLINE_MUX_PINS,
-    BitlineMuxSpec,
-    bitline_mux_group_pins,
-)
+from ..devices.bitline_mux import BITLINE_MUX_PINS, BitlineMuxSpec
 from ..devices.driver_slice import DRIVER_SLICE_PINS, DriverSliceSpec
 from ..devices.finfet import FinFETSpec
 from ..devices.inverter import INVERTER_PINS, InverterSpec
@@ -354,7 +350,7 @@ def render_bitline_mux_lvs_schematic(
     body = "\n".join(lines)
     return (
         "* ASAP7 bitline leaf LVS reference: one MOS per FIN x GATE channel\n"
-        f".SUBCKT {name} {' '.join(BITLINE_MUX_PINS)}\n"
+        f".SUBCKT {name} {' '.join(getattr(spec, 'pins', BITLINE_MUX_PINS))}\n"
         f"{body}\n"
         f".ENDS {name}\n"
         ".END\n"
@@ -478,7 +474,9 @@ def render_bitline_mux_group_lvs_schematic(
     """
 
     n_band, p_band = spec.bands
-    local = {"BL", "BLN", "YSEL", "YSELN"}
+    local = {"BL", "BLN", "YSEL", "YSELN"}  # a local YSEL is still the leaf's own net
+    leaf_pins = getattr(spec, "leaf_nets", ("BL", "BLN", "YSEL", "YSELN"))
+    pins = (*(f"{pin}[{i}]" for i in range(spec.selects) for pin in leaf_pins), "SA", "SAN", "PRECHN", "VDD", "VSS")
     lines = []
     for i in range(spec.selects):
         for device, drain, gate, source, flavor, fins in spec.devices:
@@ -495,7 +493,7 @@ def render_bitline_mux_group_lvs_schematic(
     body = "\n".join(lines)
     return (
         "* ASAP7 column-mux group LVS reference: one MOS per FIN x GATE channel\n"
-        f".SUBCKT {cell_name} {' '.join(bitline_mux_group_pins(spec))}\n"
+        f".SUBCKT {cell_name} {' '.join(pins)}\n"
         f"{body}\n"
         f".ENDS {cell_name}\n"
         ".END\n"

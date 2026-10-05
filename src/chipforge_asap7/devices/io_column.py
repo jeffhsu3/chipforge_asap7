@@ -384,7 +384,7 @@ def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
     per_leaf = [
         _mux_net(pin, i, side="left")
         for i in range(spec.mux.selects)
-        for pin in _MUX_LEAF_NETS
+        for pin in getattr(spec.mux, "leaf_nets", _MUX_LEAF_NETS)
     ]
     phases = ("SAE",) if spec.one_sense_phase else ("SAE", "SAPRECHN")
     right = []

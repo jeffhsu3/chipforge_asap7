@@ -41,9 +41,13 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
 
 
-@pytest.mark.parametrize("selects, swapped", [(1, False), (2, False), (4, False), (4, True), (8, True), (16, False)])
-def test_terminated_leaf_is_clean(selects, swapped, asap7_drc):
-    spec = SidewaysMuxSpec(selects=selects, select=selects - 1, swapped=swapped)
+@pytest.mark.parametrize(
+    "selects, swapped, local_ysel",
+    [(1, False, False), (2, False, False), (4, False, False), (4, True, False), (8, True, False),
+     (16, False, False), (8, False, True), (8, True, True), (16, True, True)],
+)
+def test_terminated_leaf_is_clean(selects, swapped, local_ysel, asap7_drc):
+    spec = SidewaysMuxSpec(selects=selects, select=selects - 1, swapped=swapped, local_ysel=local_ysel)
     library = _library()
     leaf = build_sideways_mux(spec, lib=library)
     support = {kind: build_row_support(RowSupportSpec(stack=ROW_270, kind=kind), lib=library)
@@ -57,9 +61,9 @@ def test_terminated_leaf_is_clean(selects, swapped, asap7_drc):
     assert asap7_drc(library, top, tag="terminated") == []
 
 
-@pytest.mark.parametrize("selects", [4, 8, 16])
-def test_stacking_leaves_adds_no_violation(selects, asap7_drc):
-    """Mirrored leaves share their rails, the M3 tracks meet, and no seam rule fires."""
+@pytest.mark.parametrize("selects, local_ysel", [(4, False), (8, False), (16, False), (8, True), (16, True)])
+def test_stacking_leaves_adds_no_violation(selects, local_ysel, asap7_drc):
+    """Mirrored leaves share their rails (and the inverters' wells), the M3 tracks meet, and no seam rule fires."""
     library = _library()
-    group = build_sideways_mux_group(SidewaysMuxSpec(selects=selects), lib=library)
+    group = build_sideways_mux_group(SidewaysMuxSpec(selects=selects, local_ysel=local_ysel), lib=library)
     assert set(asap7_drc(library, group, tag=f"group{selects}")) == NO_TAP_IN_CELL

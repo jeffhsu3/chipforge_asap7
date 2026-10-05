@@ -40,6 +40,18 @@ def test_the_leaf_widens_by_two_tracks_a_select(selects, width):
     assert tracks["SA"] + 9 <= width  # the last track inside the edge
 
 
+@pytest.mark.parametrize("selects, width", [(4, 540), (8, 540), (16, 756)])
+def test_a_local_ysel_drops_the_ysel_tracks(selects, width):
+    """Only YSELN crosses the column: from 8:1 the leaf is narrower; at 4:1 the inverter sets it."""
+    spec = SidewaysMuxSpec(selects=selects, local_ysel=True)
+    assert spec.width == width
+    assert not any(net.startswith("YSEL[") for net in spec.track_x)
+    assert "YSEL" not in spec.pins and "YSEL" not in spec.pin_positions
+    assert set(spec.devices) - set(SidewaysMuxSpec(selects=selects).devices) == {
+        ("MNI", "YSEL", "YSELN", "VSS", "n", 3), ("MPI", "YSEL", "YSELN", "VDD", "p", 3)}  # fmt: skip
+    assert not any(pin.startswith("YSEL[") for pin in spec.group_pin_positions())
+
+
 def test_the_bitlines_land_where_the_6t_cell_puts_them():
     # BL above BLN, half a fin pitch up on the array's grid: the leaf's M2 bars.
     spec = SidewaysMuxSpec()
