@@ -11,7 +11,6 @@ from typing import Any
 
 from .layers import LAYERS
 from .transform import bbox, edge_boundary, rect
-from ..verification.connectivity import MetalGraph
 
 __all__ = [
     "add_supply_straps",
@@ -39,6 +38,9 @@ M2_END_CAP = 0.006
 
 def io_supply_rails(cell: Any) -> dict[str, list[tuple[float, float, float]]]:
     """Find (x0, x1, y_center) of every M1 supply rail of a placed block by net."""
+    # Imported here: verification imports devices, which import layout.
+    from ..verification.connectivity import MetalGraph
+
     graph = MetalGraph(cell)
     net_of: dict[int, str] = {}
     for label in cell.get_labels(depth=None):
@@ -120,6 +122,9 @@ def add_supply_straps(cell: Any, prefer: str) -> dict[str, float]:
 
 def tie_seam_supplies(cell: Any, seam_x: float, io_side: str, every: bool = True) -> int:
     """Tie array supply bars to IO block rails at a seam; returns number of ties created."""
+    # Imported here: verification imports devices, which import layout.
+    from ..verification.connectivity import MetalGraph
+
     graph = MetalGraph(cell)
     net_of: dict[int, str] = {}
     for label in cell.get_labels(depth=None):
