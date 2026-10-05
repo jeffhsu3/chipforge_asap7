@@ -59,8 +59,15 @@ ROW = 270
 COLUMNS = 12
 #: M2 tracks: the via rows, one between each and the gate tracks, and the two gate tracks.
 Y_N, Y_77, Y_GATE_LO, Y_GATE_HI, Y_185, Y_P = 41, 77, 113, 149, 185, 229
-#: M4 lines of the two write enables.
-Y_M4 = {"WRENA": 30, "WRENAN": 240}
+#: M4 lines of the two write enables.  Half a nanometre off the cell's grid
+#: so that, mirrored on a column IO's half-nanometre fin-grid row, they land
+#: on whole nanometres: a router's on-grid patch over one then leaves no
+#: half-nanometre step (M4.AUX.3).
+Y_M4 = {"WRENA": 29.5, "WRENAN": 240.5}
+#: The control pins are M3 a router lands on from M4 tracks (M4 is
+#: right-way and on-grid only): each runs past its own net's M4 line, over
+#: rows a block keeps free.
+TOP_OF_WRENA = 180
 
 
 def col(i: int) -> int:
@@ -85,12 +92,12 @@ GATES = (
 )
 #: M3 columns, by net (x, y0, y1); a net's pin is its first.
 M3 = {
-    "SA": [(col(0), Y_GATE_HI, Y_P)],  # down to the gate tracks: a block's line can land clear of WRENAN's M4
+    "SA": [(col(0), 0, Y_P)],  # to the edge: a sense amplifier's SA track above takes it
     "W": [(col(1), Y_N, Y_P)],
     "WRENAN": [(col(2), Y_GATE_HI, Y_M4["WRENAN"]), (gate(6), Y_GATE_LO, Y_M4["WRENAN"])],
-    "WRENA": [(col(3), Y_M4["WRENA"], Y_GATE_LO), (472, Y_M4["WRENA"], Y_GATE_LO)],
+    "WRENA": [(col(3), Y_M4["WRENA"], TOP_OF_WRENA), (472, Y_M4["WRENA"], Y_GATE_LO)],
     "WN": [(col(5), Y_N, Y_P), (col(10), Y_N, Y_185)],
-    "D": [(gate(8), Y_77, Y_GATE_HI)],
+    "D": [(gate(8), Y_77, 228)],
     "SAN": [(col(11), 0, Y_P)],
 }
 PIN_NETS = ("D", "WRENA", "WRENAN", "SA", "SAN")
@@ -143,6 +150,7 @@ class WriteDriver270Spec:
         for net in PIN_NETS:
             x, y0, y1 = M3[net][0]
             pins[net] = ("M3", (x, (y0 + y1) / 2))
+
         pins["VSS"] = ("M1", (self.width / 2, 0))
         pins["VDD"] = ("M1", (self.width / 2, ROW))
         return pins

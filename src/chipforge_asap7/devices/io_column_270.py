@@ -337,7 +337,7 @@ class SidewaysIoColumnSpec:
         if self.is_compact:
             # The driver's lines between its own enables' M4 (mirrored: WRENAN
             # low, WRENA high), the amplifier's at the heights it takes them,
-            # QA/QAN over the column's top to the latch's inputs.
+            # QA/QAN across the amplifier's middle to the latch's inputs.
             return {
                 "SA": [(y, [self.track_x("SA"), x]) for y, x in self._compact_sense_lines["SA"]],
                 "SAN": [(y, [self.track_x("SAN"), x]) for y, x in self._compact_sense_lines["SAN"]],
@@ -371,15 +371,12 @@ class SidewaysIoColumnSpec:
         wd_x, wd_y = place["write_driver"]
         sa_x, sa_y = place["sense_amp"]
         wd, sa = self.write_driver, self.sense_amp
-        # Mirrored, the driver's WRENAN line is 30 nm over its bottom and its
-        # SA M3 runs 24-138 nm over it: SA two M4 pitches above that line
-        # (one leaves the line's end too near WRENAN's, M4.S.3), SAN a pitch
-        # above SA.
-        y = math.ceil(wd_y) + 30 + 2 * M4_PITCH - 22
-        lines = {
-            "SA": [(y, wd_x + wd.track_x["SA"])],
-            "SAN": [(y + M4_PITCH, wd_x + wd.track_x["SAN"])],
-        }
+        # The driver's SA M3 meets the amplifier's SA track on their shared
+        # rail.  Its SAN takes a line under its WRENA M4 (mirrored, 30 nm
+        # under its top), a pitch clear of it, over the control pins' rows.
+        # (QA/QAN cross the amplifier's middle: `_qa_lines`.)
+        y = math.ceil(wd_y) + wd.height - 30 - M4_PITCH - 4
+        lines: dict[str, list[tuple[int, float]]] = {"SA": [], "SAN": [(y, wd_x + wd.track_x["SAN"])]}
         y = math.ceil(sa_y)
         lines["SA"].append((y + 2 * M4_PITCH, sa_x + sa.track_x["SA"]))
         lines["SAN"].append((y + 3 * M4_PITCH, sa_x + sa.track_x["SAN"]))
@@ -387,8 +384,10 @@ class SidewaysIoColumnSpec:
 
     @property
     def _qa_lines(self) -> tuple[int, int]:
-        top = math.ceil(self.logic_top)
-        return (top + M4_PITCH, top + 2 * M4_PITCH)
+        """The compact block's QA/QAN lines: across the amplifier's middle, where its
+        QA/QAN tracks run, clear of its sense lines and under the latch's output pins."""
+        y = math.ceil(self.placements["sense_amp"][1])
+        return (y + 6 * M4_PITCH, y + 7 * M4_PITCH)
 
     @property
     def sense_phase_strap(self) -> tuple[float, float, float] | None:
@@ -520,10 +519,9 @@ def build_sideways_io_column(
     for net, lines in spec.routes.items():
         for y, xs in lines:
             if net in ("QA", "QAN") and compact:
-                # The amplifier's riser from its top edge; the latch's input
-                # from the latch's bottom edge, up its own (otherwise free) column.
-                amp, latch = xs
-                m3_column(cell, amp, top - CAP, y + V3_M3_CAP)
+                # The amplifier's track runs its height; the latch's input
+                # climbs from the latch's bottom edge up its own (otherwise free) column.
+                _, latch = xs
                 m3_column(cell, latch, spec.grid_offset, y + V3_M3_CAP)
             elif net in ("QA", "QAN") and spec.stacked:
                 # On the seam: the amplifier's riser ends there from below,
