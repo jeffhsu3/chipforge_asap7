@@ -87,6 +87,23 @@ _MIN_NAND_ROW = (4, 2)
 _MIN_DRIVER_FINS = 2
 
 
+#: The tallest ACTIVE the public runset accepts: its ACTIVE.W.2 lists heights
+#: of 1 to 12 fins and flags any other, a whole number of fins or not (the
+#: released driver's 18-fin rows trip it too).
+RUNSET_ACTIVE_FINS = 12
+
+
+def _within_active_limit(row: tuple[int, int], limit: int) -> tuple[tuple[int, int], ...]:
+    """Split a driver row taller than `limit` fins into balanced rows, tallest first."""
+    n, p = row
+    count = -(-max(n, p) // limit)
+
+    def share(fins: int) -> list[int]:
+        return [fins // count + (1 if k < fins % count else 0) for k in range(count)]
+
+    return tuple(zip(share(n), share(p)))
+
+
 @dataclass(frozen=True)
 class DriverSliceSpec:
     """Four post-decode NANDs and the four wordline drivers they feed.
@@ -151,9 +168,18 @@ class DriverSliceSpec:
 
     @classmethod
     def from_sizing(
-        cls, sizing: DecoderSizing, *, vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
+        cls,
+        sizing: DecoderSizing,
+        *,
+        vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt",
+        max_active_fins: int | None = None,
     ) -> DriverSliceSpec:
-        """The slice `size_decoder` asked for, floored at what can be routed."""
+        """The slice `size_decoder` asked for, floored at what can be routed.
+
+        `max_active_fins` splits any driver row taller than that into balanced
+        rows (`RUNSET_ACTIVE_FINS` keeps the public runset quiet); ``None``
+        keeps `size_decoder`'s rows, as the released slice has them.
+        """
         ((n_fins, p_fins),) = sizing.nand_rows
         if n_fins > MAX_FINS:
             raise ValueError(
@@ -163,7 +189,8 @@ class DriverSliceSpec:
         nand_row = (max(n_fins, _MIN_NAND_ROW[0]), max(p_fins, _MIN_NAND_ROW[1]))
         driver_rows = tuple(
             (max(n, _MIN_DRIVER_FINS), max(p, _MIN_DRIVER_FINS))
-            for n, p in sizing.driver_rows
+            for row in sizing.driver_rows
+            for n, p in (_within_active_limit(row, max_active_fins) if max_active_fins else (row,))
         )
         return cls(
             nand=NandSpec(rows=(nand_row,), fingers=2, vt=vt),

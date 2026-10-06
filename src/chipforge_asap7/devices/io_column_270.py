@@ -33,6 +33,10 @@ the latch, whose rails reach it across the taps::
 
         │ leaves │gap│ sense amp     │tap│ latch │
         │        │   │ write driver  │   │       │
+
+From 8:1 the block is tall enough for all three in one column: the latch
+above the amplifier, on the leaves' rails, which carry its supplies into the
+gap with theirs (no second strap pair).
 """
 
 from __future__ import annotations
@@ -94,8 +98,9 @@ class SidewaysIoColumnSpec:
         compact: the one-row write driver under the sense amplifier, and the
             output latch on four 270 nm rows beside them (`WriteDriver270Spec`,
             `OutputLatch270Spec`, which replace the default two cells); 4:1,
-            the one block height they fit, is where it pays: 1998 nm wide
-            against 2862.
+            1998 nm wide against 2862; from 8:1 the latch stacks above the
+            amplifier in one column, 1566 nm wide (stacked: 1944 at 8:1, 2484
+            at 16:1).
         one_sense_phase: ``SAPRECHN`` strapped to ``SAE``; pin ``SAE`` only.
         local_ysel: each leaf makes its own ``YSEL`` from ``YSELN`` (see
             `SidewaysMuxSpec`): the block has no ``YSEL`` pins, and from 8:1
@@ -127,6 +132,8 @@ class SidewaysIoColumnSpec:
                 raise ValueError(f"the compact logic needs a 4:1 block or taller, got {self.selects}:1")
             if self.logic_top > self.height:
                 raise ValueError(f"the compact logic needs {self.logic_top} nm; the block is {self.height}")
+            if self.compact_column and self.latch_y + self.output_latch.height > self.height + self.grid_offset:
+                raise ValueError(f"the latch above the amplifier needs {self.latch_y + self.output_latch.height} nm")
             self.leaves  # the leaf rejects an entry it cannot take
             return
         if isinstance(self.write_driver, WriteDriver270Spec) or isinstance(self.output_latch, OutputLatch270Spec):
@@ -147,6 +154,11 @@ class SidewaysIoColumnSpec:
     @property
     def is_compact(self) -> bool:
         return self.compact
+
+    @property
+    def compact_column(self) -> bool:
+        """The compact cells in one column, the latch above the amplifier: 8:1 and up."""
+        return self.is_compact and self.height >= 8 * ROW
 
     def _take_compact_cells(self) -> None:
         """Swap the default two-row cells for their 270 nm ones (same devices for the driver)."""
@@ -217,7 +229,10 @@ class SidewaysIoColumnSpec:
         rails cannot all keep three (two leave 36 nm of M1 between rails).
         """
         clear = (2 if self.stacked or self.is_compact else 3) * FIN_PITCH
-        y = self.grid_offset + 2 * FIN_PITCH
+        # One column's latch ends on the next block's first rail: the driver
+        # above it keeps 108 nm off, or the two cells' gate cuts on their
+        # rails (and their poly ends) come too close (GCUT.S.3, GATE.S.1).
+        y = self.grid_offset + (4 if self.compact_column else 2) * FIN_PITCH
         rails = [r for r, _ in self.leaf_rails]
         while any(abs(y + dy - r) < clear for r in rails for dy, _ in self._logic_rail_offsets):
             y += FIN_PITCH
@@ -235,7 +250,9 @@ class SidewaysIoColumnSpec:
 
     @property
     def logic_rails(self) -> list[tuple[float, str]]:
-        return [(self.logic_y + dy, net) for dy, net in self._logic_rail_offsets]
+        """Every logic rail that runs into the gap (one column's latch rails are the leaves' own)."""
+        rails = [(self.logic_y + dy, net) for dy, net in self._logic_rail_offsets]
+        return rails + (self.latch_rails if self.compact_column else [])
 
     @property
     def logic_top(self) -> float:
@@ -246,13 +263,27 @@ class SidewaysIoColumnSpec:
     # ── The compact block's latch column ──────────────────────────────────────
     @property
     def latch_x(self) -> int:
-        """The latch column: right of the logic column's taps (the inner straps run over them)."""
+        """The latch: above the amplifier (one column), or right of the logic column's
+        taps, which the inner straps run over."""
+        if self.compact_column:
+            return self.logic_x
         return self.logic_x + self.sense_amp.width + 2 * GATE_PITCH
+
+    @property
+    def latch_y(self) -> float:
+        """The latch's bottom: a leaves' VSS rail, beside them at 4:1; in one column the
+        first one past the amplifier and the two QA/QAN lines over it."""
+        if not self.compact_column:
+            return self.grid_offset
+        y = self.grid_offset
+        while y < math.ceil(self.logic_top) + 2 * M4_PITCH:
+            y += 2 * ROW
+        return y
 
     @property
     def latch_rails(self) -> list[tuple[float, str]]:
         """The latch's rails, the leaves' own (it sits on their grid); its top one is the next block's."""
-        return [(self.grid_offset + k * ROW, "VDD" if k % 2 else "VSS") for k in range(4)]
+        return [(self.latch_y + k * ROW, "VDD" if k % 2 else "VSS") for k in range(4)]
 
     @property
     def inner_straps(self) -> dict[str, float]:
@@ -271,7 +302,7 @@ class SidewaysIoColumnSpec:
             return {
                 "write_driver": (x, y),
                 "sense_amp": (x, y + h),
-                "output_latch": (self.latch_x, self.grid_offset),
+                "output_latch": (self.latch_x, self.latch_y),
                 "tap": (x + wd, y),
                 "tap_sense_amp": (x + sa, y + h),
             }
@@ -296,6 +327,8 @@ class SidewaysIoColumnSpec:
 
     @property
     def width(self) -> int:
+        if self.compact_column:
+            return self.logic_x + max(self.sense_amp.width + 2 * GATE_PITCH, self.output_latch.width)
         if self.is_compact:
             return self.latch_x + self.output_latch.width
         tap = 2 * GATE_PITCH if self.tap else 0
@@ -391,8 +424,12 @@ class SidewaysIoColumnSpec:
 
     @property
     def _qa_lines(self) -> tuple[int, int]:
-        """The compact block's QA/QAN lines: across the amplifier's middle, where its
-        QA/QAN tracks run, clear of its sense lines and under the latch's output pins."""
+        """The compact block's QA/QAN lines.  Beside the latch: across the amplifier's
+        middle, where its QA/QAN tracks run, clear of its sense lines and under the
+        latch's output pins.  Above it: between the amplifier and the latch."""
+        if self.compact_column:
+            top = math.ceil(self.logic_top)
+            return (top + M4_PITCH // 2, top + 3 * M4_PITCH // 2)
         y = math.ceil(self.placements["sense_amp"][1])
         return (y + 6 * M4_PITCH, y + 7 * M4_PITCH)
 
@@ -525,7 +562,13 @@ def build_sideways_io_column(
     top = spec.logic_top
     for net, lines in spec.routes.items():
         for y, xs in lines:
-            if net in ("QA", "QAN") and compact:
+            if net in ("QA", "QAN") and spec.compact_column:
+                # Between them: the amplifier's track up from its top edge,
+                # the latch's input down from its bottom one.
+                amp, latch = xs
+                m3_column(cell, amp, top - CAP, y + V3_M3_CAP)
+                m3_column(cell, latch, y - V3_M3_CAP, spec.latch_y + CAP)
+            elif net in ("QA", "QAN") and compact:
                 # The amplifier's track runs its height; the latch's input
                 # climbs from the latch's bottom edge up its own (otherwise free) column.
                 _, latch = xs
@@ -570,7 +613,7 @@ def build_sideways_io_column(
                 lo, hi = max(a0, b0), min(a1, b1)
                 if hi > lo and 0 < abs(ya - yb) < 4 * HALF:
                     box(cell, "M1", lo, min(ya, yb), hi, max(ya, yb))
-    if compact:
+    if compact and not spec.compact_column:
         # The inner pair, over the logic column's taps: a via on each of the
         # column's rails (the taps carry them), the latch's rails carried left
         # to theirs.

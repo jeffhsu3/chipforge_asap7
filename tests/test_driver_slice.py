@@ -13,6 +13,7 @@ from chipforge_asap7.devices import (
     build_driver_slice_support,
     size_decoder,
 )
+from chipforge_asap7.devices.driver_slice import RUNSET_ACTIVE_FINS
 from chipforge_asap7.layout import LAYERS
 
 RELEASED = DriverSliceSpec()
@@ -66,6 +67,16 @@ def test_from_sizing_reproduces_the_released_slice():
     sizing = size_decoder(22.8, 32, stage_effort=4.43)
     assert DriverSliceSpec.from_sizing(sizing) == RELEASED
     assert DriverSliceSpec.from_sizing(sizing, vt="lvt").nand.vt == "lvt"
+
+
+def test_from_sizing_can_keep_each_driver_row_within_the_runsets_active_heights():
+    """17 fins is one ACTIVE the public runset's ACTIVE.W.2 flags (it lists 1-12): 9 + 8 instead."""
+    sizing = size_decoder(0.181 * 64, 32)
+    assert DriverSliceSpec.from_sizing(sizing).inverter.rows == ((17, 17),)
+    split = DriverSliceSpec.from_sizing(sizing, max_active_fins=RUNSET_ACTIVE_FINS)
+    assert split.inverter.rows == ((9, 9), (8, 8))
+    released = DriverSliceSpec.from_sizing(size_decoder(22.8, 32, stage_effort=4.43), max_active_fins=12)
+    assert all(max(row) <= 12 for row in released.inverter.rows)
 
 
 def test_from_sizing_floors_a_tiny_slice_and_refuses_an_undrawable_one():

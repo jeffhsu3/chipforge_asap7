@@ -20,7 +20,9 @@ from chipforge_asap7.devices import (
     NandSpec,
     build_driver_slice,
     build_driver_slice_support,
+    size_decoder,
 )
+from chipforge_asap7.devices.driver_slice import RUNSET_ACTIVE_FINS
 from chipforge_asap7.verification.lvs import render_driver_slice_lvs_schematic, run_lvs
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
@@ -35,6 +37,9 @@ ONE_ROW = DriverSliceSpec(
     inverter=InverterSpec(rows=((6, 6),), vt="lvt"),
 )
 RELEASED = DriverSliceSpec()
+#: OpenFinRAM's 64-cell slice: size_decoder's 17-fin driver row split to stay
+#: within the runset's ACTIVE heights.
+C64 = DriverSliceSpec.from_sizing(size_decoder(0.181 * 64, 32), max_active_fins=RUNSET_ACTIVE_FINS)
 
 
 def _library():
@@ -71,7 +76,7 @@ def test_slice_alone_reports_only_what_a_placed_row_closes(asap7_drc):
     )
 
 
-@pytest.mark.parametrize(("spec", "tag"), [(SMALL, "small"), (ONE_ROW, "one_row")])
+@pytest.mark.parametrize(("spec", "tag"), [(SMALL, "small"), (ONE_ROW, "one_row"), (C64, "c64")])
 def test_terminated_slices_are_clean(spec, tag, asap7_drc):
     """One slice and two butted slices: the M2 ties and M3 tracks have to clear
     their neighbours' across the slice boundary too."""
@@ -86,7 +91,7 @@ def test_released_size_trips_only_the_decks_height_enumeration(asap7_drc):
     assert categories == DECK_HEIGHT_ENUMERATION
 
 
-@pytest.mark.parametrize("spec", [SMALL, ONE_ROW, RELEASED])
+@pytest.mark.parametrize("spec", [SMALL, ONE_ROW, RELEASED, C64])
 def test_slice_matches_four_ands_sharing_sel(spec, tmp_path: Path, require_klayout):
     library = _library()
     build_driver_slice(spec, lib=library)
