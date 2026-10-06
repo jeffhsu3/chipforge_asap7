@@ -12,7 +12,7 @@ built from 270 nm row cells and stacked as the released ASAP7 bank's
 
 Rows alternate mirrored so neighbours share a rail.  Every net between rows
 climbs from its cell's M1 pin on a V1, an M2 jog and a V2 to an M3 column of
-its own; ``QA``/``QAN`` are M3 pins on the bottom edge (where the sense
+its own; ``QA``/``QAN`` are M3 pins at the bottom (where the sense
 amplifier's outputs arrive), ``OE``/``OEB``/``Q`` on the top.  The cells' M1
 gate bars are lengthened (within their via rows' clearance) so that each pin
 of a row takes its V1 at its own height, 36 nm or more from the next pin's
@@ -44,6 +44,8 @@ __all__ = [
 
 OUTPUT_LATCH_270_PINS = ("QA", "QAN", "OE", "OEB", "Q", "VDD", "VSS")
 ROW = 270
+#: Where the QA/QAN pins' M3 starts, above the bottom edge.
+INPUT_BOTTOM = 31
 WIDTH = 432  # the widest cell (the tristate, 324) and a tap
 TAP_X = 324
 #: M3 columns, by net.
@@ -247,12 +249,15 @@ def build_output_latch_270(
     # The M3 columns: between their vias, and out to the pins at the edges.
     for net, ys in ends.items():
         lo, hi = min(ys), max(ys)
+        x = COLUMN[net]
         if net in ("QA", "QAN"):
-            lo = 0
+            # Down to just inside the bottom edge: a cell abutting below may
+            # bring its own M3 up to its top (M3.S.6, corner to corner).
+            box(cell, "M3", x - HALF, INPUT_BOTTOM, x + HALF, hi + CAP)
+            continue
         if net in ("OE", "OEB", "Q"):
             hi = spec.height
-        x = COLUMN[net]
-        box(cell, "M3", x - HALF, lo - (CAP if lo else 0), x + HALF, hi + (CAP if hi < spec.height else 0))
+        box(cell, "M3", x - HALF, lo - CAP, x + HALF, hi + (CAP if hi < spec.height else 0))
 
     if draw_pin_labels:
         for pin, (metal, origin) in spec.pin_positions.items():

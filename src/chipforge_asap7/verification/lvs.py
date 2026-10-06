@@ -476,10 +476,12 @@ def render_bitline_mux_group_lvs_schematic(
     n_band, p_band = spec.bands
     local = {"BL", "BLN", "YSEL", "YSELN"}  # a local YSEL is still the leaf's own net
     leaf_pins = getattr(spec, "leaf_nets", ("BL", "BLN", "YSEL", "YSELN"))
-    pins = (*(f"{pin}[{i}]" for i in range(spec.selects) for pin in leaf_pins), "SA", "SAN", "PRECHN", "VDD", "VSS")
+    pins = (*(f"{pin}[{i}]" for i in range(spec.selects) for pin in leaf_pins),
+            *getattr(spec, "group_nets", ()), "SA", "SAN", "PRECHN", "VDD", "VSS")  # fmt: skip
+    leaf_devices = getattr(spec, "leaf_devices", lambda i: spec.devices)
     lines = []
     for i in range(spec.selects):
-        for device, drain, gate, source, flavor, fins in spec.devices:
+        for device, drain, gate, source, flavor, fins in leaf_devices(i):
             band = n_band if flavor == "n" else p_band
             bulk = "VSS" if flavor == "n" else "VDD"
             nets = [

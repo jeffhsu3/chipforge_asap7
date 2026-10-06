@@ -44,10 +44,12 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
 @pytest.mark.parametrize(
     "selects, swapped, local_ysel",
     [(1, False, False), (2, False, False), (4, False, False), (4, True, False), (8, True, False),
-     (16, False, False), (8, False, True), (8, True, True), (16, True, True)],
+     (16, False, False), (8, False, True), (8, True, True), (16, True, True), (16, False, "pd"), (16, True, "pd")],
 )
 def test_terminated_leaf_is_clean(selects, swapped, local_ysel, asap7_drc):
-    spec = SidewaysMuxSpec(selects=selects, select=selects - 1, swapped=swapped, local_ysel=local_ysel)
+    predecode = local_ysel == "pd"
+    spec = SidewaysMuxSpec(selects=selects, select=selects - 1, swapped=swapped, local_ysel=local_ysel is True,
+                           predecode=predecode)  # fmt: skip
     library = _library()
     leaf = build_sideways_mux(spec, lib=library)
     support = {kind: build_row_support(RowSupportSpec(stack=ROW_270, kind=kind), lib=library)

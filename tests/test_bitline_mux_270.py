@@ -52,6 +52,20 @@ def test_a_local_ysel_drops_the_ysel_tracks(selects, width):
     assert not any(pin.startswith("YSEL[") for pin in spec.group_pin_positions())
 
 
+def test_predecode_shares_eight_select_tracks_at_16_to_1():
+    """Two one-hot groups instead of 16 YSELN: the NAND2 + inverter set the width, 648 nm."""
+    spec = SidewaysMuxSpec(selects=16, select=6, predecode=True)
+    assert spec.width == 648
+    assert spec.group_nets == (*(f"YPA[{k}]" for k in range(4)), *(f"YPB[{k}]" for k in range(4)))
+    assert spec.select_inputs == ("YPA[2]", "YPB[1]")
+    assert not any(net.startswith(("YSEL[", "YSELN[")) for net in spec.track_x)
+    assert "YSEL" not in spec.pins and "YSELN" not in spec.pins
+    gates = {d[2] for d in spec.devices}
+    assert {"YPA[2]", "YPB[1]", "YSELN", "YSEL"} <= gates
+    with pytest.raises(ValueError, match="fours"):
+        SidewaysMuxSpec(selects=4, predecode=True)
+
+
 def test_the_bitlines_land_where_the_6t_cell_puts_them():
     # BL above BLN, half a fin pitch up on the array's grid: the leaf's M2 bars.
     spec = SidewaysMuxSpec()

@@ -26,6 +26,9 @@ from chipforge_asap7.verification.lvs import render_io_column_lvs_schematic, run
 FOUR = SidewaysIoColumnSpec(compact=True)
 FOUR_WIDE = SidewaysIoColumnSpec()  # the two-row cells side by side
 EIGHT_LY = SidewaysIoColumnSpec(selects=8, local_ysel=True)
+EIGHT_COLUMN = SidewaysIoColumnSpec(selects=8, local_ysel=True, compact=True)
+SIXTEEN_COLUMN = SidewaysIoColumnSpec(selects=16, local_ysel=True, compact=True)
+SIXTEEN_PD = SidewaysIoColumnSpec(selects=16, predecode=True, compact=True)
 SIXTEEN_LY = SidewaysIoColumnSpec(selects=16, local_ysel=True)
 EIGHT = SidewaysIoColumnSpec(selects=8)
 SIXTEEN = SidewaysIoColumnSpec(selects=16)
@@ -131,7 +134,29 @@ def test_a_local_ysel_narrows_the_deep_blocks_and_drops_their_ysel_pins():
         assert pins == {p for p in io_column_pins(plain) if not p.startswith("YSEL[")}
 
 
-@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN, EIGHT_LY, SIXTEEN_LY], ids=lambda spec: spec.cell_name)
+def test_deep_compact_blocks_stack_all_three_cells_in_one_column():
+    """From 8:1 the latch stands on the amplifier's top rail, the leaves' VSS rail at 1093.5 nm."""
+    for spec, stacked in ((EIGHT_COLUMN, EIGHT_LY), (SIXTEEN_COLUMN, SIXTEEN_LY)):
+        assert spec.compact_column and not FOUR.compact_column
+        place = spec.placements
+        assert place["output_latch"] == (spec.logic_x, spec.grid_offset + 4 * 270)
+        assert spec.logic_top == spec.latch_y  # abutted: one rail
+        assert spec.logic_y - (spec.grid_offset + 0) >= 216  # clear of the previous block's latch
+        assert spec.width == stacked.width - 54
+        assert set(spec.pin_positions) == set(io_column_pins(spec))
+
+
+def test_predecoded_16_to_1_takes_its_selects_once():
+    spec = SIXTEEN_PD
+    pins = io_column_pins(spec)
+    assert set(spec.pin_positions) == set(pins)
+    assert not any(p.startswith(("YSEL[", "YSELN[")) for p in pins)
+    assert {f"YPA[{k}]" for k in range(4)} | {f"YPB[{k}]" for k in range(4)} <= set(pins)
+    assert spec.width == SIXTEEN_COLUMN.width - 108
+
+
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN, EIGHT_LY, SIXTEEN_LY, EIGHT_COLUMN, SIXTEEN_COLUMN,
+                                  SIXTEEN_PD], ids=lambda spec: spec.cell_name)
 def test_block_is_drc_clean(spec, asap7_drc):
     library = _library()
     cell = build_sideways_io_column(spec, lib=library)
@@ -147,7 +172,8 @@ def test_stacked_blocks_are_drc_clean(asap7_drc):
     assert asap7_drc(library, top, tag="stack") == []
 
 
-@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN, EIGHT_LY, SIXTEEN_LY], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN, EIGHT_LY, SIXTEEN_LY, EIGHT_COLUMN, SIXTEEN_COLUMN,
+                                  SIXTEEN_PD], ids=lambda spec: spec.cell_name)
 def test_block_matches_its_flat_unit_fin_reference(spec, tmp_path: Path, require_klayout):
     library = _library()
     cell = build_sideways_io_column(spec, lib=library)

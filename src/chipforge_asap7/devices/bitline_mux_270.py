@@ -33,6 +33,13 @@ then crosses the column: from 8:1 the track bus, not the devices, sets the
 leaf's width, and it loses half its select tracks (756 -> 540 nm at 8:1,
 1350 -> 756 at 16:1; at 4:1 the inverter would widen the leaf).
 
+With ``predecode`` the column carries two one-hot groups instead, ``YPA`` (4
+lines) and ``YPB`` (``selects / 4``), and leaf ``i`` makes ``YSELN =
+NAND(YPA[i % 4], YPB[i // 4])`` and ``YSEL`` from it, a NAND2 and an
+inverter on the same 270 nm row (4 columns past the nFETs).  At 16:1 the
+column then carries 8 select tracks, not 16, and the gates set the leaf's
+width: 648 nm against 756.
+
 Coordinates are the released cell's, made whole-nanometre (its one off-grid
 V0 is the cell's only DRC finding beyond latch-up); everything else is
 pure arithmetic on the spec, like `BitlineMuxSpec`.
@@ -86,6 +93,20 @@ INV_IN_V1 = 437
 INV_REGION = 378  # its implants and well, from the nFETs' end
 INV_END = 540  # the leaf's width with it
 INV_VIA_Y = (54, 216)  # its drains' V0s: lower strip, upper strip
+#: The predecode gates (NAND2 then inverter), past the nFETs: columns, the
+#: inputs' gates, the inverter's, the two strip crossings over the dummy
+#: gates either side, the M2 rows the inputs take, the via rows.
+PRE_COLS = (432, 486, 540, 594)  # n: YSELN, (series), VSS, YSEL; p: VDD, YSELN, VDD, YSEL
+PRE_GATE_A, PRE_GATE_B, PRE_GATE_INV = 459, 513, 567
+PRE_YSELN_X, PRE_YSEL_X = 405, 621
+PRE_ROW_A, PRE_ROW_B = 89, 181
+PRE_VIA_Y = (41, 229)  # by the lower rail, by the upper one
+PRE_END = 648
+PRE_SENSE_V1 = 162  # the sense lines' ties, left of the select tracks
+#: The sense lines' tracks: their ties' M2 has to start past the bitline
+#: entries' (x <= 122) on rows 173/181 (a swapped leaf's SAN is on 181).
+PRE_SENSE_TRACKS = (159, 195)
+FIRST_PREDECODE_TRACK = 267
 RAIL_V1_FIRST = 27  # rail V1s every two gate pitches from here, between the rail V0s
 M2_PAST_V2 = 17
 
@@ -114,6 +135,7 @@ class SidewaysMuxSpec:
     grid_offset: float = 13.5
     swapped: bool = False
     local_ysel: bool = False
+    predecode: bool = False
     _stack: RowStack = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -121,6 +143,8 @@ class SidewaysMuxSpec:
             raise ValueError("a mux selects at least one leaf")
         if not 0 <= self.select < self.selects:
             raise ValueError(f"select {self.select} is not one of {self.selects}")
+        if self.predecode and (self.selects < 8 or self.selects % 4):
+            raise ValueError(f"predecoded selects come in fours, 8 or more; got {self.selects}")
         if self.fins != 3:
             raise ValueError("the 270 nm leaf's strips are three fins (the 6T row's); use fins=3")
         local = tuple(round(y - self.grid_offset, 3) for y in self.bitline_entry)
@@ -141,6 +165,15 @@ class SidewaysMuxSpec:
     def track_x(self) -> dict[str, int]:
         """Each M3 track's centre: PRECHN, the selects' bars, then the sense lines."""
         tracks = {"PRECHN": PRECHN_TRACK}
+        if self.predecode:
+            # The sense lines first, tied near the leaf's own columns; then
+            # the two groups.
+            tracks["SAN"], tracks["SA"] = PRE_SENSE_TRACKS
+            x = FIRST_PREDECODE_TRACK
+            for net in self.group_nets:
+                tracks[net] = x
+                x += TRACK_PITCH
+            return tracks
         x = FIRST_SELECT_TRACK
         for role in ("YSELN",) if self.local_ysel else ("YSELN", "YSEL"):
             if role == "YSEL":
@@ -156,8 +189,9 @@ class SidewaysMuxSpec:
     @property
     def width(self) -> int:
         """Whole gate pitches, the devices at least; the last M3 track inside the edge."""
-        tracks = GATE_PITCH * math.ceil((self.track_x["SA"] + HALF) / GATE_PITCH)
-        return max(tracks, INV_END if self.local_ysel else N_REGION_END)
+        tracks = GATE_PITCH * math.ceil((max(self.track_x.values()) + HALF) / GATE_PITCH)
+        devices = PRE_END if self.predecode else INV_END if self.local_ysel else N_REGION_END
+        return max(tracks, devices)
 
     @property
     def bands(self) -> tuple[RowBand, RowBand]:
@@ -168,27 +202,50 @@ class SidewaysMuxSpec:
     @property
     def cell_name(self) -> str:
         vt = "" if self.vt == "rvt" else f"_{self.vt}"
-        local = "_ly" if self.local_ysel else ""
+        local = "_pd" if self.predecode else "_ly" if self.local_ysel else ""
         return f"bitline_mux270_s{self.select}of{self.selects}{vt}{local}{'_sw' if self.swapped else ''}"
 
     @property
     def group_cell_name(self) -> str:
         vt = "" if self.vt == "rvt" else f"_{self.vt}"
-        return f"bitline_mux270_x{self.selects}{vt}{'_ly' if self.local_ysel else ''}"
+        local = "_pd" if self.predecode else "_ly" if self.local_ysel else ""
+        return f"bitline_mux270_x{self.selects}{vt}{local}"
 
     def for_select(self, index: int, swapped: bool | None = None) -> SidewaysMuxSpec:
         swapped = self.swapped if swapped is None else swapped
         return SidewaysMuxSpec(self.selects, index, self.fins, self.vt, self.bitline_entry, self.grid_offset,
-                               swapped, self.local_ysel)  # fmt: skip
+                               swapped, self.local_ysel, self.predecode)  # fmt: skip
+
+    @property
+    def group_nets(self) -> tuple[str, ...]:
+        """The predecoded select lines every leaf of a group shares (none without `predecode`)."""
+        if not self.predecode:
+            return ()
+        return (*(f"YPA[{k}]" for k in range(4)), *(f"YPB[{k}]" for k in range(self.selects // 4)))
+
+    @property
+    def select_inputs(self) -> tuple[str, str]:
+        """This leaf's two predecode lines."""
+        return f"YPA[{self.select % 4}]", f"YPB[{self.select // 4}]"
 
     @property
     def leaf_nets(self) -> tuple[str, ...]:
-        """A leaf's own pins in a group (``BL[i]``...): ``YSEL`` is internal with `local_ysel`."""
+        """A leaf's own pins in a group (``BL[i]``...): ``YSEL`` is internal with `local_ysel`, both
+        selects with `predecode`."""
+        if self.predecode:
+            return ("BL", "BLN")
         return ("BL", "BLN", "YSELN") if self.local_ysel else ("BL", "BLN", "YSEL", "YSELN")
 
     @property
     def pins(self) -> tuple[str, ...]:
+        if self.predecode:
+            base = tuple(p for p in BITLINE_MUX_PINS if p not in ("YSEL", "YSELN"))
+            return (*base[:-2], *self.select_inputs, *base[-2:])
         return tuple(p for p in BITLINE_MUX_PINS if not (self.local_ysel and p == "YSEL"))
+
+    def leaf_devices(self, index: int) -> tuple[tuple[str, str, str, str, str, int], ...]:
+        """Leaf `index`'s devices, as a group names them."""
+        return self.for_select(index).devices
 
     @property
     def strip_nets(self) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -211,9 +268,13 @@ class SidewaysMuxSpec:
             sa_low: ("M3", (tx[sa_low], M2_Y["SAN"])),
             sa_high: ("M3", (tx[sa_high], M2_Y["SA"])),
             "PRECHN": ("M3", (tx["PRECHN"], M2_Y["PRECHN"])),
-            "YSELN": ("M3", (tx[f"YSELN[{self.select}]"], M2_Y["YSELN"])),
         }
-        if not self.local_ysel:
+        if self.predecode:
+            for net, y in zip(self.select_inputs, (PRE_ROW_A, PRE_ROW_B)):
+                pins[net] = ("M3", (tx[net], y))
+        else:
+            pins["YSELN"] = ("M3", (tx[f"YSELN[{self.select}]"], M2_Y["YSELN"]))
+        if not (self.local_ysel or self.predecode):
             pins["YSEL"] = ("M3", (tx[f"YSEL[{self.select}]"], M2_Y["YSEL"]))
         for y, net in self.rails:
             pins[net] = ("M1", (self.width / 2, y))
@@ -228,9 +289,13 @@ class SidewaysMuxSpec:
             for net in ("BL", "BLN"):
                 metal, (x, y) = leaf.pin_positions[net]
                 pins[f"{net}[{i}]"] = (metal, (x, i * ROW + y))
+            if self.predecode:
+                continue
             if not self.local_ysel:
                 pins[f"YSEL[{i}]"] = ("M3", (tx[f"YSEL[{i}]"], i * ROW + M2_Y["YSEL"]))
             pins[f"YSELN[{i}]"] = ("M3", (tx[f"YSELN[{i}]"], i * ROW + M2_Y["YSELN"]))
+        for net in self.group_nets:
+            pins[net] = ("M3", (tx[net], ROW / 2))
         pins["SA"] = ("M3", (tx["SA"], M2_Y["SA"]))
         pins["SAN"] = ("M3", (tx["SAN"], M2_Y["SAN"]))
         pins["PRECHN"] = ("M3", (tx["PRECHN"], M2_Y["PRECHN"]))
@@ -246,7 +311,13 @@ class SidewaysMuxSpec:
         local YSEL inverter's two."""
         f = self.fins
         inverter = (("MNI", "YSEL", "YSELN", "VSS", "n", f), ("MPI", "YSEL", "YSELN", "VDD", "p", f))
-        return (*(inverter if self.local_ysel else ()),
+        if self.predecode:
+            a, b = self.select_inputs
+            series = f"YN[{self.select}]"  # the NAND's nFET stack, contacted: one net
+            inverter = (("MNA", "YSELN", a, series, "n", f), ("MNB", series, b, "VSS", "n", f),
+                        ("MPA", "YSELN", a, "VDD", "p", f), ("MPB", "YSELN", b, "VDD", "p", f),
+                        *inverter)  # fmt: skip
+        return (*(inverter if self.local_ysel or self.predecode else ()),
             ("MNT", "BL", "YSEL", "SA", "n", f),
             ("MNC", "BLN", "YSEL", "SAN", "n", f),
             ("MPT", "SA", "YSELN", "BL", "p", f),
@@ -290,7 +361,9 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
     box(cell, "NWELL", 0, 0, P_REGION, ROW)
     box(cell, "PSELECT", 0, 0, P_REGION, ROW)
     box(cell, "NSELECT", P_REGION, 0, N_REGION_END, ROW)
-    if spec.local_ysel:
+    if spec.predecode:
+        _draw_predecode(cell, spec)
+    elif spec.local_ysel:
         _draw_inverter(cell, spec)
     # Fin and gate grids across the whole leaf; gates cut on both rails.
     for k in range(10):
@@ -356,13 +429,17 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
     # (Each bar covers its gate tie's V1 too: with one or two selects the
     # tracks alone would stop short of it.)  A local YSEL comes from the
     # inverter: YSELN's bar reaches its input, YSEL's its output.
-    yseln = [tx[f"YSELN[{j}]"] for j in range(spec.selects)] + ([INV_IN_V1] if spec.local_ysel else [])
-    ysel = [INV_OUT] if spec.local_ysel else [tx[f"YSEL[{j}]"] for j in range(spec.selects)]
+    if spec.predecode:
+        yseln, ysel = [PRE_YSELN_X, PRE_GATE_INV], [PRE_YSEL_X]
+    else:
+        yseln = [tx[f"YSELN[{j}]"] for j in range(spec.selects)] + ([INV_IN_V1] if spec.local_ysel else [])
+        ysel = [INV_OUT] if spec.local_ysel else [tx[f"YSEL[{j}]"] for j in range(spec.selects)]
     box(cell, "M2", 109, M2_Y["YSELN"] - HALF, max(*yseln, YSELN_V1) + M2_PAST_V2, M2_Y["YSELN"] + HALF)
     box(cell, "M2", min(YSEL_V1, *ysel) - M2_PAST_V2, M2_Y["YSEL"] - HALF,
         max(YSEL_V1, *ysel) + M2_PAST_V2, M2_Y["YSEL"] + HALF)  # fmt: skip
-    square(cell, "V2", tx[f"YSELN[{spec.select}]"], M2_Y["YSELN"])
-    if not spec.local_ysel:
+    if not spec.predecode:
+        square(cell, "V2", tx[f"YSELN[{spec.select}]"], M2_Y["YSELN"])
+    if not (spec.local_ysel or spec.predecode):
         square(cell, "V2", tx[f"YSEL[{spec.select}]"], M2_Y["YSEL"])
 
     # Bitlines: the pFET column, along M1, to the nFET column; in on M2.
@@ -384,8 +461,9 @@ def _draw_leaf(cell: Any, spec: SidewaysMuxSpec, sense_tracks: bool) -> None:
         _v0(cell, SD["P_SA"], y)
         _v0(cell, SD["N_SA"], y)
         box(cell, "M1", 148, y - HALF, 284, y + HALF)
-        square(cell, "V1", 251, y)
-        box(cell, "M2", 237, y - HALF, tx[net] + M2_PAST_V2, y + HALF)
+        x_v1 = PRE_SENSE_V1 if spec.predecode else 251
+        square(cell, "V1", x_v1, y)
+        box(cell, "M2", min(x_v1, tx[net]) - M2_PAST_V2, y - HALF, max(x_v1, tx[net]) + M2_PAST_V2, y + HALF)
         square(cell, "V2", tx[net], y)
 
     # M3: the precharge and select tracks the leaf's height (the sense lines'
@@ -426,6 +504,60 @@ def _draw_inverter(cell: Any, spec: SidewaysMuxSpec) -> None:
     square(cell, "V1", INV_IN_V1, M2_Y["YSELN"])
 
 
+def _draw_predecode(cell: Any, spec: SidewaysMuxSpec) -> None:
+    """YSELN = NAND(YPA[a], YPB[b]) and YSEL = !YSELN past the nFETs, one 270 nm row.
+
+    nFETs on the strip by the VSS rail (the NAND's series pair, the
+    inverter's), pFETs on the one by VDD; each output crosses between the
+    strips on M1 over the dummy gate beside it.
+    """
+    w = spec.width
+    seam = ROW // 2
+    (vss_y, vdd_y) = (ROW, 0) if spec.swapped else (0, ROW)
+    n_strip, p_strip = (STRIPS[1], STRIPS[0]) if spec.swapped else (STRIPS[0], STRIPS[1])
+    n_half, p_half = ((seam, ROW), (0, seam)) if spec.swapped else ((0, seam), (seam, ROW))
+    n_via, p_via = (PRE_VIA_Y[1], PRE_VIA_Y[0]) if spec.swapped else PRE_VIA_Y
+    box(cell, "NSELECT", INV_REGION, n_half[0], w, n_half[1])
+    box(cell, "PSELECT", INV_REGION, p_half[0], w, p_half[1])
+    box(cell, "NWELL", INV_REGION, p_half[0], w, p_half[1])
+    c0, c1, c2, c3 = PRE_COLS
+    for (lo, hi), rail_y, sources in ((n_strip, vss_y, (c2,)), (p_strip, vdd_y, (c0, c2))):
+        box(cell, "ACTIVE", c0 - 8, lo, c3 + 8, hi)
+        for x in PRE_COLS:
+            box(cell, "SDT", x - SD_HALF, lo, x + SD_HALF, hi)
+            box(cell, "LISD", x - SD_HALF, lo, x + SD_HALF, hi)
+        for x in sources:
+            box(cell, "LISD", x - SD_HALF, min(rail_y, lo), x + SD_HALF, max(rail_y, hi))
+
+    def flag(x_via: float, y: float, x_bar: float) -> None:
+        _v0(cell, x_via, y)
+        box(cell, "M1", min(x_via, x_bar) - 14, y - HALF, max(x_via, x_bar) + 14, y + HALF)
+
+    # YSELN: the NAND's n drain and p drain, over the dummy gate on the left.
+    flag(c0, n_via, PRE_YSELN_X)
+    flag(c1, p_via, PRE_YSELN_X)
+    # YSEL: the inverter's drains, over the dummy gate on the right.
+    flag(c3, n_via, PRE_YSEL_X)
+    flag(c3, p_via, PRE_YSEL_X)
+    lo, hi = min(PRE_VIA_Y) - HALF, max(PRE_VIA_Y) + HALF
+    for x in (PRE_YSELN_X, PRE_YSEL_X):
+        box(cell, "M1", x - HALF, lo, x + HALF, hi)
+    square(cell, "V1", PRE_YSELN_X, M2_Y["YSELN"])
+    square(cell, "V1", PRE_YSEL_X, M2_Y["YSEL"])
+    # Gate contacts between the strips: the inputs' bars on to their rows,
+    # the inverter's on YSELN's.
+    for x, y_v1 in ((PRE_GATE_A, PRE_ROW_A), (PRE_GATE_B, PRE_ROW_B), (PRE_GATE_INV, M2_Y["YSELN"])):
+        box(cell, "LIG", x - 11, GATE_CONTACT_Y[0], x + 11, GATE_CONTACT_Y[1])
+        _v0(cell, x, seam)
+        box(cell, "M1", x - HALF, min(seam, y_v1) - 14, x + HALF, max(seam, y_v1) + 14)
+        square(cell, "V1", x, y_v1)
+    # The inputs: each on its row from its group's track.
+    tx = spec.track_x
+    for net, x_gate, y in zip(spec.select_inputs, (PRE_GATE_A, PRE_GATE_B), (PRE_ROW_A, PRE_ROW_B)):
+        box(cell, "M2", min(tx[net], x_gate) - M2_PAST_V2, y - HALF, max(tx[net], x_gate) + M2_PAST_V2, y + HALF)
+        square(cell, "V2", tx[net], y)
+
+
 def build_sideways_mux(
     spec: SidewaysMuxSpec | None = None,
     *,
@@ -447,7 +579,7 @@ def build_sideways_mux(
 def sideways_mux_group_pins(spec: SidewaysMuxSpec) -> tuple[str, ...]:
     """Pins of a `spec.selects`-to-one group: per-leaf bitlines and selects, shared everything else."""
     per_leaf = [f"{pin}[{i}]" for i in range(spec.selects) for pin in spec.leaf_nets]
-    return (*per_leaf, "SA", "SAN", "PRECHN", "VDD", "VSS")
+    return (*per_leaf, *spec.group_nets, "SA", "SAN", "PRECHN", "VDD", "VSS")
 
 
 def build_sideways_mux_group(

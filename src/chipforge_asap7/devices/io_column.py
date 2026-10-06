@@ -330,8 +330,9 @@ def _block_devices(
     """
     devices = []
     sides = ("left", "right") if spec.two_sided else ("left",)
+    leaf_devices = getattr(spec.mux, "leaf_devices", lambda i: spec.mux.devices)
     for i in range(spec.mux.selects):
-        for name, d, g, s, flavor, fins in spec.mux.devices:
+        for name, d, g, s, flavor, fins in leaf_devices(i):
             for side in sides:
                 suffix = "R" if side == "right" else ""
                 nets = [_mux_net(net, i, side=side) for net in (d, g, s)]
@@ -385,7 +386,7 @@ def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
         _mux_net(pin, i, side="left")
         for i in range(spec.mux.selects)
         for pin in getattr(spec.mux, "leaf_nets", _MUX_LEAF_NETS)
-    ]
+    ] + list(getattr(spec.mux, "group_nets", ()))
     phases = ("SAE",) if spec.one_sense_phase else ("SAE", "SAPRECHN")
     right = []
     if spec.two_sided:

@@ -70,6 +70,9 @@ _STRAP_OFFSETS = (36, 108)  # from the gap's left edge: VSS, VDD
 _RAIL_OVERHANG = 5
 _PAD_HALF_X = 15
 FIN_PITCH = 27
+#: The compact column's QAN jog: a column right of the latch's width, clear
+#: of the amplifier's tracks near its top.
+QAN_JOG = 540
 
 
 def _ceil_to(value: float, grid: int) -> int:
@@ -105,6 +108,9 @@ class SidewaysIoColumnSpec:
         local_ysel: each leaf makes its own ``YSEL`` from ``YSELN`` (see
             `SidewaysMuxSpec`): the block has no ``YSEL`` pins, and from 8:1
             its leaves are narrower.
+        predecode: each leaf makes ``YSELN`` from two predecoded groups,
+            ``YPA[0..3]`` and ``YPB[0..selects/4)``, the block's select pins
+            (shared by every leaf): at 16:1 the leaves are 648 nm, not 756.
     """
 
     selects: int = 4
@@ -119,6 +125,7 @@ class SidewaysIoColumnSpec:
     one_sense_phase: bool = True
     compact: bool = False
     local_ysel: bool = False
+    predecode: bool = False
     two_sided = False
     row_pitch = ROW
 
@@ -177,13 +184,13 @@ class SidewaysIoColumnSpec:
     @property
     def leaves(self) -> SidewaysMuxSpec:
         return SidewaysMuxSpec(selects=self.selects, bitline_entry=self.bitline_entry, grid_offset=self.grid_offset,
-                               local_ysel=self.local_ysel)  # fmt: skip
+                               local_ysel=self.local_ysel, predecode=self.predecode)  # fmt: skip
 
     @property
     def mux(self) -> BitlineMuxSpec | SidewaysMuxSpec:
         """The mux as `IoColumnSpec`'s netlist helpers enumerate it: the leaves' six devices a
         select (eight, and no ``YSEL`` pins, with `local_ysel`)."""
-        return self.leaves if self.local_ysel else BitlineMuxSpec(selects=self.selects)
+        return self.leaves if self.local_ysel or self.predecode else BitlineMuxSpec(selects=self.selects)
 
     # ── Sizes ─────────────────────────────────────────────────────────────────
     @property
@@ -228,11 +235,14 @@ class SidewaysIoColumnSpec:
         297 nm rows drift 27 nm a row against the leaves' 270 nm and seven
         rails cannot all keep three (two leave 36 nm of M1 between rails).
         """
+        if self.compact_column:
+            # Under the latch, the amplifier's top rail its bottom one: two
+            # cells 108 nm apart put their rails' gate cuts and poly ends too
+            # close (GCUT.S.3, GATE.S.1).  The driver below then stands 216 nm
+            # over the previous block's latch.
+            return self.latch_y - self.write_driver.height - self.sense_amp.height
         clear = (2 if self.stacked or self.is_compact else 3) * FIN_PITCH
-        # One column's latch ends on the next block's first rail: the driver
-        # above it keeps 108 nm off, or the two cells' gate cuts on their
-        # rails (and their poly ends) come too close (GCUT.S.3, GATE.S.1).
-        y = self.grid_offset + (4 if self.compact_column else 2) * FIN_PITCH
+        y = self.grid_offset + 2 * FIN_PITCH
         rails = [r for r, _ in self.leaf_rails]
         while any(abs(y + dy - r) < clear for r in rails for dy, _ in self._logic_rail_offsets):
             y += FIN_PITCH
@@ -272,13 +282,8 @@ class SidewaysIoColumnSpec:
     @property
     def latch_y(self) -> float:
         """The latch's bottom: a leaves' VSS rail, beside them at 4:1; in one column the
-        first one past the amplifier and the two QA/QAN lines over it."""
-        if not self.compact_column:
-            return self.grid_offset
-        y = self.grid_offset
-        while y < math.ceil(self.logic_top) + 2 * M4_PITCH:
-            y += 2 * ROW
-        return y
+        second 1080 nm group's, the amplifier abutting it below."""
+        return self.grid_offset + (4 * ROW if self.compact_column else 0)
 
     @property
     def latch_rails(self) -> list[tuple[float, str]]:
@@ -341,12 +346,13 @@ class SidewaysIoColumnSpec:
         if self.is_compact:
             return (
                 f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_c270"
-                f"{'' if self.one_sense_phase is False else '_1ph'}{'_ly' if self.local_ysel else ''}"
+                f"{'' if self.one_sense_phase is False else '_1ph'}"
+                f"{'_pd' if self.predecode else '_ly' if self.local_ysel else ''}"
             )
         return (
             f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}"
             f"_ol{ol.fingers}{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
-            f"{'_ly' if self.local_ysel else ''}"
+            f"{'_pd' if self.predecode else '_ly' if self.local_ysel else ''}"
         )
 
     # ── Where things are ──────────────────────────────────────────────────────
@@ -378,12 +384,22 @@ class SidewaysIoColumnSpec:
             # The driver's lines between its own enables' M4 (mirrored: WRENAN
             # low, WRENA high), the amplifier's at the heights it takes them,
             # QA/QAN across the amplifier's middle to the latch's inputs.
-            return {
+            routes = {
                 "SA": [(y, [self.track_x("SA"), x]) for y, x in self._compact_sense_lines["SA"]],
                 "SAN": [(y, [self.track_x("SAN"), x]) for y, x in self._compact_sense_lines["SAN"]],
-                "QA": [(self._qa_lines[0], [sa_x + sa["QA"], ol_x + ol["QA"]])],
-                "QAN": [(self._qa_lines[1], [sa_x + sa["QAN"], ol_x + ol["QAN"]])],
             }
+            if self.compact_column:
+                # Over the seam: QA's track (past the latch's width) climbs
+                # beside it and crosses to its input; QAN's (under it) jogs out
+                # to a free column near the amplifier's top, climbs, crosses.
+                seam = math.ceil(self.latch_y)
+                jog = sa_x + QAN_JOG
+                routes["QA"] = [(seam + M4_PITCH, [sa_x + sa["QA"], ol_x + ol["QA"]])]
+                routes["QAN"] = [(seam - 40, [sa_x + sa["QAN"], jog]), (seam + 2 * M4_PITCH, [jog, ol_x + ol["QAN"]])]
+            else:
+                routes["QA"] = [(self._qa_lines[0], [sa_x + sa["QA"], ol_x + ol["QA"]])]
+                routes["QAN"] = [(self._qa_lines[1], [sa_x + sa["QAN"], ol_x + ol["QAN"]])]
+            return routes
         if self.stacked:
             # Each cell its own lines, at the heights it takes them side by side.
             dy = place["sense_amp"][1] - place["write_driver"][1]
@@ -424,12 +440,9 @@ class SidewaysIoColumnSpec:
 
     @property
     def _qa_lines(self) -> tuple[int, int]:
-        """The compact block's QA/QAN lines.  Beside the latch: across the amplifier's
+        """The compact block's QA/QAN lines beside the latch: across the amplifier's
         middle, where its QA/QAN tracks run, clear of its sense lines and under the
-        latch's output pins.  Above it: between the amplifier and the latch."""
-        if self.compact_column:
-            top = math.ceil(self.logic_top)
-            return (top + M4_PITCH // 2, top + 3 * M4_PITCH // 2)
+        latch's output pins."""
         y = math.ceil(self.placements["sense_amp"][1])
         return (y + 6 * M4_PITCH, y + 7 * M4_PITCH)
 
@@ -450,9 +463,12 @@ class SidewaysIoColumnSpec:
                 pins[f"{net}[{row}]"] = ("M2", (PAD, y))
         group = self.leaves.group_pin_positions()
         for row in range(self.selects):
-            for net in ("YSELN",) if self.local_ysel else ("YSEL", "YSELN"):
+            for net in () if self.predecode else ("YSELN",) if self.local_ysel else ("YSEL", "YSELN"):
                 metal, (x, y) = group[f"{net}[{row}]"]
                 pins[f"{net}[{row}]"] = (metal, (self.entry_margin + x, y + self.grid_offset))
+        for net in self.leaves.group_nets:
+            metal, (x, y) = group[net]
+            pins[net] = (metal, (self.entry_margin + x, y + self.grid_offset))
         metal, (x, y) = group["PRECHN"]
         pins["PRECHN"] = (metal, (self.entry_margin + x, y + self.grid_offset))
         place = self.placements
@@ -563,11 +579,13 @@ def build_sideways_io_column(
     for net, lines in spec.routes.items():
         for y, xs in lines:
             if net in ("QA", "QAN") and spec.compact_column:
-                # Between them: the amplifier's track up from its top edge,
-                # the latch's input down from its bottom one.
-                amp, latch = xs
-                m3_column(cell, amp, top - CAP, y + V3_M3_CAP)
-                m3_column(cell, latch, y - V3_M3_CAP, spec.latch_y + CAP)
+                # The amplifier's and the latch's tracks run where the lines
+                # cross them; QA's climbs past the amplifier's top, QAN's jog
+                # column runs between its two lines.
+                if net == "QA":
+                    m3_column(cell, xs[0], top - CAP, y + V3_M3_CAP)
+                elif y > top:
+                    m3_column(cell, xs[0], math.ceil(spec.latch_y) - 40 - V3_M3_CAP, y + V3_M3_CAP)
             elif net in ("QA", "QAN") and compact:
                 # The amplifier's track runs its height; the latch's input
                 # climbs from the latch's bottom edge up its own (otherwise free) column.
@@ -613,6 +631,13 @@ def build_sideways_io_column(
                 lo, hi = max(a0, b0), min(a1, b1)
                 if hi > lo and 0 < abs(ya - yb) < 4 * HALF:
                     box(cell, "M1", lo, min(ya, yb), hi, max(ya, yb))
+    if spec.compact_column:
+        # The latch's top rail is the next block's bottom one, the leaves'
+        # top rail's height: carried across the gap to that rail's extension
+        # (no via; the next block straps it), or the latch's top row hangs
+        # on its own (x16x8x1: vss in five pieces).
+        y = spec.latch_y + spec.output_latch.height
+        box(cell, "M1", straps["VSS"] - HALF - _RAIL_OVERHANG, y - HALF, spec.logic_x, y + HALF)
     if compact and not spec.compact_column:
         # The inner pair, over the logic column's taps: a via on each of the
         # column's rails (the taps carry them), the latch's rails carried left

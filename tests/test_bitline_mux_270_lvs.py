@@ -31,7 +31,9 @@ def _library():
     [SidewaysMuxSpec(selects=1), SidewaysMuxSpec(), SidewaysMuxSpec(swapped=True),
      SidewaysMuxSpec(selects=16, select=11),
      SidewaysMuxSpec(selects=8, select=3, local_ysel=True),
-     SidewaysMuxSpec(selects=8, select=4, local_ysel=True, swapped=True)],
+     SidewaysMuxSpec(selects=8, select=4, local_ysel=True, swapped=True),
+     SidewaysMuxSpec(selects=16, select=6, predecode=True),
+     SidewaysMuxSpec(selects=16, select=9, predecode=True, swapped=True)],
     ids=lambda spec: spec.cell_name,
 )
 def test_leaf_matches_its_unit_fin_reference(spec, tmp_path: Path, require_klayout):
@@ -46,10 +48,10 @@ def test_leaf_matches_its_unit_fin_reference(spec, tmp_path: Path, require_klayo
     assert result.extracted_netlist.read_text().count("M$") == len(spec.devices) * spec.fins
 
 
-@pytest.mark.parametrize("selects, local_ysel", [(4, False), (8, False), (16, False), (8, True), (16, True)])
+@pytest.mark.parametrize("selects, local_ysel", [(4, False), (8, False), (16, False), (8, True), (16, True), (16, "pd")])
 def test_stacked_leaves_are_one_mux(selects, local_ysel, tmp_path: Path, require_klayout):
     """``SA``/``SAN``/``PRECHN`` one net each, every select on its own leaf only."""
-    spec = SidewaysMuxSpec(selects=selects, local_ysel=local_ysel)
+    spec = SidewaysMuxSpec(selects=selects, local_ysel=local_ysel is True, predecode=local_ysel == "pd")
     library = _library()
     group = build_sideways_mux_group(spec, lib=library)
     gds = tmp_path / "group.gds"
