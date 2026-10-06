@@ -24,10 +24,12 @@ from chipforge_asap7.devices import (
 )
 from chipforge_asap7.devices.driver_slice import RUNSET_ACTIVE_FINS
 from chipforge_asap7.verification.lvs import render_driver_slice_lvs_schematic, run_lvs
+from chipforge_asap7.verification.drc import runset_height_enumeration
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 ROW_END_ENCLOSURE = {"ACTIVE.WELL.EN.1", "NSELECT.ACTIVE.EN.1", "PSELECT.ACTIVE.EN.1"}
-DECK_HEIGHT_ENUMERATION = {"ACTIVE.W.2", "SDT.W.3"}
+#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
+DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 SMALL = DriverSliceSpec(
     nand=NandSpec(rows=((6, 4),)), inverter=InverterSpec(rows=((8, 8), (4, 4)))

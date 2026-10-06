@@ -35,6 +35,7 @@ __all__ = [
     "find_gdscheck",
     "run_drc",
     "run_gdscheck",
+    "runset_height_enumeration",
 ]
 
 DRC_DECK_ENV = "ASAP7_DRC_DECK"
@@ -76,6 +77,11 @@ def default_drc_engine() -> str:
     if engine not in ("gdscheck", "klayout"):
         raise ValueError(f"{DRC_ENGINE_ENV} must be gdscheck or klayout, got {engine!r}")
     return engine
+
+
+def runset_height_enumeration(engine: str | None = None) -> set[str]:
+    """Rules a tall but on-grid ACTIVE/SDT trips only in the KLayout runset (its 1-12 fin lists)."""
+    return {"ACTIVE.W.2", "SDT.W.3"} if (engine or default_drc_engine()) == "klayout" else set()
 
 
 def find_gdscheck(binary: str | Path | None = None) -> Path:

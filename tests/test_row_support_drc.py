@@ -21,6 +21,7 @@ from chipforge_asap7.devices import (
 )
 from chipforge_asap7.devices.finfet import MAX_VERIFIABLE_FINS
 from chipforge_asap7.devices.row_support import ROW_SUPPORT_KINDS
+from chipforge_asap7.verification.drc import runset_height_enumeration
 
 #: No logic cell satisfies this alone -- it needs a body tie within 30 um.
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
@@ -32,7 +33,8 @@ ROW_END_ENCLOSURE = {
 }
 #: The deck enumerates ACTIVE/SDT heights 1x27..12x27 rather than testing for a
 #: multiple of 27; a tap fills its band, so a tall stack lands past that list.
-DECK_HEIGHT_ENUMERATION = {"ACTIVE.W.2", "SDT.W.3"}
+#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
+DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 INVERTER = InverterSpec(rows=((4, 6),))
 _KIND_OF = {"f": "filler", "t": "tap", "d": "decap", "r": None}

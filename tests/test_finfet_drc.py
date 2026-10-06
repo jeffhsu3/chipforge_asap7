@@ -12,6 +12,7 @@ import gdspy
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet
 from chipforge_asap7.devices.finfet import MAX_FINS, MAX_VERIFIABLE_FINS
+from chipforge_asap7.verification.drc import runset_height_enumeration
 
 
 def _tile(specs: list[FinFETSpec], tag: str):
@@ -76,4 +77,5 @@ def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(asap7_drc):
     assert max(spec.fins for spec in specs) == MAX_FINS
 
     categories = set(asap7_drc(*_tile(specs, "tall_devices"), tag="tall_devices"))
-    assert categories == {"ACTIVE.W.2", "SDT.W.3"}
+    # gdscheck reads ACTIVE.W.2 as written (and does not check SDT.W.3): nothing.
+    assert categories == runset_height_enumeration()

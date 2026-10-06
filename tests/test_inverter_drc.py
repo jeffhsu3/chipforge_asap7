@@ -18,6 +18,7 @@ import gdspy
 from chipforge_asap7.devices import InverterSpec, build_inverter, build_inverter_row
 from chipforge_asap7.devices.finfet import MAX_VERIFIABLE_FINS
 from chipforge_asap7.devices.inverter import MIN_INPUT_REACH
+from chipforge_asap7.verification.drc import runset_height_enumeration
 
 #: No logic cell satisfies this alone -- it needs a tap row within 30 um.  The
 #: released `dec_inv_62f_halved_AND` has no tap either.
@@ -34,7 +35,8 @@ ROW_END_ENCLOSURE = {
 #: The deck enumerates ACTIVE/SDT heights 1x27..12x27 instead of testing for a
 #: multiple of 27, so a taller band reads as a violation.  See
 #: `chipforge_asap7.devices.finfet.MAX_VERIFIABLE_FINS`.
-DECK_HEIGHT_ENUMERATION = {"ACTIVE.W.2", "SDT.W.3"}
+#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
+DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 RELEASED = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
 

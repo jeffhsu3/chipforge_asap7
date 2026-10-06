@@ -18,10 +18,12 @@ from chipforge_asap7.devices import (
     build_nand_row,
     build_row_support,
 )
+from chipforge_asap7.verification.drc import runset_height_enumeration
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 ROW_END_ENCLOSURE = {"ACTIVE.WELL.EN.1", "NSELECT.ACTIVE.EN.1", "PSELECT.ACTIVE.EN.1"}
-DECK_HEIGHT_ENUMERATION = {"ACTIVE.W.2", "SDT.W.3"}
+#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
+DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 
 def _library():
