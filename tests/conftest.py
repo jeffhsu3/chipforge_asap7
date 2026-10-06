@@ -129,16 +129,29 @@ def require_klayout(external_tool) -> Path:
 
 @pytest.fixture
 def asap7_drc(external_tool, tmp_path) -> Callable[..., list[str]]:
-    """Run the public ASAP7 runset over a library, and report what it found.
+    """Run ASAP7 DRC over a library, and report what it found.
 
-    Returns the violation *categories* rather than a pass/fail, because a cell
-    can be as clean as a cell can be and still trip rules that only a placed
-    design satisfies -- latch-up without a tap row, implant enclosure at the
-    end of an abutting row.  Asserting the exact category set keeps those
-    documented instead of waived.
+    The engine is gdscheck (``--suite main``) unless ``ASAP7_DRC_ENGINE=klayout``
+    picks the public KLayout runset.  Returns the violation *categories*
+    rather than a pass/fail, because a cell can be as clean as a cell can be
+    and still trip rules that only a placed design satisfies -- latch-up
+    without a tap row, implant enclosure at the end of an abutting row.
+    Asserting the exact category set keeps those documented instead of
+    waived.
     """
+    from chipforge_asap7.verification.drc import default_drc_engine, find_gdscheck, run_gdscheck
 
     def _run(library, top, tag: str = "drc") -> list[str]:
+        gds = tmp_path / f"{tag}.gds"
+        if default_drc_engine() == "gdscheck":
+            try:
+                find_gdscheck()
+                found = True
+            except FileNotFoundError:
+                found = False
+            external_tool(found, "gdscheck is not installed (set GDSCHECK)")
+            library.write_gds(str(gds))
+            return [v.category for v in run_gdscheck(gds, tmp_path / f"{tag}_drc", cell_name=top.name)]
         klayout = find_klayout_or_none()
         deck = find_asap7_drc_deck()
         external_tool(
@@ -146,7 +159,6 @@ def asap7_drc(external_tool, tmp_path) -> Callable[..., list[str]]:
             "KLayout and the public ASAP7 DRC deck are not installed "
             f"(set KLAYOUT_BIN and {DRC_DECK_ENV})",
         )
-        gds = tmp_path / f"{tag}.gds"
         report = tmp_path / f"{tag}.lyrdb"
         library.write_gds(str(gds))
         result = subprocess.run(
