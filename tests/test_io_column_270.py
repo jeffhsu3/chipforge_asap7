@@ -95,7 +95,7 @@ def test_compact_block_puts_the_driver_under_the_amplifier_and_the_latch_beside(
     place = spec.placements
     wd_x, wd_y = place["write_driver"]
     sa_x, sa_y = place["sense_amp"]
-    assert wd_x == sa_x and sa_y == wd_y + 270
+    assert wd_x == sa_x and sa_y == wd_y + spec.write_driver.height
     assert spec.logic_top <= spec.height
     # The latch on the leaves' rails, past the logic column's taps and the inner straps over them.
     assert place["output_latch"] == (spec.latch_x, spec.grid_offset)
@@ -141,7 +141,7 @@ def test_deep_compact_blocks_stack_all_three_cells_in_one_column():
         place = spec.placements
         assert place["output_latch"] == (spec.logic_x, spec.grid_offset + 4 * 270)
         assert spec.logic_top == spec.latch_y  # abutted: one rail
-        assert spec.logic_y - (spec.grid_offset + 0) >= 216  # clear of the previous block's latch
+        assert spec.logic_y - spec.grid_offset >= 135  # half a row over the previous block's latch
         assert spec.width == stacked.width - 54
         assert set(spec.pin_positions) == set(io_column_pins(spec))
 

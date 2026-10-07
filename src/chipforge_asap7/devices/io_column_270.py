@@ -42,7 +42,7 @@ gap with theirs (no second strap pair).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..layout.grid import GATE_PITCH
@@ -73,6 +73,8 @@ FIN_PITCH = 27
 #: The compact column's QAN jog: a column right of the latch's width, clear
 #: of the amplifier's tracks near its top.
 QAN_JOG = 540
+#: The compact amplifier's bands: a 162 nm n band, as the driver's (M1.S.2).
+COMPACT_SENSE_BANDS = (162, 162)
 
 
 def _ceil_to(value: float, grid: int) -> int:
@@ -168,7 +170,11 @@ class SidewaysIoColumnSpec:
         return self.is_compact and self.height >= 8 * ROW
 
     def _take_compact_cells(self) -> None:
-        """Swap the default two-row cells for their 270 nm ones (same devices for the driver)."""
+        """Swap the default two-row cells for the compact ones (same devices for the driver).
+
+        The driver's row and the amplifier's two have a 162 nm n band: room
+        for a via pad's tip 25 nm from the rail (M1.S.2).
+        """
         for name, default, compact in (
             ("write_driver", WriteDriverSpec, WriteDriver270Spec),
             ("output_latch", OutputLatchSpec, OutputLatch270Spec),
@@ -179,6 +185,8 @@ class SidewaysIoColumnSpec:
             if given != default(vt=given.vt):
                 raise ValueError(f"the compact block draws its own {name}; got {given}")
             object.__setattr__(self, name, compact(vt=given.vt))
+        if self.sense_amp.band_height == SenseAmpRowSpec().band_height:
+            object.__setattr__(self, "sense_amp", replace(self.sense_amp, band_height=COMPACT_SENSE_BANDS))
 
     # ── The parts ─────────────────────────────────────────────────────────────
     @property
@@ -238,8 +246,9 @@ class SidewaysIoColumnSpec:
         if self.compact_column:
             # Under the latch, the amplifier's top rail its bottom one: two
             # cells 108 nm apart put their rails' gate cuts and poly ends too
-            # close (GCUT.S.3, GATE.S.1).  The driver below then stands 216 nm
-            # over the previous block's latch.
+            # close (GCUT.S.3, GATE.S.1).  The driver below then stands 135 nm
+            # over the previous block's latch (half a row: stacked blocks are
+            # clean).
             return self.latch_y - self.write_driver.height - self.sense_amp.height
         clear = (2 if self.stacked or self.is_compact else 3) * FIN_PITCH
         y = self.grid_offset + 2 * FIN_PITCH

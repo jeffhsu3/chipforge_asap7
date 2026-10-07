@@ -34,6 +34,8 @@ SPECS = [
         n_fingers=4, tail_fingers=6, n_fins=4, p_fins=4, band_height=(162, 189)
     ),
     SenseAmpRowSpec(vt="sram"),
+    # The compact 6T column's: a 162 nm n band, room for M1.S.2's 25 nm.
+    SenseAmpRowSpec(band_height=(162, 162)),
 ]
 
 
@@ -78,8 +80,10 @@ def test_isolated_amplifiers_only_trip_the_missing_body_tap(asap7_drc):
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
 
 
-def test_terminated_amplifier_is_clean(asap7_drc):
-    spec = SenseAmpRowSpec()
+@pytest.mark.parametrize(
+    "spec", [SenseAmpRowSpec(), SenseAmpRowSpec(band_height=(162, 162))], ids=lambda spec: spec.cell_name
+)
+def test_terminated_amplifier_is_clean(asap7_drc, spec):
     library = _library()
     top = _terminated(
         library,

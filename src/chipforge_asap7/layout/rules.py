@@ -48,6 +48,9 @@ M1_MIN_SPACE = 18  # M1.S.1, both edges > 36 nm
 #: M1.S.2: an edge under 36 nm needs 25 nm to its neighbour where a long one
 #: needs 18.
 SHORT_M1_EDGE = 36
+#: M1.S.2 (M2 and M3 have M1's rules): a line end, an edge of 36 nm or less,
+#: facing a longer edge -- a via pad's tip toward a rail.
+M1_TIP_TO_SIDE = 25
 M1_V0_ENCLOSURE = 5  # V0.M1.EN.1: M1 end-cap past V0 along the track
 # M2.W.1/M3.W.1 and M2.S.1/M3.S.1 match M1's, so one pitch serves all three.
 TRACK_PITCH = M1_WIDTH + M1_MIN_SPACE  # 36

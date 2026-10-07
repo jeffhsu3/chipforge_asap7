@@ -1,10 +1,12 @@
-"""`WriteDriverSpec`'s twelve transistors on one 270 nm (7.5-track) row.
+"""`WriteDriverSpec`'s twelve transistors on one 297 nm row (162 nm n band, 135 nm p band).
 
 The same circuit -- an inverter makes ``DN``; nFET pass gates load ``(D,
 DN)`` into a latch with one-fin pFET keepers while write enable is low; two
 transmission gates put the latch on ``SA``/``SAN`` while it is high -- in
-702 x 270 nm instead of two 297 nm rows, so that it fits under the sense
-amplifier in a 4:1 column group (1080 nm).
+702 x 297 nm instead of two 297 nm rows, so that it fits under the sense
+amplifier in a 4:1 column group (1080 nm).  It was drawn on a 270 nm row;
+the extra 27 nm of n band is what M1.S.2's 25 nm from a pad's tip to the
+rail costs (the module keeps its name).
 
 Every poly stripe is one gate through both bands (no cut at the seam), so an
 nFET and a pFET share a stripe only when they share a gate net.  The nFETs
@@ -23,7 +25,7 @@ make (a contacted gate's bar stands 27 nm from every column): ``SA`` crosses
 over the dummy stripe after column 2, ``W`` over the one before column 4,
 ``DN`` over the one after column 8.  The rest climbs to M2 and M3; ``WRENA``
 and ``WRENAN`` each join their two gates on a short M4 line inside the cell.
-Contacts sit on the via rows nearest the rails (41 nm in from each), which
+Contacts sit on the via rows nearest the rails (48 nm in from each), which
 leaves two M2 tracks a gate bar can reach and two more beside the via rows.
 """
 
@@ -55,19 +57,28 @@ from .write_driver import WRITE_DRIVER_PINS, WriteDriverSpec
 
 __all__ = ["WriteDriver270Spec", "build_write_driver_270", "render_write_driver_270_lvs_schematic"]
 
-ROW = 270
+#: A 162 nm n band under a 135 nm p band: the via rows stand 48 nm from the
+#: rails (a pad's tip 25 nm from the rail, M1.S.2), which a 270 nm row's two
+#: 135 nm bands leave no room for six M2 tracks between.
+N_BAND, P_BAND = 162, 135
+ROW = N_BAND + P_BAND
 COLUMNS = 12
-#: M2 tracks: the via rows, one between each and the gate tracks, and the two gate tracks.
-Y_N, Y_77, Y_GATE_LO, Y_GATE_HI, Y_185, Y_P = 41, 77, 113, 149, 185, 229
+#: M2 tracks: the via rows, one between each and the gate tracks, and the two
+#: gate tracks (34 nm under the seam and 2 over it).  The lower middle one
+#: stands 25 nm from the via row's 34 nm landings (M2.S.2); the upper one low
+#: enough that SA's M1 climbing to it ends 25 nm under W's flag (M1.S.2).
+Y_N, Y_77, Y_GATE_LO, Y_GATE_HI, Y_185, Y_P = 48, 92, N_BAND - 34, N_BAND + 2, 200, ROW - 48
 #: M4 lines of the two write enables.  Half a nanometre off the cell's grid
 #: so that, mirrored on a column IO's half-nanometre fin-grid row, they land
 #: on whole nanometres: a router's on-grid patch over one then leaves no
 #: half-nanometre step (M4.AUX.3).
-Y_M4 = {"WRENA": 29.5, "WRENAN": 240.5}
+Y_M4 = {"WRENA": 29.5, "WRENAN": ROW - 29.5}
 #: The control pins are M3 a router lands on from M4 tracks (M4 is
 #: right-way and on-grid only): each runs past its own net's M4 line, over
 #: rows a block keeps free.
-TOP_OF_WRENA = 180
+TOP_OF_WRENA = Y_GATE_LO + 67
+#: Half a landing that a track passes 18 nm away: 38 nm long, a long edge.
+LONG_LANDING_HALF = 19
 
 
 def col(i: int) -> int:
@@ -97,7 +108,7 @@ M3 = {
     "WRENAN": [(col(2), Y_GATE_HI, Y_M4["WRENAN"]), (gate(6), Y_GATE_LO, Y_M4["WRENAN"])],
     "WRENA": [(col(3), Y_M4["WRENA"], TOP_OF_WRENA), (472, Y_M4["WRENA"], Y_GATE_LO)],
     "WN": [(col(5), Y_N, Y_P), (col(10), Y_N, Y_185)],
-    "D": [(gate(8), Y_77, 228)],
+    "D": [(gate(8), Y_77, Y_P - 1)],
     "SAN": [(col(11), 0, Y_P)],
 }
 PIN_NETS = ("D", "WRENA", "WRENAN", "SA", "SAN")
@@ -105,7 +116,7 @@ PIN_NETS = ("D", "WRENA", "WRENAN", "SA", "SAN")
 
 @dataclass(frozen=True)
 class WriteDriver270Spec:
-    """`WriteDriverSpec` (3-fin nFETs and transmission gates, 1-fin keepers) on one 270 nm row."""
+    """`WriteDriverSpec` (3-fin nFETs and transmission gates, 1-fin keepers) on one 297 nm row."""
 
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
 
@@ -116,7 +127,7 @@ class WriteDriver270Spec:
 
     @property
     def stack(self) -> RowStack:
-        return RowStack(rows=((3, 3),), vt=self.vt, band_height=135)
+        return RowStack(rows=((3, 3),), vt=self.vt, band_height=(N_BAND, P_BAND))
 
     @property
     def bands(self) -> dict[str, RowBand]:
@@ -137,7 +148,7 @@ class WriteDriver270Spec:
 
     @property
     def cell_name(self) -> str:
-        return f"wrdrv270{'' if self.vt == 'rvt' else '_' + self.vt}"
+        return f"wrdrv297{'' if self.vt == 'rvt' else '_' + self.vt}"
 
     @property
     def track_x(self) -> dict[str, int]:
@@ -219,15 +230,17 @@ def build_write_driver_270(
         ends = (y - CAP, y + CAP, *(() if reach is None else (reach,)))
         box(cell, "M1", x - HALF, min(ends), x + HALF, max(ends))
 
-    def flag(y: float, x0: float, x1: float) -> None:
-        box(cell, "M1", min(x0, x1) - CAP, y - HALF, max(x0, x1) + CAP, y + HALF)
+    def flag(y: float, x0: float, x1: float, flush: tuple[float, ...] = ()) -> None:
+        """M1 along the via row; an end at a crossing in `flush` stops at its side (no via to cap)."""
+        lo, hi = min(x0, x1), max(x0, x1)
+        box(cell, "M1", lo - (HALF if lo in flush else CAP), y - HALF, hi + (HALF if hi in flush else CAP), y + HALF)
 
     def crossing(x: float, y0: float, y1: float) -> None:
         box(cell, "M1", x - HALF, y0 - HALF, x + HALF, y1 + HALF)
 
     # A contact under a flag is the flag's alone: a V0's M1 is exactly as
     # wide as the via across the wire (V0.M1.AUX.3), so no pad along the column.
-    flagged = {Y_N: (2, 4, 6, 7), Y_P: (1, 4, 6, 10)}
+    flagged = {Y_N: (2, 4, 7), Y_P: (1, 4, 10)}
     for y, columns in ((Y_N, (0, 1, 2, 4, 6, 7, 10, 11)), (Y_P, (0, 1, 4, 6, 7, 10))):
         for i in columns:
             if i in flagged[y]:
@@ -239,14 +252,12 @@ def build_write_driver_270(
     # column 2 (up to its track), DN after column 8; WN's pads to its M3.
     flag(Y_P, col(1), col(4))
     crossing(gate(3), Y_N, Y_P)
-    flag(Y_N, gate(3), col(4))
-    flag(Y_N, col(2), gate(2))
+    flag(Y_N, gate(3), col(4), flush=(gate(3),))
+    flag(Y_N, col(2), gate(2), flush=(gate(2),))
     crossing(gate(2), Y_N, Y_185 + CAP - HALF)  # under its V1
     flag(Y_N, col(7), gate(8))
     crossing(gate(8), Y_N, Y_P)
     flag(Y_P, gate(8), col(10))
-    for y in (Y_N, Y_P):
-        flag(y, col(5), col(6))
 
     # Gates: one contact each on the seam, the bar on to its track.
     for i, _, y in GATES:
@@ -267,7 +278,8 @@ def build_write_driver_270(
     for i, net, y in GATES:
         via1(gate(i), y)
     m2(Y_GATE_HI, gate(0), col(2))  # WRENAN: gate 0 to its M3
-    m2(Y_GATE_LO, gate(6), gate(6))  # WRENAN: gate 6 under its M3
+    # WRENAN: gate 6 under its M3, a long landing under D's gate track.
+    box(cell, "M2", gate(6) + PAD - 2 * LONG_LANDING_HALF, Y_GATE_LO - HALF, gate(6) + PAD, Y_GATE_LO + HALF)
     m2(Y_GATE_LO, gate(1), col(3))  # WRENA: gate 1 to its M3
     m2(Y_GATE_LO, 472, gate(10))  # WRENA: gate 10 to its M3
     m2(Y_GATE_LO, gate(4), col(5))  # WN: its gate to its M3
@@ -279,14 +291,24 @@ def build_write_driver_270(
     via1(gate(2), Y_185)
     m2(Y_185, col(0), gate(2))  # SA: the crossing to its M3
     m2(Y_185, col(5), col(10))  # WN: the transmission gate's nFET
-    for x in (col(1), col(5), col(10)):
+    for x in (col(1), col(10)):
         via1(x, Y_N)
         m2(Y_N, x, x)
-    for x in (col(1), col(5)):
-        via1(x, Y_P)
-        m2(Y_P, x, x)
+    # WN: column 6's drains on M2 (an M1 flag over to column 5 would end
+    # 26 nm from its neighbours' caps, M1.S.4): along the n via row to WN's
+    # M3, and up from the p one to WN's track.
+    via1(col(6), Y_N)
+    m2(Y_N, col(5), col(6))
+    via1(col(6), Y_P)
+    via1(col(1), Y_P)  # W, under SA's track: a long landing
+    box(cell, "M2", col(1) - PAD, Y_P - HALF, col(1) - PAD + 2 * LONG_LANDING_HALF, Y_P + HALF)
     standing(col(0), Y_P)  # SA
     standing(col(11), Y_N)  # SAN
+    # SAN's landing a long one, beside WN's pad on the via row; SA's landing
+    # and WN's column 6 joined to their own tracks below.
+    box(cell, "M2", col(11) - HALF, Y_N - PAD, col(11) + HALF, Y_N - PAD + 2 * LONG_LANDING_HALF)
+    for x in (col(0), col(6)):
+        box(cell, "M2", x - HALF, Y_185, x + HALF, Y_P + PAD)
     via1(col(7), Y_P)
     m2(Y_P, col(7), col(11))  # SAN: the transmission gate's pFET to its M3
 
@@ -296,7 +318,7 @@ def build_write_driver_270(
         "W": [(col(1), Y_N), (col(1), Y_P)],
         "WRENAN": [(col(2), Y_GATE_HI), (gate(6), Y_GATE_LO)],
         "WRENA": [(col(3), Y_GATE_LO), (472, Y_GATE_LO)],
-        "WN": [(col(5), Y_N), (col(5), Y_GATE_LO), (col(5), Y_185), (col(5), Y_P), (col(10), Y_N), (col(10), Y_185)],
+        "WN": [(col(5), Y_N), (col(5), Y_GATE_LO), (col(5), Y_185), (col(10), Y_N), (col(10), Y_185)],
         "D": [(gate(8), Y_77), (gate(8), Y_GATE_HI)],
         "SAN": [(col(11), Y_N), (col(11), Y_P)],
     }

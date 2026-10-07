@@ -530,8 +530,13 @@ def _draw_predecode(cell: Any, spec: SidewaysMuxSpec) -> None:
             box(cell, "LISD", x - SD_HALF, min(rail_y, lo), x + SD_HALF, max(rail_y, hi))
 
     def flag(x_via: float, y: float, x_bar: float) -> None:
+        """M1 from a drain's V0 to the crossing at `x_bar`; it caps the via and
+        stops flush with the crossing (an overhang there would end 22 nm from
+        the mux's M1, M1.S.2)."""
         _v0(cell, x_via, y)
-        box(cell, "M1", min(x_via, x_bar) - 14, y - HALF, max(x_via, x_bar) + 14, y + HALF)
+        lo = x_via - 14 if x_via < x_bar else x_bar - HALF
+        hi = x_via + 14 if x_via > x_bar else x_bar + HALF
+        box(cell, "M1", lo, y - HALF, hi, y + HALF)
 
     # YSELN: the NAND's n drain and p drain, over the dummy gate on the left.
     flag(c0, n_via, PRE_YSELN_X)

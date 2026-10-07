@@ -52,6 +52,7 @@ from .cli import Option, parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
 from .rowcell import (
+    RUNSET_RAIL_SPACE,
     CAP,
     HALF,
     ISLAND_OVERHANG,
@@ -179,7 +180,7 @@ class BitlineMuxSpec:
                 f"an n band of {n_band.height} nm leaves no room for both bitline "
                 "tracks under the gate contacts; use at least 135 nm"
             )
-        if self.tracks_y["YSELN"] + HALF + M1_MIN_SPACE > via_y(p_band) - PAD:
+        if self.tracks_y["YSELN"] + HALF + M1_MIN_SPACE > via_y(p_band, RUNSET_RAIL_SPACE) - PAD:
             raise ValueError(
                 f"a p band of {p_band.height} nm leaves no room for the select tie "
                 "under the via row; use at least 162 nm"
@@ -382,7 +383,7 @@ class BitlineMuxSpec:
         n_band, _ = self.bands
         # 80 on the default row.
         # The landing on the via row lies along the track, 18 nm tall.
-        bl = via_y(n_band) + HALF + M1_MIN_SPACE + HALF + 3
+        bl = via_y(n_band, RUNSET_RAIL_SPACE) + HALF + M1_MIN_SPACE + HALF + 3
         # 152: its V1 sits on the gate contact's M1 bar, above the LIG.
         ysel = self.seam_y + PAD
         return {
@@ -507,19 +508,19 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     # Every other diffusion column: a V0 and an M1 pad on its band's via row.
     # The two bitline columns of the n band carry their pad up to the BL track.
     for column in ("x0", "x1", "x3", "x4"):
-        y_p = sd_contact(cell, p_band, x[column])
+        y_p = sd_contact(cell, p_band, x[column], rail_space=RUNSET_RAIL_SPACE)
     for column in ("x0", "x4"):
-        y_n = sd_contact(cell, n_band, x[column])
+        y_n = sd_contact(cell, n_band, x[column], rail_space=RUNSET_RAIL_SPACE)
     for column in ("xa", "xb"):
-        sd_contact(cell, n_band, x[column], reach=ty["BL"] + CAP)
+        sd_contact(cell, n_band, x[column], reach=ty["BL"] + CAP, rail_space=RUNSET_RAIL_SPACE)
         square(cell, "V1", x[column], ty["BL"])
 
     # Shared nets, straight through on M3.  SA and SAN tap both bands of their
     # own column (their tracks are drawn by the leaf, which knows whether its
     # ends are a group's outer ends); PRECHN taps its gate contact (below).
     for net in ("SA", "SAN"):
-        landing(cell, n_band, tx[net])
-        landing(cell, p_band, tx[net])
+        landing(cell, n_band, tx[net], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, p_band, tx[net], rail_space=RUNSET_RAIL_SPACE)
 
     # Bitlines.  BL comes in on its track, meets the n column it passes first,
     # and rides a short M3 jumper over the seam to its p column.  BLN crosses
@@ -544,7 +545,7 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     # to the n via row to meet its M3.
     gate_contact(cell, seam, [g["G1"], g["G2"]], x["x2"], y_n - CAP)
     m3_column(cell, tx["PRECHN"], 0, height)
-    landing(cell, n_band, x["x2"])
+    landing(cell, n_band, x["x2"], rail_space=RUNSET_RAIL_SPACE)
 
     # YSEL on the two outer gates, YSELN on the two inner ones.  Each is tied on
     # its own M2 track and taps its own select among the group's M3 tracks.

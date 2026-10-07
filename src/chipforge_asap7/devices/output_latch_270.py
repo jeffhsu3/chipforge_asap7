@@ -48,6 +48,8 @@ ROW = 270
 INPUT_BOTTOM = 31
 WIDTH = 432  # the widest cell (the tristate, 324) and a tap
 TAP_X = 324
+#: Half the shortest M2 jog: 38 nm in all, past M2.S.2's 36 nm short edges.
+LONG_STUB = 19
 #: M3 columns, by net.
 COLUMN = {"QA": 81, "QAN": 351, "Y1": 243, "Y2": 189, "Y2N": 27, "OE": 135, "OEB": 243, "Q": 297}
 #: Each pin's V1: (row, x, y in the cell's own frame).  Gate bars run 68-202
@@ -244,7 +246,10 @@ def build_output_latch_270(
         column = COLUMN[net]
         square(cell, "V1", x, y)
         square(cell, "V2", column, y)
-        box(cell, "M2", min(x, column) - PAD, y - HALF, max(x, column) + PAD, y + HALF)
+        # A pin under its own column gets a stub, 38 nm long so that its
+        # edges are long ones: a track can pass it at 18 nm (M2.S.2).
+        reach = max(PAD, LONG_STUB - (max(x, column) - min(x, column)) / 2)
+        box(cell, "M2", min(x, column) - reach, y - HALF, max(x, column) + reach, y + HALF)
         ends.setdefault(net, []).append(y)
     # The M3 columns: between their vias, and out to the pins at the edges.
     for net, ys in ends.items():

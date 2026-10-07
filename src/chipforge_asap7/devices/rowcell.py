@@ -22,6 +22,7 @@ from ..layout.layers import PIN_LAYERS, box, require_gdspy
 from ..layout.rules import (
     CONTACT_SIZE,
     M1_MIN_SPACE,
+    M1_TIP_TO_SIDE,
     M1_V0_ENCLOSURE,
     M2_V1_ENCLOSURE,
     M4_WIDTH,
@@ -62,8 +63,12 @@ __all__ = [
     "stack_to_m3",
     "supply_contact",
     "via_y",
+    "RUNSET_RAIL_SPACE",
 ]
 
+#: The rail-to-pad space the 297 nm 8T cells are still planned on (M1.S.1's 18):
+#: their bands have no room for M1.S.2's 25 until they grow.
+RUNSET_RAIL_SPACE = M1_MIN_SPACE
 HALF = CONTACT_SIZE // 2  # 9: half a via, half an 18 nm track
 CAP = HALF + M1_V0_ENCLOSURE  # 14: metal past a via along its own track
 PAD = HALF + M2_V1_ENCLOSURE  # 17: M2 past a V1
@@ -168,22 +173,23 @@ def supply_contact(cell: Any, band: RowBand, x: float) -> None:
     square(cell, "V0", x, band.rail_y)
 
 
-def via_y(band: RowBand) -> int:
-    """Y of `band`'s via row: its contact row, moved off the rail by a fin if need be.
+def via_y(band: RowBand, rail_space: int = M1_TIP_TO_SIDE) -> int:
+    """Y of `band`'s via row: its contact row, moved off the rail if need be.
 
-    A via's M1 pad runs `CAP` past it, and the released cells keep every M1
-    pad a full space (18 nm) from the M1 rail; a contact row one fin from the
-    rail would put the pad 13 nm from it.  Moving the via up a fin costs
-    nothing, the LISD bar spans the whole active.
+    A via's M1 pad runs `CAP` past it, and its end, 18 nm across, faces the
+    rail's long edge: tip-to-side, 25 nm (M1.S.2), so the via stands 48 nm
+    in.  Moving it costs nothing, the LISD bar spans the whole active.  The
+    297 nm 8T cells still plan on `RUNSET_RAIL_SPACE`, the 18 nm the public
+    runset (which never measures a pad's tip against a rail) accepts.
     """
     y = int(band.contact_y)
-    clearance = HALF + M1_MIN_SPACE + CAP
+    clearance = HALF + rail_space + CAP
     if band.rail_below:
         return max(y, int(band.rail_y) + clearance)
     return min(y, int(band.rail_y) - clearance)
 
 
-def landing(cell: Any, band: RowBand, x: float) -> int:
+def landing(cell: Any, band: RowBand, x: float, rail_space: int = M1_TIP_TO_SIDE) -> int:
     """`stack_to_m3` on `band`'s via row at column `x`; returns the via y.
 
     On a row whose rail is below, the landing lies along the track (18 nm
@@ -191,7 +197,7 @@ def landing(cell: Any, band: RowBand, x: float) -> int:
     rail is above it stands along the column, as `stack_to_m3` does, because
     there neighbouring columns may both carry one.
     """
-    y = via_y(band)
+    y = via_y(band, rail_space)
     if band.rail_below:
         square(cell, "V1", x, y)
         box(cell, "M2", x - PAD, y - HALF, x + PAD, y + HALF)
@@ -201,13 +207,15 @@ def landing(cell: Any, band: RowBand, x: float) -> int:
     return y
 
 
-def sd_contact(cell: Any, band: RowBand, x: float, reach: float | None = None) -> float:
+def sd_contact(
+    cell: Any, band: RowBand, x: float, reach: float | None = None, rail_space: int = M1_TIP_TO_SIDE
+) -> float:
     """A V0 on `band`'s via row at column `x`, under an M1 pad.
 
     The pad covers the via and, with `reach`, runs on to that y (toward the
     seam, or past it) so a track or a bar can land on it.  Returns the via y.
     """
-    y = via_y(band)
+    y = via_y(band, rail_space)
     ends = [y - CAP, y + CAP] + ([reach] if reach is not None else [])
     square(cell, "V0", x, y)
     box(cell, "M1", x - HALF, min(ends), x + HALF, max(ends))

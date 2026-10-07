@@ -37,7 +37,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import TRACK_PITCH
+from ..layout.rules import M1_TIP_TO_SIDE, TRACK_PITCH
 from .cli import parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
@@ -46,6 +46,7 @@ from .rowcell import (
     HALF,
     ISLAND_OVERHANG,
     PAD,
+    RUNSET_RAIL_SPACE,
     draw_frame,
     draw_rails,
     gate_contact,
@@ -64,6 +65,12 @@ __all__ = ["SenseAmpRowSpec", "build_sense_amp_row"]
 
 # The bottom row's M2 tie tracks, from its seam: one just below it, two above.
 _TIE_OFFSETS = (-19, 17, 53)
+# With M1.S.2's clearances (a 162 nm n band): 5 nm lower, so that the top tie
+# stands 25 nm from the p landings standing above it.
+_TIE_OFFSETS_TIP = (-24, 12, 48)
+#: Half an M2 stub that lies between two tracks: 38 nm long, so that its edges
+#: are long ones (> 36 nm) and 18 nm from a track suffices (M2.S.2).
+_LONG_STUB_HALF = 19
 
 
 @dataclass(frozen=True)
@@ -107,7 +114,7 @@ class SenseAmpRowSpec:
             )
         bands = self.bands
         n_lo, p_lo = bands["n0"], bands["p0"]
-        y_n, y_p = via_y(n_lo), via_y(p_lo)
+        y_n, y_p = via_y(n_lo, self.rail_space), via_y(p_lo, self.rail_space)
         low, mid, high = self.tie_levels
         # A gate contact's M1 bar runs from the seam to its tie, 9 nm beside the
         # pads of the neighbouring columns, so the two have to clear each other
@@ -226,15 +233,30 @@ class SenseAmpRowSpec:
         return sorted(i for i, n in self.stripe_nets().items() if n == net)
 
     @property
+    def tip_clearances(self) -> bool:
+        """M1.S.2's tip-to-side spaces (25 nm), which need a 162 nm n band; the
+        8T row's 135 nm one keeps the 18 nm the public runset accepts."""
+        return self.band_height[0] >= 162
+
+    @property
+    def rail_space(self) -> int:
+        """A via pad's tip to its rail."""
+        return M1_TIP_TO_SIDE if self.tip_clearances else RUNSET_RAIL_SPACE
+
+    @property
     def n_level(self) -> int:
         """The bottom row's M2 track its n pads reach, a pitch above their via row's landings."""
-        return via_y(self.bands["n0"]) + HALF + 18 + HALF + 3
+        # The landings on the via row are 34 nm stubs: tip-to-side, 25 nm
+        # (the 8T row keeps the 21 the runset accepts).
+        space = M1_TIP_TO_SIDE if self.tip_clearances else 18 + 3
+        return via_y(self.bands["n0"], self.rail_space) + HALF + space + HALF
 
     @property
     def tie_levels(self) -> tuple[int, int, int]:
         """The bottom row's three M2 tie tracks above the 80 nm one: QA, then SA/SAE/SAN, then QAN."""
         seam = self.stack.seam_y(0)
-        low, mid, high = (seam + offset for offset in _TIE_OFFSETS)
+        offsets = _TIE_OFFSETS_TIP if self.tip_clearances else _TIE_OFFSETS
+        low, mid, high = (seam + offset for offset in offsets)
         return low, mid, high
 
     @property
@@ -345,7 +367,7 @@ def build_sense_amp_row(
     width, height = spec.width, spec.height
     c, g = spec.column_x, spec.gate_x
     seam0, seam1 = spec.stack.seam_ys
-    y_n0, y_p0, y_p1 = via_y(n0), via_y(p0), via_y(p1)
+    y_n0, y_p0, y_p1 = via_y(n0, spec.rail_space), via_y(p0, spec.rail_space), via_y(p1, spec.rail_space)
     lvl = spec.n_level  # 80: the common node of the input pair
     tie_qa, tie_mid, tie_qan = spec.tie_levels
     tie_pre = seam1 - _TIE_OFFSETS[1]  # the row above, below its seam
@@ -385,7 +407,7 @@ def build_sense_amp_row(
     # The common node: every 52 column's pad up to the 80 nm track.
     tail_columns = spec.columns_of("52")
     for column in tail_columns:
-        sd_contact(cell, n0, c[column], reach=lvl + CAP)
+        sd_contact(cell, n0, c[column], reach=lvl + CAP, rail_space=spec.rail_space)
     m2_track(
         cell,
         lvl,
@@ -412,7 +434,8 @@ def build_sense_amp_row(
         m3_column(cell, tx[net], 0, tie_mid + CAP, vias=[tie_mid])
     sae = spec.stripes_of("SAE")
     gate_contact(cell, seam0, [g(s) for s in sae], tx["SAE"], tie_mid + CAP)
-    m2_track(cell, tie_mid, tx["SAE"] - PAD, tx["SAE"] + PAD, vias=[tx["SAE"]])
+    stub = _LONG_STUB_HALF if spec.tip_clearances else PAD
+    m2_track(cell, tie_mid, tx["SAE"] - stub, tx["SAE"] + stub, vias=[tx["SAE"]])
     m3_column(cell, tx["SAE"], 0, tie_mid + CAP, vias=[tie_mid])
 
     # Outputs.  Each QAN column joins its n and p drains on M3 and meets the
@@ -433,10 +456,10 @@ def build_sense_amp_row(
         )
         top_column = centre - 1 if out == "QAN" else centre + 1
         for column in columns:
-            sd_contact(cell, n0, c[column])
-            landing(cell, n0, c[column])
-            sd_contact(cell, p0, c[column])
-            landing(cell, p0, c[column])
+            sd_contact(cell, n0, c[column], rail_space=spec.rail_space)
+            landing(cell, n0, c[column], rail_space=spec.rail_space)
+            sd_contact(cell, p0, c[column], rail_space=spec.rail_space)
+            landing(cell, p0, c[column], rail_space=spec.rail_space)
             top = height if column == risers[out] else y_p0 + CAP
             m3_column(
                 cell,
@@ -445,7 +468,7 @@ def build_sense_amp_row(
                 top,
                 vias=[tie] + ([y_p1] if column == risers[out] else []),
             )
-        sd_contact(cell, p1, c[top_column])
+        sd_contact(cell, p1, c[top_column], rail_space=spec.rail_space)
         m2_track(cell, y_p1, min(c[top_column], tx[out]) - PAD, max(c[top_column], tx[out]) + PAD,
                  vias=[c[top_column]])  # fmt: skip
 

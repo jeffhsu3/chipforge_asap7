@@ -40,6 +40,7 @@ from .rowcell import (
     HALF,
     ISLAND_OVERHANG,
     PAD,
+    RUNSET_RAIL_SPACE,
     draw_frame,
     draw_rails,
     gate_contact,
@@ -103,7 +104,7 @@ class WriteDriverSpec:
         # to clear each other by 18 nm in y (M1.S.6, corner to corner).  The
         # lowest tie is beside pads that stop on the via row, the next beside
         # pads that reach the 80 nm track, and the highest beside p pads.
-        y_n, y_p = via_y(n_lo), via_y(p_lo)
+        y_n, y_p = via_y(n_lo, RUNSET_RAIL_SPACE), via_y(p_lo, RUNSET_RAIL_SPACE)
         low, mid, high = self.tie_levels
         if (
             low - CAP < y_n + CAP + 18
@@ -168,7 +169,7 @@ class WriteDriverSpec:
     @property
     def n_level(self) -> int:
         """The bottom row's M2 track its n pads reach, a pitch above their via row's landings."""
-        return via_y(self.bands["n0"]) + HALF + 18 + HALF + 3
+        return via_y(self.bands["n0"], RUNSET_RAIL_SPACE) + HALF + 18 + HALF + 3
 
     @property
     def tie_levels(self) -> tuple[int, int, int]:
@@ -266,7 +267,7 @@ def build_write_driver(
     width, height = spec.width, spec.height
     c, g = spec.column_x, spec.gate_x
     seam0, seam1 = spec.stack.seam_ys
-    y_n0, y_p0, y_n1 = via_y(n0), via_y(p0), via_y(n1)
+    y_n0, y_p0, y_n1 = via_y(n0, RUNSET_RAIL_SPACE), via_y(p0, RUNSET_RAIL_SPACE), via_y(n1, RUNSET_RAIL_SPACE)
     lvl = spec.n_level  # 80: the bottom row's n-side track
     tie_d, tie_a, tie_an = spec.tie_levels
     # The latch's ties mirror the upper two about its own seam.
@@ -303,24 +304,24 @@ def build_write_driver(
     m3_column(cell, tx["SA"], 0, height)
     m3_column(cell, tx["SAN"], 0, height)
     for column, net in ((2, "SA"), (6, "SAN")):
-        sd_contact(cell, n0, c[column])
-        landing(cell, n0, c[column])
-        sd_contact(cell, p0, c[column])
-        landing(cell, p0, c[column])
+        sd_contact(cell, n0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, n0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
 
     # D: the pass gate's source, and the inverter's gates on the far stripe.
-    sd_contact(cell, n0, c[0])
-    landing(cell, n0, c[0])
+    sd_contact(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
     m3_column(
         cell, tx["D"], y_n0 - CAP, height - TOP_CLEARANCE, vias=[tie_d]
     )  # over its pad's landing too
     gate_contact(cell, seam0, [g(8)], g(8), tie_d - CAP)
     m2_track(cell, tie_d, c[0] - PAD, g(8) + PAD, vias=[g(8)])
     # DN: the inverter's drains, joined on M3 within the column.
-    sd_contact(cell, n0, c[8])
-    landing(cell, n0, c[8])
-    sd_contact(cell, p0, c[8])
-    landing(cell, p0, c[8])
+    sd_contact(cell, n0, c[8], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n0, c[8], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, p0, c[8], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, p0, c[8], rail_space=RUNSET_RAIL_SPACE)
     m3_column(cell, c[8], y_n0 - CAP, y_p0 + CAP)
 
     # WRENA on the two transmission-gate nFET stripes; WRENAN on the two pass
@@ -346,7 +347,7 @@ def build_write_driver(
     # that column's M3 through the pFET's contact to the latch: its keeper
     # drain, its pull-down drain, and the tie of the other half's gates.
     for pad, column, tie, stripe in ((1, 3, tie_w, 4), (7, 5, tie_wn, 3)):
-        sd_contact(cell, n0, c[pad], reach=lvl + CAP)
+        sd_contact(cell, n0, c[pad], reach=lvl + CAP, rail_space=RUNSET_RAIL_SPACE)
         m2_track(
             cell,
             lvl,
@@ -355,12 +356,12 @@ def build_write_driver(
             vias=[c[pad]],
         )
         square(cell, "V2", c[column], lvl)
-        sd_contact(cell, p0, c[column])
-        landing(cell, p0, c[column])
-        sd_contact(cell, k1, c[column])
-        landing(cell, k1, c[column])
-        sd_contact(cell, n1, c[column])
-        landing(cell, n1, c[column])
+        sd_contact(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, k1, c[column], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, k1, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, n1, c[column], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, n1, c[column], rail_space=RUNSET_RAIL_SPACE)
         m3_column(cell, c[column], lvl - CAP, y_n1 + CAP, vias=[tie])
         gate_contact(cell, seam1, [g(stripe)], g(stripe), tie - CAP)
         m2_track(

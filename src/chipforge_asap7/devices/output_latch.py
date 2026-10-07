@@ -36,6 +36,7 @@ from .rowcell import (
     HALF,
     ISLAND_OVERHANG,
     PAD,
+    RUNSET_RAIL_SPACE,
     draw_frame,
     draw_rails,
     gate_contact,
@@ -88,7 +89,7 @@ class OutputLatchSpec:
             raise ValueError(f"fingers must be an even number >= 2, got {self.fingers}")
         bands = self.bands
         n_lo, p_lo = bands["n0"], bands["p0"]
-        y_n, y_p = via_y(n_lo), via_y(p_lo)
+        y_n, y_p = via_y(n_lo, RUNSET_RAIL_SPACE), via_y(p_lo, RUNSET_RAIL_SPACE)
         low, _, high = self.tie_levels
         # The lowest tie sits a track pitch above the 80 nm track, on which
         # QA ties from below.
@@ -154,7 +155,7 @@ class OutputLatchSpec:
     @property
     def n_level(self) -> int:
         """The bottom row's M2 track its n pads reach, a pitch above their via row's landings."""
-        return via_y(self.bands["n0"]) + HALF + 18 + HALF + 3
+        return via_y(self.bands["n0"], RUNSET_RAIL_SPACE) + HALF + 18 + HALF + 3
 
     @property
     def tie_levels(self) -> tuple[int, int, int]:
@@ -279,8 +280,8 @@ def build_output_latch(
     width, height = spec.width, spec.height
     c, g = spec.column_x, spec.gate_x
     seam0, seam1 = spec.stack.seam_ys
-    y_n0, y_p0 = via_y(n0), via_y(p0)
-    y_p1, y_n1 = via_y(p1), via_y(n1)
+    y_n0, y_p0 = via_y(n0, RUNSET_RAIL_SPACE), via_y(p0, RUNSET_RAIL_SPACE)
+    y_p1, y_n1 = via_y(p1, RUNSET_RAIL_SPACE), via_y(n1, RUNSET_RAIL_SPACE)
     lvl = spec.n_level  # 80: QA's tie, and nothing else on the bottom row
     tie_y2, tie_y1, tie_qan = spec.tie_levels
     # The top row's ties mirror the bottom row's about its own seam: two in the
@@ -322,20 +323,20 @@ def build_output_latch(
 
     # Y1: its n drain's column carries M3 up to the p via row, where a short
     # track reaches its p drain, and to its gates' tie.
-    sd_contact(cell, n0, c[0])
-    landing(cell, n0, c[0])
-    sd_contact(cell, p0, c[1])
+    sd_contact(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, p0, c[1], rail_space=RUNSET_RAIL_SPACE)
     m3_column(cell, c[0], y_n0 - CAP, y_p0 + CAP, vias=[tie_y1, y_p0])
     m2_track(cell, y_p0, c[0] - PAD, c[1] + PAD, vias=[c[1]])
     gate_contact(cell, seam0, [g(3)], g(3), tie_y1 + CAP)
     m2_track(cell, tie_y1, c[0] - PAD, g(3) + PAD, vias=[g(3)])
     # Y2: its n drain climbs one column, its p drain another, both to the tie
     # below the seam; the p drain's column carries on up to the inverter.
-    sd_contact(cell, n0, c[4])
-    landing(cell, n0, c[4])
+    sd_contact(cell, n0, c[4], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n0, c[4], rail_space=RUNSET_RAIL_SPACE)
     m3_column(cell, c[4], y_n0 - CAP, tie_y2 + CAP, vias=[tie_y2])
-    sd_contact(cell, p0, c[3])
-    landing(cell, p0, c[3])
+    sd_contact(cell, p0, c[3], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, p0, c[3], rail_space=RUNSET_RAIL_SPACE)
     m3_column(cell, c[3], tie_y2 - CAP, tie_top_y2 + CAP, vias=[tie_y2, tie_top_y2])
     gate_contact(cell, seam0, [g(0)], g(0), tie_y2 - CAP)
     m2_track(cell, tie_y2, g(0) - PAD, c[4] + PAD, vias=[g(0)])
@@ -351,10 +352,10 @@ def build_output_latch(
     # their own column's M3, which also carries Y2N to the tristate's A gates.
     gate_contact(cell, seam1, [g(inv)], g(inv), tie_top_y2 - CAP)
     m2_track(cell, tie_top_y2, g(inv) - PAD, c[inv + 1] + PAD, vias=[g(inv)])
-    sd_contact(cell, p1, c[inv])
-    landing(cell, p1, c[inv])
-    sd_contact(cell, n1, c[inv])
-    landing(cell, n1, c[inv])
+    sd_contact(cell, p1, c[inv], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, p1, c[inv], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, n1, c[inv], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n1, c[inv], rail_space=RUNSET_RAIL_SPACE)
     a_stripes = [g(b + 1) for b in spec.pairs] + [g(b + 4) for b in spec.pairs]
     m3_column(cell, c[inv], y_p1 - CAP, y_n1 + CAP, vias=[tie_a])
     for s in a_stripes:
@@ -390,7 +391,7 @@ def build_output_latch(
     # climbs its own column to it, and the first pair's column is the pin.
     q_p_columns = sorted({b for b in spec.pairs} | {b + 6 for b in spec.pairs})
     for column in q_p_columns:
-        sd_contact(cell, p1, c[column])
+        sd_contact(cell, p1, c[column], rail_space=RUNSET_RAIL_SPACE)
     m2_track(
         cell,
         y_p1,
@@ -399,8 +400,8 @@ def build_output_latch(
         vias=[c[q] for q in q_p_columns],
     )
     for q in q_columns:
-        sd_contact(cell, n1, c[q])
-        landing(cell, n1, c[q])
+        sd_contact(cell, n1, c[q], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, n1, c[q], rail_space=RUNSET_RAIL_SPACE)
         top = height if c[q] == tx["Q"] else y_n1 + CAP
         m3_column(cell, c[q], y_p1 - CAP, top, vias=[y_p1])
 

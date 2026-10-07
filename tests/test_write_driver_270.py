@@ -1,4 +1,4 @@
-"""The write driver on one 270 nm row: the two-row cell's devices, then DRC and flat LVS.
+"""The write driver on one 297 nm row: the two-row cell's devices, then DRC and flat LVS.
 
 The physical tests skip when KLayout or the public runset is missing;
 ``ASAP7_REQUIRE_TOOLS=1`` makes that a failure.
@@ -24,6 +24,8 @@ from chipforge_asap7.devices import (
 from chipforge_asap7.verification.lvs import run_lvs
 
 SPEC = WriteDriver270Spec()
+#: The compact column's amplifier: a 162 nm n band, as the driver's.
+SENSE_AMP = SenseAmpRowSpec(band_height=(162, 162))
 
 
 def _library():
@@ -43,8 +45,8 @@ def _lvs(tmp_path: Path, reference: str) -> bool:
 
 
 def test_one_row_under_the_sense_amplifier_in_a_4_to_1_group():
-    sense_amp = SenseAmpRowSpec()
-    assert SPEC.height == 270
+    sense_amp = SENSE_AMP
+    assert SPEC.height == 297
     assert SPEC.height + sense_amp.height <= 4 * 270
     assert SPEC.width <= sense_amp.width
 
@@ -53,7 +55,7 @@ def test_devices_and_pins_are_the_two_row_cells():
     reference = WriteDriverSpec(n_fins=3, p_fins=3, keeper_fins=1)
     assert SPEC.devices == reference.devices
     assert set(SPEC.pin_positions) == set(WRITE_DRIVER_PINS)
-    assert SPEC.track_x["SA"] == SenseAmpRowSpec().track_x["SA"]  # straight up into the amplifier's
+    assert SPEC.track_x["SA"] == SENSE_AMP.track_x["SA"]  # straight up into the amplifier's
 
 
 def test_in_a_tapped_row_is_drc_clean(asap7_drc):
@@ -71,7 +73,7 @@ def test_in_a_tapped_row_is_drc_clean(asap7_drc):
 def test_mirrored_under_the_sense_amplifier_is_drc_clean(asap7_drc):
     """Its VSS rail is the amplifier's bottom one; each row has its own tap."""
     library = _library()
-    sense_amp = SenseAmpRowSpec()
+    sense_amp = SENSE_AMP
     driver = build_write_driver_270(SPEC, lib=library, draw_pin_labels=False)
     amplifier = build_sense_amp_row(sense_amp, lib=library, draw_pin_labels=False)
     tap = build_row_support(RowSupportSpec(stack=SPEC.stack, kind="tap"), lib=library)
