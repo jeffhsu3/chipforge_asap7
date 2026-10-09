@@ -125,7 +125,7 @@ def test_abutting_style_adds_only_the_enclosure_its_neighbour_supplies(asap7_drc
         ]
     )
     categories = set(asap7_drc(library, top, tag="abutting"))
-    assert categories == NO_TAP_IN_CELL | ROW_END_ENCLOSURE
+    assert categories == NO_TAP_IN_CELL | ROW_END_ENCLOSURE | {"LVT.ACTIVE.EN.1"}
 
 
 def test_abutted_row_residual_does_not_grow_with_the_row(asap7_drc):

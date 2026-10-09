@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,15 +20,13 @@ DRC_DECK_ENV = "ASAP7_DRC_DECK"
 
 
 def find_asap7_drc_deck() -> Path | None:
-    """Locate the public ASAP7 KLayout runset, if it is installed."""
-    override = os.environ.get(DRC_DECK_ENV)
-    candidates = [
-        Path(override) if override else None,
-        Path.home() / "iv4/repos/ASAP7_for_KLayout/drc/drc_ASAP7.lydrc",
-    ]
-    return next(
-        (path for path in candidates if path is not None and path.is_file()), None
-    )
+    """Locate the gdscheck binary."""
+    from chipforge_asap7.verification.drc import find_gdscheck
+
+    try:
+        return find_gdscheck()
+    except FileNotFoundError:
+        return None
 
 
 def find_klayout_or_none() -> Path | None:
@@ -129,59 +125,28 @@ def require_klayout(external_tool) -> Path:
 
 @pytest.fixture
 def asap7_drc(external_tool, tmp_path) -> Callable[..., list[str]]:
-    """Run ASAP7 DRC over a library, and report what it found.
+    """Run ASAP7 DRC over a library via gdscheck, and report what it found.
 
-    The engine is gdscheck (``--suite main``) unless ``ASAP7_DRC_ENGINE=klayout``
-    picks the public KLayout runset.  Returns the violation *categories*
-    rather than a pass/fail, because a cell can be as clean as a cell can be
-    and still trip rules that only a placed design satisfies -- latch-up
-    without a tap row, implant enclosure at the end of an abutting row.
-    Asserting the exact category set keeps those documented instead of
-    waived.
+    Returns the violation *categories* rather than a pass/fail, because a cell
+    can be as clean as a cell can be and still trip rules that only a placed
+    design satisfies -- latch-up without a tap row, implant enclosure at the
+    end of an abutting row. Asserting the exact category set keeps those
+    documented instead of waived.
     """
-    from chipforge_asap7.verification.drc import default_drc_engine, find_gdscheck, run_gdscheck
+    from chipforge_asap7.verification.drc import find_gdscheck, run_gdscheck
 
     def _run(library, top, tag: str = "drc") -> list[str]:
         gds = tmp_path / f"{tag}.gds"
-        if default_drc_engine() == "gdscheck":
-            try:
-                find_gdscheck()
-                found = True
-            except FileNotFoundError:
-                found = False
-            external_tool(found, "gdscheck is not installed (set GDSCHECK)")
-            library.write_gds(str(gds))
-            return [v.category for v in run_gdscheck(gds, tmp_path / f"{tag}_drc", cell_name=top.name)]
-        klayout = find_klayout_or_none()
-        deck = find_asap7_drc_deck()
-        external_tool(
-            klayout is not None and deck is not None,
-            "KLayout and the public ASAP7 DRC deck are not installed "
-            f"(set KLAYOUT_BIN and {DRC_DECK_ENV})",
-        )
-        report = tmp_path / f"{tag}.lyrdb"
+        try:
+            find_gdscheck()
+            found = True
+        except FileNotFoundError:
+            found = False
+        external_tool(found, "gdscheck is not installed (set GDSCHECK)")
         library.write_gds(str(gds))
-        result = subprocess.run(
-            [
-                str(klayout),
-                "-b",
-                "-r",
-                str(deck),
-                "-rd",
-                f"input={gds}",
-                "-rd",
-                f"topcell={top.name}",
-                "-rd",
-                f"output={report}",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
-        items = ET.parse(report).getroot().findall("./items/item")
-        # The runset writes categories quoted, e.g. "'SDT.W.3'".
-        return [(item.findtext("category") or "").strip("'\"") for item in items]
+        return [
+            v.category
+            for v in run_gdscheck(gds, tmp_path / f"{tag}_drc", cell_name=top.name)
+        ]
 
     return _run
