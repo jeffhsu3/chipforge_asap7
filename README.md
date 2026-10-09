@@ -78,15 +78,15 @@ against a unit-fin LVS reference in the tests. The full write-up of each is in
 
 | Spec | What it draws |
 | --- | --- |
-| [`FinFETSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#parametric-finfet) | One four-terminal multi-finger FinFET with its own body tap |
-| [`InverterSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#stacked-band-inverter) | Stacked-band inverter, abutting or isolated; the released `dec_inv_62f_halved_AND` |
-| [`RowSupportSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#row-support--tap-filler-decap) | Tap, filler and decap cells on the same `RowStack` as the logic |
-| [`NandSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#parametric-nand2) | NAND2, the released post-decode gate |
-| [`DriverSliceSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#decoder-sizing-and-the-four-wordline-driver-slice) | Four-wordline decoder slice, sized by `size_decoder` |
-| [`BitlineMuxSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#parametric-bitline-leaf-precharge-and-column-mux) | Precharge and column-mux leaf, stacked into an N:1 mux |
-| [`WriteDriverSpec`, `OutputLatchSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#write-driver-and-output-latch) | Write driver and output latch on the IO row |
-| [`SenseAmpRowSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#sense-amplifier-on-the-io-row) | Current-latched sense amplifier on the IO row |
-| [`IoColumnSpec`](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/devices.md#the-column-io-block) | One port's column IO: mux group, sense amp, latch, write driver |
+| [`FinFETSpec`](docs/finfet.md) | One four-terminal multi-finger FinFET with its own body tap |
+| [`InverterSpec`](docs/row_decoder.md#stacked-band-inverter) | Stacked-band inverter, abutting or isolated; the released `dec_inv_62f_halved_AND` |
+| [`RowSupportSpec`](docs/row_decoder.md#row-support--tap-filler-decap) | Tap, filler and decap cells on the same `RowStack` as the logic |
+| [`NandSpec`](docs/row_decoder.md#parametric-nand2) | NAND2, the released post-decode gate |
+| [`DriverSliceSpec`](docs/row_decoder.md#decoder-sizing-and-the-four-wordline-driver-slice) | Four-wordline decoder slice, sized by `size_decoder` |
+| [`BitlineMuxSpec`](docs/column_io.md#parametric-bitline-leaf-precharge-and-column-mux) | Precharge and column-mux leaf, stacked into an N:1 mux |
+| [`WriteDriverSpec`, `OutputLatchSpec`](docs/column_io.md#write-driver-and-output-latch) | Write driver and output latch on the IO row |
+| [`SenseAmpRowSpec`](docs/column_io.md#sense-amplifier-on-the-io-row) | Current-latched sense amplifier on the IO row |
+| [`IoColumnSpec`](docs/column_io.md#the-column-io-block) | One port's column IO: mux group, sense amp, latch, write driver |
 
 ## Simulation and verification
 
