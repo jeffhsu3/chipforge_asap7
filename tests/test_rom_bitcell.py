@@ -1,4 +1,4 @@
-"""The poly-wordline NOR-ROM tile: grid alignment, programming sites and DRC.
+"""The poly-wordline NOR-ROM: tile, strap row, programming sites and DRC.
 
 The DRC half skips when gdscheck is missing; set ``ASAP7_REQUIRE_TOOLS=1`` to
 make that a failure instead.
@@ -9,8 +9,14 @@ from __future__ import annotations
 import gdspy
 import pytest
 
-from chipforge_asap7.devices import RomBitcellSpec, build_rom_array, build_rom_bitcell
-from chipforge_asap7.devices.rom_bitcell import main
+from chipforge_asap7.devices import (
+    RomArraySpec,
+    RomBitcellSpec,
+    build_rom_array,
+    build_rom_bitcell,
+    build_rom_strap,
+)
+from chipforge_asap7.devices.rom_bitcell import STRAP_HEIGHT, main
 from chipforge_asap7.layout import FIN_PITCH, GATE_PITCH, GATE_WIDTH
 
 #: The array has no body tap yet; a tap within 30 um comes with the periphery.
@@ -69,31 +75,58 @@ def test_sites_land_on_the_drain_stubs():
 
 
 def test_array_places_one_v1_per_programmed_site(boxes_on):
-    spec = RomBitcellSpec()
+    spec = RomArraySpec(6, 3, strap_every=2)
     _library()
     sites = {(0, 0), (3, 1), (5, 2)}
-    cell = build_rom_array(spec, 6, 3, sites)
+    cell = build_rom_array(spec, sites)
     vias = boxes_on(cell, "V1")
     assert len(vias) == len(sites)
     centres = {((x0 + x1) / 2, (y0 + y1) / 2) for x0, y0, x1, y1 in vias}
-    for word, bit in sites:
-        tile, tile_word = divmod(word, 2)
-        x, y = spec.site(tile_word)
-        assert (tile * spec.width + x, bit * spec.height + y) in centres
+    assert centres == {spec.site(w, b) for w, b in sites}
+
+
+def test_rows_step_over_the_straps():
+    spec = RomArraySpec(4, 5, RomBitcellSpec(fins=2), strap_every=2)
+    assert spec.straps == 3
+    assert spec.strap_ys == [0, 270, 540]
+    assert [spec.row_y(b) for b in range(5)] == [108, 189, 378, 459, 648]
+    assert spec.height == 3 * STRAP_HEIGHT + 5 * 81
+    with pytest.raises(IndexError):
+        spec.row_y(5)
+
+
+def test_strap_contacts_every_gate_and_lands_wordlines_on_m3(boxes_on):
+    """Three LIGs per tile, two wordline stacks up to V2, ISO down to the VSS track."""
+    bitcell = RomBitcellSpec()
+    strap = build_rom_strap(bitcell)
+    ligs = boxes_on(strap, "LIG")
+    assert len(ligs) == 3
+    for x_gate in bitcell.gate_xs.values():
+        assert any(x0 < x_gate - 10 and x_gate + 10 < x1 for x0, _, x1, _ in ligs)
+    v2_xs = sorted((x0 + x1) / 2 for x0, _, x1, _ in boxes_on(strap, "V2"))
+    spec = RomArraySpec(2, 1, bitcell)
+    assert v2_xs == [spec.wordline_x(0), spec.wordline_x(1)]
+    assert len(boxes_on(strap, "V1")) == 4  # two wordlines, VSS column, ISO
 
 
 @pytest.mark.parametrize(
-    ("words", "bits", "sites", "error"),
+    ("kwargs", "error"),
     [
-        (3, 1, (), ValueError),
-        (2, 0, (), ValueError),
-        (2, 1, [(2, 0)], IndexError),
+        ({"words": 3, "bits": 1}, ValueError),
+        ({"words": 2, "bits": 0}, ValueError),
+        ({"words": 2, "bits": 1, "strap_every": 0}, ValueError),
+        ({"words": 2.0, "bits": 1}, TypeError),
     ],
 )
-def test_array_rejects_bad_shapes(words, bits, sites, error):
-    _library()
+def test_array_spec_rejects_bad_shapes(kwargs, error):
     with pytest.raises(error):
-        build_rom_array(RomBitcellSpec(), words, bits, sites)
+        RomArraySpec(**kwargs)
+
+
+def test_array_rejects_sites_outside_it():
+    _library()
+    with pytest.raises(IndexError):
+        build_rom_array(RomArraySpec(2, 1), [(2, 0)])
 
 
 @pytest.mark.parametrize("fins", [0, True, 1.5])
@@ -110,7 +143,18 @@ def test_netlist_floats_unprogrammed_drains():
 
 def test_cli_writes_tile_and_array(tmp_path):
     main(["--fins", "1", "--out", str(tmp_path / "tile.gds")])
-    main(["--words", "4", "--bits", "2", "--out", str(tmp_path / "array.gds")])
+    main(
+        [
+            "--words",
+            "4",
+            "--bits",
+            "3",
+            "--strap-every",
+            "2",
+            "--out",
+            str(tmp_path / "array.gds"),
+        ]
+    )
     assert (tmp_path / "tile.gds").stat().st_size > 0
     assert (tmp_path / "array.gds").stat().st_size > 0
 
@@ -118,16 +162,73 @@ def test_cli_writes_tile_and_array(tmp_path):
 @pytest.mark.parametrize("fins", [1, 2, 3])
 @pytest.mark.parametrize("pattern", ["none", "all", "checker"])
 def test_array_drc(asap7_drc, fins, pattern):
-    words, bits = 8, 6
-    every = [(w, b) for w in range(words) for b in range(bits)]
+    spec = RomArraySpec(8, 6, RomBitcellSpec(fins=fins), strap_every=4)
+    every = [(w, b) for w in range(spec.words) for b in range(spec.bits)]
     sites = {
         "none": [],
         "all": every,
         "checker": [(w, b) for w, b in every if (w + b) % 2],
     }[pattern]
     library = _library()
-    top = build_rom_array(
-        RomBitcellSpec(fins=fins), words, bits, sites, lib=library,
-        name=f"rom_f{fins}_{pattern}",
-    )  # fmt: skip
+    top = build_rom_array(spec, sites, lib=library, name=f"rom_f{fins}_{pattern}")
     assert set(asap7_drc(library, top, tag=top.name)) == NO_TAP_IN_ARRAY
+
+
+def test_straps_wire_every_gate(tmp_path):
+    """Extracted nets: WL<w> on its gates, ISO and sources on VSS, bits on BL<b>.
+
+    Read back from GDS in micrometres.  A word transistor's drain reaches its
+    row's bitline exactly when the bit is programmed; otherwise it is a net of
+    its own.
+    """
+    gdstk = pytest.importorskip("gdstk")
+    from chipforge_asap7.verification.connectivity import extract_connectivity
+
+    spec = RomArraySpec(4, 3, RomBitcellSpec(fins=1), strap_every=2)
+    sites = {(0, 0), (1, 0), (3, 1), (2, 2)}
+    library = _library()
+    top = build_rom_array(spec, sites, lib=library)
+    gds = tmp_path / "rom.gds"
+    library.write_gds(str(gds))
+    flat = next(
+        c for c in gdstk.read_gds(str(gds), unit=1e-6).cells if c.name == top.name
+    )
+    flat = flat.copy("flat").flatten()
+    # Tiles abut edge to edge, and the extractor only joins shapes that
+    # overlap; merge each layer first, as a layout extractor would.
+    cell = gdstk.Cell("merged")
+    for layer, datatype in {(p.layer, p.datatype) for p in flat.polygons}:
+        same = [p for p in flat.polygons if (p.layer, p.datatype) == (layer, datatype)]
+        cell.add(*gdstk.boolean(same, [], "or", layer=layer, datatype=datatype))
+    cell.add(*flat.labels)
+
+    iso_per_row = spec.tiles
+    devices, labels = extract_connectivity(
+        cell, expected_channels=spec.bits * (spec.words + iso_per_row)
+    )
+    net = {name: next(iter(ids)) for name, ids in labels.items() if len(ids) == 1}
+    assert {f"WL<{w}>" for w in range(spec.words)} <= net.keys()
+    assert {f"BL<{b}>" for b in range(spec.bits)} <= net.keys()
+    vss = net["VSS"]
+    assert len(set(net.values())) == len(net)  # no two pins short
+
+    gate_x = {}
+    for word in range(spec.words):
+        tile, tile_word = divmod(word, 2)
+        gate = ("WLa", "WLb")[tile_word]
+        gate_x[tile * spec.bitcell.width + spec.bitcell.gate_xs[gate]] = word
+    for device in devices:
+        x, y = (round(c * 1000) for c in device["center"])
+        bit = next(
+            b
+            for b in range(spec.bits)
+            if spec.row_y(b) <= y < spec.row_y(b) + spec.bitcell.height
+        )
+        if x not in gate_x:  # an ISO gate
+            assert device["gate"] == vss
+            continue
+        word = gate_x[x]
+        assert device["gate"] == net[f"WL<{word}>"]
+        assert vss in device["terminals"]
+        (drain,) = set(device["terminals"]) - {vss}
+        assert (drain == net[f"BL<{bit}>"]) == ((word, bit) in sites)

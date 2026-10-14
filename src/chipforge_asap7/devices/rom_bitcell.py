@@ -55,9 +55,12 @@ from .inverter import ACTIVE_ABUT_OVERHANG
 
 __all__ = [
     "ROM_TILE_WORDS",
+    "STRAP_HEIGHT",
+    "RomArraySpec",
     "RomBitcellSpec",
     "build_rom_array",
     "build_rom_bitcell",
+    "build_rom_strap",
 ]
 
 #: Words per tile: two word transistors share one source column.
@@ -74,6 +77,23 @@ STUB_LENGTH = 2 * (HALF + M1_V0_ENCLOSURE)
 #: 26 nm (M1.S.2 asks 25), and the other end faces the neighbouring tile's
 #: stub at 36.
 STUB_REACH = STUB_LENGTH - HALF
+#: Strap row height; see `build_rom_strap` for why it is 108 and not 81.
+STRAP_HEIGHT = 4 * FIN_PITCH
+#: Strap-row levels, from its bottom: the ISO LIG (and its V0), the M2 VSS
+#: track, and the wordline LIGs with their V0/V1/V2 stacks.  The ISO and
+#: wordline LIGs are 31 nm apart (LIG.S.4); the M2 landings stand 28 nm above
+#: the VSS track (M2.S.2's 25, a short edge facing a long one).
+STRAP_ISO_Y = 8
+STRAP_VSS_Y = 9
+STRAP_WL_Y = 55
+#: X of each tile word's strap stack and M3 wordline, from the tile's left edge:
+#: as far from the VSS column (x=54) as its LIG may reach (LIG.GATE.S.9B
+#: keeps it 17 nm from the next gate).
+STRAP_WL_XS = (HALF, 2 * GATE_PITCH - HALF)
+HALF_LIG = 8  # a 16 nm LIG (LIG.W.1): 20 x 16 on the gate is LIG.GATE.A.3's 320 nm²
+LIG_PAST_GATE = 1  # LIG.GATE.EX.1
+CAP = HALF + M1_V0_ENCLOSURE  # 14: M1 past a V0, along the bar
+PAD = HALF + M2_V1_ENCLOSURE  # 17: M2 past a V1
 #: The edge dummy gates and select stop this far outside the array.
 _EDGE = GATE_PITCH
 _GDS_UNIT_METERS = 1e-9
@@ -199,7 +219,7 @@ def build_rom_bitcell(
     """Draw the unprogrammed tile and return the gdspy Cell.
 
     Programming V1s are not part of the tile; `build_rom_array` drops them at
-    `RomBitcellSpec.site`, so one tile serves every bit pattern.  Everything
+    `RomArraySpec.site`, so one tile serves every bit pattern.  Everything
     that abuts -- fins, gates, ACTIVE, select, the VSS column and the bitline --
     runs to the tile edge; the drain column at x=0 is the tile's own and
     reaches 12 nm left of it.
@@ -233,109 +253,252 @@ def build_rom_bitcell(
     return cell
 
 
+@dataclass(frozen=True)
+class RomArraySpec:
+    """`words` x `bits` of `bitcell` tiles, with a strap row under every `strap_every` rows.
+
+    Args:
+        words: wordlines, a multiple of `ROM_TILE_WORDS`; word ``w`` is gate
+            ``w`` from the left.
+        bits: bitlines; bit ``b`` is fin row ``b`` from the bottom.
+        bitcell: the tile.
+        strap_every: bit rows per strap row.  The array starts with a strap,
+            so a wordline's poly runs at most this many rows from its M3.
+    """
+
+    words: int = 16
+    bits: int = 16
+    bitcell: RomBitcellSpec = RomBitcellSpec()
+    strap_every: int = 16
+
+    def __post_init__(self) -> None:
+        for field in ("words", "bits", "strap_every"):
+            value = getattr(self, field)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{field} must be an integer, got {value!r}")
+        if self.words < ROM_TILE_WORDS or self.words % ROM_TILE_WORDS:
+            raise ValueError(f"words must be a positive multiple of {ROM_TILE_WORDS}")
+        if self.bits < 1:
+            raise ValueError(f"bits must be >= 1, got {self.bits}")
+        if self.strap_every < 1:
+            raise ValueError(f"strap_every must be >= 1, got {self.strap_every}")
+
+    @property
+    def cell_name(self) -> str:
+        vt_tag = "" if self.bitcell.vt == "rvt" else f"_{self.bitcell.vt}"
+        return (
+            f"rom_array{vt_tag}_f{self.bitcell.fins}_{self.words}x{self.bits}"
+            f"_s{self.strap_every}"
+        )
+
+    @property
+    def tiles(self) -> int:
+        return self.words // ROM_TILE_WORDS
+
+    @property
+    def straps(self) -> int:
+        return -(-self.bits // self.strap_every)
+
+    @property
+    def width(self) -> int:
+        """Width of the tiled core, without the edge dummies and select."""
+        return self.tiles * self.bitcell.width
+
+    @property
+    def height(self) -> int:
+        """Height of the tiled core: every strap row and every bit row."""
+        return self.straps * STRAP_HEIGHT + self.bits * self.bitcell.height
+
+    @property
+    def strap_ys(self) -> list[int]:
+        """Bottom Y of each strap row."""
+        group = STRAP_HEIGHT + self.strap_every * self.bitcell.height
+        return [g * group for g in range(self.straps)]
+
+    def row_y(self, bit: int) -> int:
+        """Bottom Y of bit row `bit`."""
+        if not 0 <= bit < self.bits:
+            raise IndexError(f"bit {bit} is outside 0..{self.bits - 1}")
+        return (bit // self.strap_every + 1) * STRAP_HEIGHT + bit * self.bitcell.height
+
+    def wordline_x(self, word: int) -> int:
+        """X of word `word`'s M3 strap."""
+        if not 0 <= word < self.words:
+            raise IndexError(f"word {word} is outside 0..{self.words - 1}")
+        tile, tile_word = divmod(word, ROM_TILE_WORDS)
+        return tile * self.bitcell.width + STRAP_WL_XS[tile_word]
+
+    def site(self, word: int, bit: int) -> tuple[float, float]:
+        """Programming V1 centre for ``(word, bit)`` in array coordinates."""
+        self.wordline_x(word)  # range check
+        tile, tile_word = divmod(word, ROM_TILE_WORDS)
+        x, y = self.bitcell.site(tile_word)
+        return tile * self.bitcell.width + x, self.row_y(bit) + y
+
+
+def build_rom_strap(
+    spec: RomBitcellSpec, *, name: str | None = None, lib: Any = None
+) -> Any:
+    """Draw the strap row for `spec`'s tile and return the gdspy Cell.
+
+    The row has no ACTIVE.  Each gate gets an LIG, a V0 and an M1 bar:
+
+    - ``WLa`` and ``WLb`` go on up through V1, an M2 landing and V2 to their
+      M3 strap.  Their V0s sit at the LIG's far end, flush with it, so the bars
+      stand 27 nm off the VSS column (M1.S.2: their 28 nm sides are short).
+    - ``ISO``'s bar drops a V1 onto the row's M2 VSS track, which takes a V1
+      from the VSS column too.  Its LIG sits on a lower level than the
+      wordlines': on one level the 16 nm LIG ends would face across 16 nm,
+      and LIG.S.4 wants 31.
+
+    The row is 108 nm tall because of a one-fin tile.  There a wordline bar
+    must keep 31 nm from the drain stubs above and below, and its LIG 31 nm
+    from the ISO LIG.  81 nm would leave room for neither.
+    """
+    cell = _new_cell(name or _strap_name(spec), lib)
+    width, height = spec.width, STRAP_HEIGHT
+    gates = spec.gate_xs
+
+    box(cell, "NSELECT", 0, 0, width, height)
+    if vt_layer := VT_LAYERS[spec.vt]:
+        box(cell, vt_layer, 0, 0, width, height)
+    for k in range(height // FIN_PITCH):
+        y_fin = ACTIVE_ENC + k * FIN_PITCH
+        box(cell, "FIN", 0, y_fin, width, y_fin + FIN_WIDTH)
+    for x_gate in gates.values():
+        box(cell, "GATE", x_gate - HALF_GATE, 0, x_gate + HALF_GATE, height)
+    x_s = spec.sd_xs["S"]
+    box(cell, "M1", x_s - HALF, 0, x_s + HALF, height)
+
+    # ISO: LIG just wide enough for its gate, V0 centred, bar down to VSS.
+    x_iso, y = gates["ISO"], STRAP_ISO_Y
+    box(cell, "LIG", x_iso - HALF_GATE - LIG_PAST_GATE, y - HALF_LIG,
+        x_iso + HALF_GATE + LIG_PAST_GATE, y + HALF_LIG)  # fmt: skip
+    _square(cell, "V0", x_iso, y)
+    box(cell, "M1", x_iso - HALF, y - CAP - 1, x_iso + HALF, STRAP_VSS_Y + CAP)
+    box(cell, "M2", 0, STRAP_VSS_Y - HALF, width, STRAP_VSS_Y + HALF)
+    for x in (x_s, x_iso):
+        _square(cell, "V1", x, STRAP_VSS_Y)
+
+    # WLa and WLb: LIG from the gate out to the V0, which is flush with its end.
+    y = STRAP_WL_Y
+    for tile_word, gate in enumerate(("WLa", "WLb")):
+        x_gate, x_via = gates[gate], STRAP_WL_XS[tile_word]
+        near = x_gate + (HALF_GATE + LIG_PAST_GATE) * (1 if x_via < x_gate else -1)
+        far = x_via - HALF if x_via < x_gate else x_via + HALF
+        box(cell, "LIG", near, y - HALF_LIG, far, y + HALF_LIG)
+        _square(cell, "V0", x_via, y)
+        box(cell, "M1", x_via - HALF, y - CAP, x_via + HALF, y + CAP)
+        _square(cell, "V1", x_via, y)
+        box(cell, "M2", x_via - PAD, y - HALF, x_via + PAD, y + HALF)
+        _square(cell, "V2", x_via, y)
+
+    box(cell, "BOUNDARY", 0, 0, width, height)
+    return cell
+
+
+def _strap_name(spec: RomBitcellSpec) -> str:
+    return "rom_strap" + ("" if spec.vt == "rvt" else f"_{spec.vt}")
+
+
+def _cell(lib: Any, name: str, build: Any) -> Any:
+    """`lib`'s cell `name`, or a fresh one from `build`; tiles are shared across arrays."""
+    if lib is not None and name in lib.cells:
+        return lib.cells[name]
+    return build()
+
+
 def build_rom_array(
-    spec: RomBitcellSpec,
-    words: int,
-    bits: int,
+    spec: RomArraySpec,
     programmed: Iterable[tuple[int, int]] = (),
     *,
     name: str | None = None,
     lib: Any = None,
 ) -> Any:
-    """Tile `words` x `bits` and close its edges; return the gdspy Cell.
+    """Tile `spec`, add its straps and close its edges; return the gdspy Cell.
 
-    `programmed` holds ``(word, bit)`` pairs that get a V1.  Word ``w`` is
-    gate ``w`` from the left; bit ``b`` is row ``b`` from the bottom, with its
-    bitline ``BL<b>`` on M2.  The edges are what a lone tile cannot provide:
-    a dummy gate and an 8 nm ACTIVE overhang at each end of every row (25 nm
-    past the last gate on it, GATE.ACTIVE.EX.2, and 9 nm short of the dummy,
-    GATE.ACTIVE.S.4), gates run one fin pitch below the bottom row, the
-    bitlines carried out past the first drain's V1, and select around the lot.
+    `programmed` holds ``(word, bit)`` pairs that get a V1.  Bit ``b``'s
+    bitline is ``BL<b>`` on M2, word ``w``'s wordline ``WL<w>`` on M3.  The
+    edges are what a lone tile cannot provide:
 
-    Not here yet: wordline straps, the ISO tie to VSS and a body tap, which
-    belong to the periphery.  Until then the gates float and the array reports
-    ACTIVE.LUP.1.
+    - a dummy gate at each end of every row, and an 8 nm ACTIVE overhang.
+      That is 25 nm past the last gate on it (GATE.ACTIVE.EX.2) and 9 nm short
+      of the dummy (GATE.ACTIVE.S.4);
+    - the bitlines carried out past the first drain's V1;
+    - select around the lot.
+
+    There is no body tap yet, so the array reports ACTIVE.LUP.1.
     """
-    if words < ROM_TILE_WORDS or words % ROM_TILE_WORDS:
-        raise ValueError(f"words must be a positive multiple of {ROM_TILE_WORDS}")
-    if bits < 1:
-        raise ValueError(f"bits must be >= 1, got {bits}")
     sites = set(programmed)
     for word, bit in sites:
-        if not (0 <= word < words and 0 <= bit < bits):
+        if not (0 <= word < spec.words and 0 <= bit < spec.bits):
             raise IndexError(
-                f"programmed site {(word, bit)} is outside {words} x {bits}"
+                f"programmed site {(word, bit)} is outside {spec.words} x {spec.bits}"
             )
 
     gdspy = require_gdspy()
-    tile = build_rom_bitcell(spec, lib=lib)
-    cell = _new_cell(name or f"rom_array_f{spec.fins}_{words}x{bits}", lib)
-    tiles = words // ROM_TILE_WORDS
-    width, height = tiles * spec.width, bits * spec.height
-    cell.add(
-        gdspy.CellArray(tile, tiles, bits, (spec.width, spec.height), origin=(0, 0))
-    )
-
-    act_lo, act_hi = spec.active_span
-    y_bot = -FIN_PITCH
-    for row in range(bits):
-        y0 = row * spec.height
-        box(cell, "ACTIVE", -ACTIVE_ABUT_OVERHANG, y0 + act_lo, 0, y0 + act_hi)
-        box(
-            cell,
-            "ACTIVE",
-            width,
-            y0 + act_lo,
-            width + ACTIVE_ABUT_OVERHANG,
-            y0 + act_hi,
+    bitcell = spec.bitcell
+    tile = _cell(lib, bitcell.cell_name, lambda: build_rom_bitcell(bitcell, lib=lib))
+    strap = _cell(lib, _strap_name(bitcell), lambda: build_rom_strap(bitcell, lib=lib))
+    cell = _new_cell(name or spec.cell_name, lib)
+    width, height = spec.width, spec.height
+    for y_strap in spec.strap_ys:
+        cell.add(
+            gdspy.CellArray(strap, spec.tiles, 1, (bitcell.width, 0), (0, y_strap))
         )
-        y_bl = y0 + spec.contact_y
-        box(
-            cell,
-            "M2",
-            -HALF - M2_V1_ENCLOSURE - GATE_PITCH,
-            y_bl - HALF,
-            0,
-            y_bl + HALF,
-        )
-        _label(cell, f"BL<{row}>", "M2", (-GATE_PITCH, y_bl))
+    for first in range(0, spec.bits, spec.strap_every):
+        rows = min(spec.strap_every, spec.bits - first)
+        cell.add(
+            gdspy.CellArray(
+                tile, spec.tiles, rows, (bitcell.width, bitcell.height),
+                (0, spec.row_y(first)),
+            )
+        )  # fmt: skip
 
-    # The tiles' gates continue down one fin pitch, past the bottom row's
-    # ACTIVE; the two dummies span the same height.
-    for x_gate in [-GATE_PITCH // 2, width + GATE_PITCH // 2]:
-        box(cell, "GATE", x_gate - HALF_GATE, y_bot, x_gate + HALF_GATE, height)
-    for t in range(tiles):
-        for x_gate in spec.gate_xs.values():
-            x = t * spec.width + x_gate
-            box(cell, "GATE", x - HALF_GATE, y_bot, x + HALF_GATE, 0)
-    y_fin = ACTIVE_ENC - FIN_PITCH
-    box(cell, "FIN", -_EDGE, y_fin, width + _EDGE, y_fin + FIN_WIDTH)
-    for k in range(bits * (spec.fins + 1)):
+    act_lo, act_hi = bitcell.active_span
+    for bit in range(spec.bits):
+        y0 = spec.row_y(bit)
+        for x0, x1 in (
+            (-ACTIVE_ABUT_OVERHANG, 0),
+            (width, width + ACTIVE_ABUT_OVERHANG),
+        ):
+            box(cell, "ACTIVE", x0, y0 + act_lo, x1, y0 + act_hi)
+        y_bl = y0 + bitcell.contact_y
+        box(cell, "M2", -PAD - GATE_PITCH, y_bl - HALF, 0, y_bl + HALF)
+        _label(cell, f"BL<{bit}>", "M2", (-GATE_PITCH, y_bl))
+
+    for word in range(spec.words):
+        x = spec.wordline_x(word)
+        box(cell, "M3", x - HALF, 0, x + HALF, height)
+        _label(cell, f"WL<{word}>", "M3", (x, height - HALF))
+    for x_gate in (-GATE_PITCH // 2, width + GATE_PITCH // 2):
+        box(cell, "GATE", x_gate - HALF_GATE, 0, x_gate + HALF_GATE, height)
+    for k in range(height // FIN_PITCH):
         y_fin = ACTIVE_ENC + k * FIN_PITCH
         for x0, x1 in ((-_EDGE, 0), (width, width + _EDGE)):
             box(cell, "FIN", x0, y_fin, x1, y_fin + FIN_WIDTH)
 
-    # Select reaches 46 nm past ACTIVE across the rows and 27 nm past it up and
-    # down (NSELECT.ACTIVE.EN.1-2); the frame below covers the margin the
-    # tiles leave.
-    sel_x0, sel_x1 = (
-        -ACTIVE_ABUT_OVERHANG - SELECT_X_ENC,
-        width + ACTIVE_ABUT_OVERHANG + SELECT_X_ENC,
-    )
-    sel_y0, sel_y1 = y_bot - SELECT_Y_ENC, height + SELECT_Y_ENC
-    vt_layer = VT_LAYERS[spec.vt]
+    # Select reaches 46 nm past ACTIVE across the rows (NSELECT.ACTIVE.EN.1)
+    # and one fin pitch past the gate ends; the frame covers what the tiles
+    # leave.
+    sel_x0 = -ACTIVE_ABUT_OVERHANG - SELECT_X_ENC
+    sel_x1 = width + ACTIVE_ABUT_OVERHANG + SELECT_X_ENC
+    sel_y0, sel_y1 = -SELECT_Y_ENC, height + SELECT_Y_ENC
+    vt_layer = VT_LAYERS[bitcell.vt]
     for layer in ("NSELECT", vt_layer) if vt_layer else ("NSELECT",):
         box(cell, layer, sel_x0, sel_y0, 0, sel_y1)
         box(cell, layer, width, sel_y0, sel_x1, sel_y1)
         box(cell, layer, 0, sel_y0, width, 0)
         box(cell, layer, 0, height, width, sel_y1)
 
-    for t in range(tiles):
-        _label(cell, "VSS", "M1", (t * spec.width + spec.sd_xs["S"], height / 2))
+    # The bottom strap's VSS V1 sits on the array edge; carry each VSS column
+    # on below it so the via keeps its end-cap (V1.M1.EN.1).
+    for t in range(spec.tiles):
+        x_s = t * bitcell.width + bitcell.sd_xs["S"]
+        box(cell, "M1", x_s - HALF, -HALF, x_s + HALF, 0)
+        _label(cell, "VSS", "M1", (x_s, HALF))
     for word, bit in sorted(sites):
-        tile_x, tile_word = divmod(word, ROM_TILE_WORDS)
-        x, y = spec.site(tile_word)
-        _square(cell, "V1", tile_x * spec.width + x, bit * spec.height + y)
+        _square(cell, "V1", *spec.site(word, bit))
 
     box(cell, "BOUNDARY", sel_x0, sel_y0, sel_x1, sel_y1)
     return cell
@@ -360,11 +523,13 @@ def main(argv: list[str] | None = None) -> None:
                 "Words in a test array (a multiple of 2); 0 writes the tile.",
             ),
             Option("bits", int, 1, "Bits (rows) in the test array."),
+            Option("strap_every", int, 16, "Bit rows per wordline strap row."),
         ),
     )
     spec = args.spec
     if args.words:
-        build = lambda lib: build_rom_array(spec, args.words, args.bits, lib=lib)
+        array = RomArraySpec(args.words, args.bits, spec, args.strap_every)
+        build = lambda lib: build_rom_array(array, lib=lib)
     else:
         build = lambda lib: build_rom_bitcell(spec, lib=lib)
     cell, out = write_gds(build, args.out)
