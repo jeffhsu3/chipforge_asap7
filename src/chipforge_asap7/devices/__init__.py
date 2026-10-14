@@ -48,6 +48,7 @@ from .output_latch_270 import (
     build_output_latch_270,
     render_output_latch_270_lvs_schematic,
 )
+from .rom_bitcell import ROM_TILE_WORDS, RomBitcellSpec, build_rom_array, build_rom_bitcell
 from .row import RowBand, RowStack
 from .row_support import (
     ROW_SUPPORT_KINDS,
@@ -79,6 +80,7 @@ __all__ = [
     "NAND_PINS",
     "OUTPUT_LATCH_PINS",
     "OUTPUT_LATCH_270_PINS",
+    "ROM_TILE_WORDS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
     "TRISTATE_PINS",
@@ -95,6 +97,7 @@ __all__ = [
     "NandSpec",
     "OutputLatchSpec",
     "OutputLatch270Spec",
+    "RomBitcellSpec",
     "RowBand",
     "RowStack",
     "RowSupportSpec",
@@ -126,6 +129,8 @@ __all__ = [
     "build_nand_row",
     "build_output_latch",
     "build_output_latch_270",
+    "build_rom_array",
+    "build_rom_bitcell",
     "build_row_support",
     "build_sense_amp_row",
     "build_staggered_io_column",
