@@ -50,17 +50,26 @@ from ..layout.grid import FIN_PITCH, FIN_WIDTH, GATE_PITCH, GATE_WIDTH
 from ..layout.layers import PIN_LAYERS, box, require_gdspy
 from ..layout.rules import CONTACT_SIZE, M1_V0_ENCLOSURE, M2_V1_ENCLOSURE
 from .cli import Option, parse_spec, write_gds
-from .finfet import ACTIVE_ENC, SD_BAR_WIDTH, SELECT_X_ENC, SELECT_Y_ENC, VT_LAYERS
+from .finfet import (
+    ACTIVE_ENC,
+    SD_BAR_WIDTH,
+    SELECT_X_ENC,
+    SELECT_Y_ENC,
+    TAP_ACTIVE_WIDTH,
+    VT_LAYERS,
+)
 from .inverter import ACTIVE_ABUT_OVERHANG
 
 __all__ = [
     "ROM_TILE_WORDS",
     "STRAP_HEIGHT",
+    "TAP_HEIGHT",
     "RomArraySpec",
     "RomBitcellSpec",
     "build_rom_array",
     "build_rom_bitcell",
     "build_rom_strap",
+    "build_rom_tap",
 ]
 
 #: Words per tile: two word transistors share one source column.
@@ -90,6 +99,14 @@ STRAP_WL_Y = 55
 #: as far from the VSS column (x=54) as its LIG may reach (LIG.GATE.S.9B
 #: keeps it 17 nm from the next gate).
 STRAP_WL_XS = (HALF, 2 * GATE_PITCH - HALF)
+#: Tap row height: one fin pitch of n-select clearance above the last bit row
+#: (NSELECT.ACTIVE.EN.2) and two of p+ tie.  The tie is 16 nm wide, so it
+#: takes two pitches to reach ACTIVE.A.1A's 864 nm².
+TAP_TIE_HEIGHT = 2 * FIN_PITCH
+TAP_HEIGHT = FIN_PITCH + TAP_TIE_HEIGHT
+#: Every n-type ACTIVE must lie within this reach of a substrate tap
+#: (ACTIVE.LUP.1).  The array's only tap row is along its top edge.
+LATCHUP_REACH = 30_000
 HALF_LIG = 8  # a 16 nm LIG (LIG.W.1): 20 x 16 on the gate is LIG.GATE.A.3's 320 nm²
 LIG_PAST_GATE = 1  # LIG.GATE.EX.1
 CAP = HALF + M1_V0_ENCLOSURE  # 14: M1 past a V0, along the bar
@@ -282,6 +299,11 @@ class RomArraySpec:
             raise ValueError(f"bits must be >= 1, got {self.bits}")
         if self.strap_every < 1:
             raise ValueError(f"strap_every must be >= 1, got {self.strap_every}")
+        if self.height > LATCHUP_REACH:
+            raise ValueError(
+                f"the array is {self.height} nm tall; its bottom row would be "
+                f"further than {LATCHUP_REACH} nm from the tap row (ACTIVE.LUP.1)"
+            )
 
     @property
     def cell_name(self) -> str:
@@ -306,7 +328,12 @@ class RomArraySpec:
 
     @property
     def height(self) -> int:
-        """Height of the tiled core: every strap row and every bit row."""
+        """Height of the tiled core: every strap row, every bit row and the tap row."""
+        return self.tap_y + TAP_HEIGHT
+
+    @property
+    def tap_y(self) -> int:
+        """Bottom Y of the tap row, which sits on the last bit row."""
         return self.straps * STRAP_HEIGHT + self.bits * self.bitcell.height
 
     @property
@@ -397,6 +424,50 @@ def build_rom_strap(
     return cell
 
 
+def build_rom_tap(
+    spec: RomBitcellSpec, *, name: str | None = None, lib: Any = None
+) -> Any:
+    """Draw the tap row for `spec`'s tile and return the gdspy Cell.
+
+    The tap is the tile's source column again, but p+ and on the substrate:
+    a 16 nm ACTIVE (ACTIVE.W.3) between ``WLa`` and ``WLb``, 9 nm clear of
+    each (GATE.ACTIVE.S.4), whose LISD and V0 land on the VSS column that
+    already runs through it.  No gate crosses it, so the wordlines pass
+    through the row untouched.
+
+    The bottom fin pitch holds no ACTIVE: it is the 27 nm the last bit row's
+    NSELECT reaches past its ACTIVE.  The tie fills the two pitches above it,
+    16 x 54 nm being ACTIVE.A.1A's 864 nm², and the array's PSELECT frame
+    covers the 27 nm above it.
+    """
+    cell = _new_cell(name or _tap_name(spec), lib)
+    width, height = spec.width, TAP_HEIGHT
+    box(cell, "PSELECT", 0, 0, width, height)
+    if vt_layer := VT_LAYERS[spec.vt]:
+        box(cell, vt_layer, 0, 0, width, height)
+    for k in range(height // FIN_PITCH):
+        y_fin = ACTIVE_ENC + k * FIN_PITCH
+        box(cell, "FIN", 0, y_fin, width, y_fin + FIN_WIDTH)
+    for x_gate in spec.gate_xs.values():
+        box(cell, "GATE", x_gate - HALF_GATE, 0, x_gate + HALF_GATE, height)
+
+    x_s = spec.sd_xs["S"]
+    act_lo, act_hi = height - TAP_TIE_HEIGHT, height
+    half_tie = TAP_ACTIVE_WIDTH // 2
+    box(cell, "ACTIVE", x_s - half_tie, act_lo, x_s + half_tie, act_hi)
+    box(cell, "SDT", x_s - HALF_SD, act_lo, x_s + HALF_SD, act_hi)
+    box(cell, "LISD", x_s - HALF_SD, act_lo, x_s + HALF_SD, act_hi)
+    _square(cell, "V0", x_s, act_lo + TAP_TIE_HEIGHT // 2)
+    box(cell, "M1", x_s - HALF, 0, x_s + HALF, height)
+
+    box(cell, "BOUNDARY", 0, 0, width, height)
+    return cell
+
+
+def _tap_name(spec: RomBitcellSpec) -> str:
+    return "rom_tap" + ("" if spec.vt == "rvt" else f"_{spec.vt}")
+
+
 def _strap_name(spec: RomBitcellSpec) -> str:
     return "rom_strap" + ("" if spec.vt == "rvt" else f"_{spec.vt}")
 
@@ -425,9 +496,8 @@ def build_rom_array(
       That is 25 nm past the last gate on it (GATE.ACTIVE.EX.2) and 9 nm short
       of the dummy (GATE.ACTIVE.S.4);
     - the bitlines carried out past the first drain's V1;
-    - select around the lot.
-
-    There is no body tap yet, so the array reports ACTIVE.LUP.1.
+    - select around the lot: NSELECT beside the rows, PSELECT around the
+      tap row along the top.
     """
     sites = set(programmed)
     for word, bit in sites:
@@ -440,12 +510,14 @@ def build_rom_array(
     bitcell = spec.bitcell
     tile = _cell(lib, bitcell.cell_name, lambda: build_rom_bitcell(bitcell, lib=lib))
     strap = _cell(lib, _strap_name(bitcell), lambda: build_rom_strap(bitcell, lib=lib))
+    tap = _cell(lib, _tap_name(bitcell), lambda: build_rom_tap(bitcell, lib=lib))
     cell = _new_cell(name or spec.cell_name, lib)
     width, height = spec.width, spec.height
     for y_strap in spec.strap_ys:
         cell.add(
             gdspy.CellArray(strap, spec.tiles, 1, (bitcell.width, 0), (0, y_strap))
         )
+    cell.add(gdspy.CellArray(tap, spec.tiles, 1, (bitcell.width, 0), (0, spec.tap_y)))
     for first in range(0, spec.bits, spec.strap_every):
         rows = min(spec.strap_every, spec.bits - first)
         cell.add(
@@ -480,16 +552,24 @@ def build_rom_array(
 
     # Select reaches 46 nm past ACTIVE across the rows (NSELECT.ACTIVE.EN.1)
     # and one fin pitch past the gate ends; the frame covers what the tiles
-    # leave.
+    # leave.  It is n-type beside the rows and p-type beside and above the
+    # tap row.
     sel_x0 = -ACTIVE_ABUT_OVERHANG - SELECT_X_ENC
     sel_x1 = width + ACTIVE_ABUT_OVERHANG + SELECT_X_ENC
     sel_y0, sel_y1 = -SELECT_Y_ENC, height + SELECT_Y_ENC
-    vt_layer = VT_LAYERS[bitcell.vt]
-    for layer in ("NSELECT", vt_layer) if vt_layer else ("NSELECT",):
-        box(cell, layer, sel_x0, sel_y0, 0, sel_y1)
-        box(cell, layer, width, sel_y0, sel_x1, sel_y1)
-        box(cell, layer, 0, sel_y0, width, 0)
-        box(cell, layer, 0, height, width, sel_y1)
+    for layer, y0, y1 in (
+        ("NSELECT", sel_y0, spec.tap_y),
+        ("PSELECT", spec.tap_y, sel_y1),
+    ):
+        box(cell, layer, sel_x0, y0, 0, y1)
+        box(cell, layer, width, y0, sel_x1, y1)
+    box(cell, "NSELECT", 0, sel_y0, width, 0)
+    box(cell, "PSELECT", 0, height, width, sel_y1)
+    if vt_layer := VT_LAYERS[bitcell.vt]:
+        box(cell, vt_layer, sel_x0, sel_y0, 0, sel_y1)
+        box(cell, vt_layer, width, sel_y0, sel_x1, sel_y1)
+        box(cell, vt_layer, 0, sel_y0, width, 0)
+        box(cell, vt_layer, 0, height, width, sel_y1)
 
     # The bottom strap's VSS V1 sits on the array edge; carry each VSS column
     # on below it so the via keeps its end-cap (V1.M1.EN.1).

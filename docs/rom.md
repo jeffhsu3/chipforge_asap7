@@ -96,23 +96,43 @@ y (strap row)
 x:    9    27        54        81    99         135
 ```
 
+## Tap row
+
+An 81 nm tap row along the top of the array ties the substrate to VSS
+(ACTIVE.LUP.1). Each tile's tie is its source column again, now p+:
+
+- **Tie:** a 16 x 54 nm p+ ACTIVE between `WLa` and `WLb`, 9 nm clear of each
+  (ACTIVE.W.3, GATE.ACTIVE.S.4). Its two fin pitches are what ACTIVE.A.1A's
+  864 nm² needs at that width.
+- **Contact:** LISD and a V0 onto the VSS column, which already runs through
+  the row.
+- **Gates:** no gate crosses the tie, so the wordline poly runs on through
+  untouched.
+- **Select:** the bottom fin pitch is empty, because the last bit row's NSELECT
+  reaches 27 nm past its ACTIVE. The array's frame is PSELECT beside and above
+  the tap row, and NSELECT elsewhere.
+
+One row covers an array up to 30 um tall. `RomArraySpec` refuses a taller one.
+
 ## Status
 
-`build_rom_array` builds the strap rows and closes the array's edges: dummy
-gates, ACTIVE overhangs and select. gdscheck reports only ACTIVE.LUP.1 on it,
-for 1 to 3 fins with no bits, every bit or a checkerboard programmed.
-ACTIVE.LUP.1 fires because the array has no body tap yet.
+`build_rom_array` builds the strap rows and the tap row, then closes the
+array's edges: dummy gates, ACTIVE overhangs and select. gdscheck reports no
+violations on it:
+
+- 1 to 3 fins, with no bits, every bit or a checkerboard programmed;
+- LVT and SLVT tiles;
+- arrays up to 128 x 33.
 
 `test_straps_wire_every_gate` extracts the nets and checks that:
 
 - each word transistor's gate is on its `WL<w>`;
-- every source and every `ISO` gate is on `VSS`;
+- every source, every `ISO` gate and every tap tie is on `VSS`;
 - a drain is on `BL<b>` exactly when its bit is programmed.
 
 It needs gdstk, which isn't a project dependency, and skips without it.
 
 Still to do, in the periphery:
 
-- Add a body tap.
 - A transposed decoder: words are columns here, and bits are rows.
 - KLayout LVS against `RomBitcellSpec.netlist`.

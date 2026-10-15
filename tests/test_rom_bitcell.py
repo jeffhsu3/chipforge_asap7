@@ -15,12 +15,15 @@ from chipforge_asap7.devices import (
     build_rom_array,
     build_rom_bitcell,
     build_rom_strap,
+    build_rom_tap,
 )
-from chipforge_asap7.devices.rom_bitcell import STRAP_HEIGHT, main
+from chipforge_asap7.devices.rom_bitcell import (
+    LATCHUP_REACH,
+    STRAP_HEIGHT,
+    TAP_HEIGHT,
+    main,
+)
 from chipforge_asap7.layout import FIN_PITCH, GATE_PITCH, GATE_WIDTH
-
-#: The array has no body tap yet; a tap within 30 um comes with the periphery.
-NO_TAP_IN_ARRAY = {"ACTIVE.LUP.1"}
 
 
 def _library():
@@ -90,7 +93,8 @@ def test_rows_step_over_the_straps():
     assert spec.straps == 3
     assert spec.strap_ys == [0, 270, 540]
     assert [spec.row_y(b) for b in range(5)] == [108, 189, 378, 459, 648]
-    assert spec.height == 3 * STRAP_HEIGHT + 5 * 81
+    assert spec.tap_y == 3 * STRAP_HEIGHT + 5 * 81
+    assert spec.height == spec.tap_y + TAP_HEIGHT
     with pytest.raises(IndexError):
         spec.row_y(5)
 
@@ -107,6 +111,30 @@ def test_strap_contacts_every_gate_and_lands_wordlines_on_m3(boxes_on):
     spec = RomArraySpec(2, 1, bitcell)
     assert v2_xs == [spec.wordline_x(0), spec.wordline_x(1)]
     assert len(boxes_on(strap, "V1")) == 4  # two wordlines, VSS column, ISO
+
+
+def test_tap_ties_p_plus_active_to_the_vss_column(boxes_on):
+    """One 16 nm p+ tie per tile, on the VSS column and clear of every gate."""
+    bitcell = RomBitcellSpec()
+    tap = build_rom_tap(bitcell)
+    (active,) = boxes_on(tap, "ACTIVE")
+    x0, y0, x1, y1 = active
+    x_s = bitcell.sd_xs["S"]
+    assert (x0 + x1) / 2 == x_s and x1 - x0 == 16
+    assert (y0, y1) == (27, TAP_HEIGHT)
+    assert (x1 - x0) * (y1 - y0) >= 864  # ACTIVE.A.1A
+    assert boxes_on(tap, "PSELECT") == [(0, 0, bitcell.width, TAP_HEIGHT)]
+    assert boxes_on(tap, "NSELECT") == []
+    (v0,) = boxes_on(tap, "V0")
+    assert (v0[0] + v0[2]) / 2 == x_s
+    for gx0, _, gx1, _ in boxes_on(tap, "GATE"):
+        assert gx1 + 9 <= x0 or x1 + 9 <= gx0  # GATE.ACTIVE.S.4
+
+
+def test_array_too_tall_for_one_tap_row():
+    rows = LATCHUP_REACH // 81
+    with pytest.raises(ValueError, match="ACTIVE.LUP.1"):
+        RomArraySpec(2, rows, RomBitcellSpec(fins=2))
 
 
 @pytest.mark.parametrize(
@@ -171,11 +199,11 @@ def test_array_drc(asap7_drc, fins, pattern):
     }[pattern]
     library = _library()
     top = build_rom_array(spec, sites, lib=library, name=f"rom_f{fins}_{pattern}")
-    assert set(asap7_drc(library, top, tag=top.name)) == NO_TAP_IN_ARRAY
+    assert set(asap7_drc(library, top, tag=top.name)) == set()
 
 
 def test_straps_wire_every_gate(tmp_path):
-    """Extracted nets: WL<w> on its gates, ISO and sources on VSS, bits on BL<b>.
+    """Extracted nets: WL<w> on its gates, ISO, sources and taps on VSS, bits on BL<b>.
 
     Read back from GDS in micrometres.  A word transistor's drain reaches its
     row's bitline exactly when the bit is programmed; otherwise it is a net of
@@ -201,6 +229,15 @@ def test_straps_wire_every_gate(tmp_path):
         same = [p for p in flat.polygons if (p.layer, p.datatype) == (layer, datatype)]
         cell.add(*gdstk.boolean(same, [], "or", layer=layer, datatype=datatype))
     cell.add(*flat.labels)
+    # Name each tap tie's LISD, so its net can be checked against VSS.
+    from chipforge_asap7.verification.connectivity import LISD, PIN_TEXTTYPE
+
+    y_tie = (spec.tap_y + TAP_HEIGHT - 27) / 1000
+    for t in range(spec.tiles):
+        x_tie = (t * spec.bitcell.width + spec.bitcell.sd_xs["S"]) / 1000
+        cell.add(
+            gdstk.Label(f"TAP{t}", (x_tie, y_tie), layer=LISD, texttype=PIN_TEXTTYPE)
+        )
 
     iso_per_row = spec.tiles
     devices, labels = extract_connectivity(
@@ -210,6 +247,7 @@ def test_straps_wire_every_gate(tmp_path):
     assert {f"WL<{w}>" for w in range(spec.words)} <= net.keys()
     assert {f"BL<{b}>" for b in range(spec.bits)} <= net.keys()
     vss = net["VSS"]
+    assert all(net.pop(f"TAP{t}") == vss for t in range(spec.tiles))
     assert len(set(net.values())) == len(net)  # no two pins short
 
     gate_x = {}

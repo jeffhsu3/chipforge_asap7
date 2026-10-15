@@ -55,6 +55,7 @@ from .rom_bitcell import (
     build_rom_array,
     build_rom_bitcell,
     build_rom_strap,
+    build_rom_tap,
 )
 from .row import RowBand, RowStack
 from .row_support import (
@@ -140,6 +141,7 @@ __all__ = [
     "build_rom_array",
     "build_rom_bitcell",
     "build_rom_strap",
+    "build_rom_tap",
     "build_row_support",
     "build_sense_amp_row",
     "build_staggered_io_column",
