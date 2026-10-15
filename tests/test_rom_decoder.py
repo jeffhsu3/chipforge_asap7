@@ -84,6 +84,21 @@ def test_rails_sit_on_the_m4_lattice_inside_their_pair():
         )
 
 
+@pytest.mark.parametrize(("words", "interleave"), [(16, 8), (256, 8), (32, 16)])
+def test_straps_stand_on_every_rows_end(words, interleave):
+    """Rows are padded to one span; each supply has a strap inside each end."""
+    spec = _spec(words, interleave=interleave)
+    lo, hi = spec.rows_span
+    left, right = spec.slots_span
+    assert (left - lo, hi - right) == (6 * GATE_PITCH, 4 * GATE_PITCH)
+    assert (right - left) % GATE_PITCH == 0
+    rails = spec.supply_rails
+    assert [net for _, net in rails] == ["VSS", "VDD", "VSS"] * spec.pairs
+    for x_left, x_right in spec.strap_xs.values():
+        assert lo < x_left < lo + 2 * GATE_PITCH  # on the outer filler
+        assert hi - 2 * GATE_PITCH < x_right < hi
+
+
 @pytest.mark.parametrize(
     ("kwargs", "error"),
     [
@@ -136,7 +151,8 @@ def test_decoder_drc_with_taller_pairs(asap7_drc):
 @pytest.mark.parametrize("words", [16, 64])
 def test_each_wordline_is_the_and_of_its_lines(tmp_path, words):
     """Extracted nets: WL<w> is driven by one inverter whose input's pull-ups
-    are gated by exactly PA and PB of `w`, with every pin a single net."""
+    are gated by exactly PA and PB of `w`, with every pin -- VDD and VSS
+    included -- a single net."""
     gdstk = pytest.importorskip("gdstk")
     from chipforge_asap7.verification import connectivity as cv
 
@@ -166,16 +182,19 @@ def test_each_wordline_is_the_and_of_its_lines(tmp_path, words):
     )
     devices, labels = cv.extract_connectivity(cell, expected_channels=len(channels))
 
-    # The rows' supply rails are not tied together yet; every other pin is one net.
+    # Every pin is one net -- the supply grid joins every row's rails, and
+    # the array's VSS columns, to the straps -- and no two pins short.
     net = {}
     for name, ids in labels.items():
-        if name not in ("VDD", "VSS"):
-            assert len(ids) == 1, name
-            net[name] = next(iter(ids))
+        assert len(ids) == 1, name
+        net[name] = next(iter(ids))
     assert len(set(net.values())) == len(net)
+    assert {"VDD", "VSS"} <= net.keys()
     for w in range(words):
         drivers = [d for d in devices if net[f"WL<{w}>"] in d["terminals"]]
         assert {d["pmos"] for d in drivers} == {True, False}
+        for d in drivers:
+            assert net["VDD" if d["pmos"] else "VSS"] in d["terminals"]
         inputs = {d["gate"] for d in drivers}
         assert len(inputs) == 1
         (y,) = inputs

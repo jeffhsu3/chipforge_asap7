@@ -38,10 +38,14 @@ row's rail contacts land on the other's source stubs.  The two words share
 their PB line, and with it one B stub.  Pairs do not share a rail: the next
 pair's slots are a tile further on, so they sit `PAIR_GAP` apart.  Each pair
 is as tall as its rails need, and at least its two rows and the gap.  Each row
-ends in ``filler tap filler`` and ``tap filler``, and an M3 per PB line beyond
-the rows' left ends joins the pairs' copies of it.  The predecoders that drive
-the rails, and the supply grid that ties the rows' rails together, are left
-to the caller, as in `chipforge_asap7.devices.driver_slice`.
+is padded with filler to one common span, then ends in ``filler tap filler``
+and ``tap filler``, and an M3 per PB line beyond the rows' left ends joins the
+pairs' copies of it.
+
+The supply grid is an M3 VSS and VDD strap on the outer filler at each end,
+with a via stack onto every rail of its net.  The VSS straps run on down to
+an M2 bar along the array's top edge, which `build_rom` lands on every tile's
+VSS column.  The predecoders that drive the rails are left to the caller.
 """
 
 from __future__ import annotations
@@ -285,6 +289,49 @@ class RomDecoderSpec:
             index = len(lower) + (free - len(pb)) // 2 + pb.index(line)
         return first + index * M4_PITCH
 
+    @property
+    def slots_span(self) -> tuple[int, int]:
+        """X span of every row's slots, once the shorter rows are padded.
+
+        Each pair's slots stand two words, 3 CPP, right of the pair below's,
+        so a row is padded with at most ``3 * (pairs - 1)`` CPP of filler on
+        either side.
+        """
+        k, words = self.interleave, self.array.words
+        lo = min(self.slot_x(r) for r in range(k))
+        hi = max(self.slot_x(words - k + r) for r in range(k)) + self.slot_width
+        return lo, hi
+
+    @property
+    def rows_span(self) -> tuple[int, int]:
+        """X span of every row, with its end cells."""
+        lo, hi = self.slots_span
+        return lo - 3 * END_CPP * GATE_PITCH, hi + 2 * END_CPP * GATE_PITCH
+
+    @property
+    def strap_xs(self) -> dict[str, tuple[int, int]]:
+        """X of the left and right M3 strap of each supply.
+
+        They stand on the outer filler at each row end, which has no M2 of its
+        own, a track apart from each other and from its edges.  VSS is the
+        outer one.
+        """
+        lo, hi = self.rows_span
+        return {
+            "VSS": (lo + TRACK_PITCH, hi - TRACK_PITCH),
+            "VDD": (lo + 2 * TRACK_PITCH, hi - 2 * TRACK_PITCH),
+        }
+
+    @property
+    def supply_rails(self) -> list[tuple[int, str]]:
+        """``(y, net)`` of every row's M1 rail, bottom to top, shared ones once."""
+        rails = set()
+        for row in range(self.interleave):
+            for y, net in self.nand.rails:
+                local = self.row_height - y if row % 2 else y
+                rails.add((self.row_y(row) + local, net))
+        return sorted(rails)
+
     # ── Slot geometry, in slot coordinates (row unflipped) ────────────────────
     @property
     def inverter_x(self) -> int:
@@ -500,6 +547,15 @@ def _slot(spec: RomDecoderSpec, parity: int, lib: Any) -> Any:
     return _shared(lib, name, build)
 
 
+def _filler(spec: RomDecoderSpec, lib: Any, cpp: int) -> Any:
+    support = RowSupportSpec(stack=spec.nand.stack, kind="filler", width_cpp=cpp)
+    return _shared(
+        lib,
+        support.cell_name,
+        lambda: build_row_support(support, lib=lib, draw_pin_labels=False),
+    )
+
+
 def _end(spec: RomDecoderSpec, lib: Any, kinds: tuple[str, ...]) -> list[Any]:
     cells = []
     for kind in kinds:
@@ -532,7 +588,7 @@ def build_rom_decoder(
     end_w = END_CPP * GATE_PITCH
     h = spec.row_height
 
-    extents = []
+    x_left, x_right = spec.slots_span
     for row in range(spec.interleave):
         y0 = spec.row_y(row)
         flip = row % 2 == 1
@@ -542,15 +598,19 @@ def build_rom_decoder(
         slot = _slot(spec, row % 2, lib)
         for x in xs:
             cell.add(gdspy.CellReference(slot, (x, y_ref), x_reflection=flip))
+        # Pad each row out to the common span, so the straps find every row
+        # at the same X.
+        x_end = xs[-1] + spec.slot_width
+        for x0, x1 in ((x_left, xs[0]), (x_end, x_right)):
+            if x1 > x0:
+                pad = _filler(spec, lib, (x1 - x0) // GATE_PITCH)
+                cell.add(gdspy.CellReference(pad, (x0, y_ref), x_reflection=flip))
         for i, support in enumerate(left):
-            x = xs[0] - (len(left) - i) * end_w
+            x = x_left - (len(left) - i) * end_w
             cell.add(gdspy.CellReference(support, (x, y_ref), x_reflection=flip))
         for i, support in enumerate(right):
-            x = xs[-1] + spec.slot_width + i * end_w
+            x = x_right + i * end_w
             cell.add(gdspy.CellReference(support, (x, y_ref), x_reflection=flip))
-        extents.append(
-            (xs[0] - len(left) * end_w, xs[-1] + spec.slot_width + len(right) * end_w)
-        )
 
         for w, x in zip(words, xs):
             # The wordline: from its V2 down to the decoder's bottom edge.
@@ -583,10 +643,9 @@ def build_rom_decoder(
     # Between pairs the two VSS rails' gate cuts would face across 10 nm
     # (GCUT.S.3); one cut spans the gap instead.
     half_cut = DEVICE_GATE_CUT_HEIGHT // 2
+    x0, x1 = spec.rows_span
     for pair in range(1, spec.pairs):
         below, above = 2 * pair - 1, 2 * pair
-        x0 = min(extents[below][0], extents[above][0])
-        x1 = max(extents[below][1], extents[above][1])
         y_below = spec.row_y(below) + spec.row_height
         box(cell, "GATE_CUT", x0, y_below - half_cut, x1, spec.row_y(above) + half_cut)
 
@@ -594,7 +653,7 @@ def build_rom_decoder(
     # pair has its own copy of each PB line; beyond the rows' left ends one M3
     # per line joins the copies, so PB<j> is one net and one pin.
     pb_lines = spec.rail_groups(0)[1]
-    x_rows = min(x for x, _ in extents)
+    x_rows = spec.rows_span[0]
     joins = {
         line: x_rows - (len(pb_lines) - j) * TRACK_PITCH
         for j, line in enumerate(pb_lines)
@@ -620,11 +679,49 @@ def build_rom_decoder(
     for w in range(spec.array.words):
         x = spec.array.wordline_x(w)
         _label(cell, f"WL<{w}>", "M3", (x, spec.y0 + HALF))
-    for row in range(spec.interleave):
-        for y, net in spec.nand.rails:
-            y_abs = spec.row_y(row) + (spec.row_height - y if row % 2 else y)
-            _label(cell, net, "M1", (extents[row][0] + HALF, y_abs))
+    for y, net in spec.supply_rails:
+        _label(cell, net, "M1", (spec.rows_span[0] + HALF, y))
+    _supply_grid(spec, cell)
     return cell
+
+
+def _supply_grid(spec: RomDecoderSpec, cell: Any) -> None:
+    """M3 VDD and VSS straps at both row ends.
+
+    Each strap takes a V1, an M2 pad and a V2 on every rail of its net.  The
+    VSS straps run on down across the gap to the array's top edge, where
+    `build_rom` ties them to the array.
+    """
+    rails = spec.supply_rails
+    top = spec.array.height
+    for net, xs in spec.strap_xs.items():
+        ys = [y for y, n in rails if n == net]
+        y_lo = top if net == "VSS" else min(ys)
+        for x in xs:
+            box(cell, "M3", x - HALF, y_lo - CAP, x + HALF, max(ys) + CAP)
+            for y in ys:
+                _square(cell, "V1", x, y)
+                box(cell, "M2", x - PAD, y - HALF, x + PAD, y + HALF)
+                _square(cell, "V2", x, y)
+            _label(cell, net, "M3", (x, (y_lo + max(ys)) / 2))
+
+
+def _tie_array_vss(spec: RomDecoderSpec, cell: Any) -> None:
+    """An M2 bar along the array's top edge, from VSS strap to VSS strap.
+
+    A V1 lands it on each tile's VSS column, carried up past the edge for the
+    via's end-cap; the decoder's bottom rail stays at least 31 nm clear above.
+    """
+    top = spec.array.height
+    vss = spec.strap_xs["VSS"]
+    box(cell, "M2", min(vss) - PAD, top - HALF, max(vss) + PAD, top + HALF)
+    for x in vss:
+        _square(cell, "V2", x, top)
+    bitcell = spec.array.bitcell
+    for t in range(spec.array.tiles):
+        x_s = t * bitcell.width + bitcell.sd_xs["S"]
+        box(cell, "M1", x_s - HALF, top - HALF, x_s + HALF, top + CAP)
+        _square(cell, "V1", x_s, top)
 
 
 def build_rom(
@@ -634,13 +731,14 @@ def build_rom(
     name: str | None = None,
     lib: Any = None,
 ) -> Any:
-    """The array with its decoder on top, sharing every wordline's M3."""
+    """The array with its decoder on top, sharing every wordline's M3 and VSS."""
     gdspy = require_gdspy()
     array = build_rom_array(spec.array, programmed, lib=lib)
     decoder = build_rom_decoder(spec, lib=lib)
     cell = _new_cell(lib, name or f"rom_{spec.cell_name.removeprefix('rom_decoder_')}")
     cell.add(gdspy.CellReference(array))
     cell.add(gdspy.CellReference(decoder))
+    _tie_array_vss(spec, cell)
     return cell
 
 

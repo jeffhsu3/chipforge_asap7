@@ -164,18 +164,37 @@ pair 0   row 1 (flipped)  [NAND INV fill][NAND INV fill] ...
   separates them.
 - **Joins:** each `PB` line has a copy over every pair. One M3 per line,
   beyond the rows' left ends, joins the copies.
-- **Row ends:** each row ends in `filler tap filler` on the left and
-  `tap filler` on the right.
+- **Row ends:** each pair's slots stand two words right of the pair below's,
+  so the rows are padded with filler to one common span. Each then ends in
+  `filler tap filler` on the left and `tap filler` on the right.
+
+### Supply grid
+
+The outer filler at each row end carries an M3 strap for each supply, VSS
+outside and VDD a track in. A V1, an M2 pad and a V2 tie each strap to every
+rail of its net, so every row's VDD and VSS are one net each.
+
+The VSS straps run on down across the gap to an M2 bar along the array's top
+edge. `build_rom` lands that bar on every tile's VSS column with a V1, so the
+array's sources and taps share the decoder's VSS. The straps are labelled
+`VDD` and `VSS` on M3.
+
+The rails carry current from both ends only. That is enough for a decoder
+that fires one wordline at a time, but a long row's IR drop is not checked.
 
 gdscheck reports no violations on the ROM with its decoder:
 
 - 1 to 3 fins;
 - 16 to 256 words;
-- an interleave of 8 or 16.
+- an interleave of 8 or 16;
+- RVT, LVT and SLVT tiles.
 
-`test_each_wordline_is_the_and_of_its_lines` extracts the nets. It checks that
-each `WL<w>` is driven by one inverter, and that the pull-ups on that
-inverter's input are gated by exactly `w`'s `PA` and `PB` lines.
+`test_each_wordline_is_the_and_of_its_lines` extracts the nets. It checks that:
+
+- each `WL<w>` is driven by one inverter, between `VDD` and `VSS`;
+- the pull-ups on that inverter's input are gated by exactly `w`'s `PA` and
+  `PB` lines;
+- every pin, `VDD` and `VSS` included, is one net, and no two pins short.
 
 ```bash
 uv run asap7-rom --array.words 64 --array.bits 8 --out build/rom.gds
@@ -201,8 +220,6 @@ It needs gdstk, which isn't a project dependency, and skips without it.
 
 Still to do, in the periphery:
 
-- A supply grid. Each decoder row's M1 rails are on their own, and nothing
-  ties them to each other or to the array's VSS.
 - The predecoders that drive the `PA` and `PB` rails.
 - Sizing the driver to the wordline load with `size_decoder`. The cells are
   fixed at 3 + 3 fins for now.
