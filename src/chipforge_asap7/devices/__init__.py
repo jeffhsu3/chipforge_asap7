@@ -57,6 +57,7 @@ from .rom_bitcell import (
     build_rom_strap,
     build_rom_tap,
 )
+from .rom_decoder import RomDecoderSpec, build_rom, build_rom_decoder
 from .row import RowBand, RowStack
 from .row_support import (
     ROW_SUPPORT_KINDS,
@@ -107,6 +108,7 @@ __all__ = [
     "OutputLatch270Spec",
     "RomArraySpec",
     "RomBitcellSpec",
+    "RomDecoderSpec",
     "RowBand",
     "RowStack",
     "RowSupportSpec",
@@ -138,8 +140,10 @@ __all__ = [
     "build_nand_row",
     "build_output_latch",
     "build_output_latch_270",
+    "build_rom",
     "build_rom_array",
     "build_rom_bitcell",
+    "build_rom_decoder",
     "build_rom_strap",
     "build_rom_tap",
     "build_row_support",

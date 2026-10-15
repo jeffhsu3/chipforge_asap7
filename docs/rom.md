@@ -114,6 +114,73 @@ An 81 nm tap row along the top of the array ties the substrate to VSS
 
 One row covers an array up to 30 um tall. `RomArraySpec` refuses a taller one.
 
+## Wordline decoder
+
+```python
+from chipforge_asap7.devices import RomDecoderSpec, build_rom
+
+decoder = RomDecoderSpec(array=spec)    # interleave=8, (3, 3)-fin cells
+decoder.pa_bits, decoder.pair_rails     # 3, 3: PA takes 3 address bits
+decoder.lines(5)                        # ('PA<5>', 'PB<0>')
+rom = build_rom(decoder, programmed={(0, 0), (5, 3)})
+```
+
+The decoder sits above the array. Each word gets an AND gate: a `NandSpec`
+and an `InverterSpec` driver on a 270 nm row. Its output drops down the
+word's own M3 track into the array's wordline.
+
+An AND gate is 378 nm wide and a word is 81, so the gates are spread over
+`interleave` rows. Word `w` sits in row `w % interleave`, in a slot
+`interleave * 81` nm wide: 648 nm, or 12 CPP, at the default of 8. The slot
+holds the NAND, the driver and a filler.
+
+```text
+pair 1   row 3 (flipped)  [NAND INV fill][NAND INV fill] ...   M4 rails
+         row 2            [NAND INV fill][NAND INV fill] ...   over each pair
+         -- 54 nm gap --
+pair 0   row 1 (flipped)  [NAND INV fill][NAND INV fill] ...
+         row 0            [NAND INV fill][NAND INV fill] ...
+           |  |  |  |  |  |  |  |    WL<w> on M3, down into the array
+```
+
+- **Address:** the interleave is a power of two, so a word's row is its low
+  address bits. `PA` takes the low `split` bits and `PB` the rest, and
+  `WL<w> = PA<w mod 2^split> . PB<w >> split>`.
+- **Rails:** a row only sees the `PA` lines that are its own row modulo the
+  interleave. A pair of rows therefore needs two shares of `PA` and all of
+  `PB` on M4: 8 rails for 64 words and 16 for 256. With 6 rows, every row
+  would need every line, 32 rails at 256 words, which is why the interleave
+  is 8 and not 6.
+- **Rail placement:** the rails sit on the absolute M4 track lattice
+  (M4.AUX.1, M4.AUX.2), so the decoder is drawn in array coordinates, `gap`
+  above the array. A pair grows past its two rows when its rails need it.
+- **Inputs:** `A` and `B` reach their rails on M3 stubs. The stubs run on free
+  tracks, 36 nm from every wordline, so the wordlines of the rows above pass
+  between them.
+- **Pairs:** the two rows of a pair share a VDD rail and stand slot over slot.
+  At any other offset a filler's rail contact lands on the other row's source
+  stub (V0.M1.AUX.3). The two words share their `PB` line, so they share one
+  B stub. Pairs sit a tile apart in X, so they don't share a rail; a 54 nm gap
+  separates them.
+- **Joins:** each `PB` line has a copy over every pair. One M3 per line,
+  beyond the rows' left ends, joins the copies.
+- **Row ends:** each row ends in `filler tap filler` on the left and
+  `tap filler` on the right.
+
+gdscheck reports no violations on the ROM with its decoder:
+
+- 1 to 3 fins;
+- 16 to 256 words;
+- an interleave of 8 or 16.
+
+`test_each_wordline_is_the_and_of_its_lines` extracts the nets. It checks that
+each `WL<w>` is driven by one inverter, and that the pull-ups on that
+inverter's input are gated by exactly `w`'s `PA` and `PB` lines.
+
+```bash
+uv run asap7-rom --array.words 64 --array.bits 8 --out build/rom.gds
+```
+
 ## Status
 
 `build_rom_array` builds the strap rows and the tap row, then closes the
@@ -134,5 +201,10 @@ It needs gdstk, which isn't a project dependency, and skips without it.
 
 Still to do, in the periphery:
 
-- A transposed decoder: words are columns here, and bits are rows.
+- A supply grid. Each decoder row's M1 rails are on their own, and nothing
+  ties them to each other or to the array's VSS.
+- The predecoders that drive the `PA` and `PB` rails.
+- Sizing the driver to the wordline load with `size_decoder`. The cells are
+  fixed at 3 + 3 fins for now.
+- Bitline precharge and sensing on the rows' ends.
 - KLayout LVS against `RomBitcellSpec.netlist`.
