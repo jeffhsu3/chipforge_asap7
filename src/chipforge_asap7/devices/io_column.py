@@ -48,7 +48,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import M4_PITCH
+from ..layout.rules import M4_PITCH, M4_X_GRID
 from .bitline_mux import BitlineMuxSpec, build_bitline_mux_group
 from .cli import parse_spec, write_gds
 from .output_latch import OutputLatchSpec, build_output_latch
@@ -94,6 +94,14 @@ class IoColumnSpec:
             composite drives it.
         two_sided: a second group, mirrored, on the logic column's right,
             sharing the amplifier, driver and latch (pins suffixed ``_R``).
+        m4_grid: ``(x, y)``, nm in the block, of a point on the DRM's
+            absolute M4 grid where the block is placed: a line of the 24 nm
+            vertex grid in x (M4.AUX.1) and a track's centre in y, the
+            tracks 48 nm apart (M4.AUX.2).  Each cell's lines then move onto
+            the tracks together, the amplifier's down its stubs and the
+            others the nearer way, and the wires end on that vertex grid.
+            None: the lines where the cells put them, the vertex grid the
+            block's own.
     """
 
     mux: BitlineMuxSpec = field(default_factory=_default_mux)
@@ -103,6 +111,7 @@ class IoColumnSpec:
     tap: bool = True
     one_sense_phase: bool = False
     two_sided: bool = False
+    m4_grid: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         rows = {
@@ -115,6 +124,10 @@ class IoColumnSpec:
             raise ValueError(
                 f"a group of {self.mux.selects} leaves of {self.mux.rows} row(s) is not whole row pairs"
             )
+        if self.m4_grid is not None:
+            # One placement is one grid: normalise to the first period.
+            x, y = self.m4_grid
+            object.__setattr__(self, "m4_grid", (x % M4_X_GRID, y % M4_PITCH))
         if self.pairs < 4:
             raise ValueError(
                 f"the logic needs four row pairs ({4 * self.pair_height} nm) and the group is "
@@ -187,7 +200,10 @@ class IoColumnSpec:
         the amplifier's bottom row) and to the driver's columns (in the
         driver's); ``QA``/``QAN`` from the amplifier's risers to the latch's
         stubs, just inside the latch.  Lines on one cell sit an M4 pitch
-        apart.
+        apart, and on the tracks of `m4_grid` when it is given: the
+        amplifier's stubs rise from its bottom edge only, so its lines go
+        down; the latch's stubs and the driver's columns have room either
+        way, so theirs go the nearer way.
         """
         place = self.placements
         x_logic = place["sense_amp"][0]
@@ -210,26 +226,30 @@ class IoColumnSpec:
                 xs.append(self.right_x(mux_x[net]))
             return xs
 
+        sa_line = self._on_track(sa_y + _ROUTE_OFFSET, down=True)
+        wd_line = self._on_track(wd_y + _ROUTE_OFFSET)
+        q_line = self._on_track(ol_y + M4_PITCH)
         return {
             "SA": [
-                (sa_y + _ROUTE_OFFSET, [*group("SA"), x_logic + sa_x["SA"]]),
-                (wd_y + _ROUTE_OFFSET, [*group("SA"), x_logic + wd_x["SA"]]),
+                (sa_line, [*group("SA"), x_logic + sa_x["SA"]]),
+                (wd_line, [*group("SA"), x_logic + wd_x["SA"]]),
             ],
             "SAN": [
-                (
-                    sa_y + _ROUTE_OFFSET + M4_PITCH,
-                    [*group("SAN"), x_logic + sa_x["SAN"]],
-                ),
-                (
-                    wd_y + _ROUTE_OFFSET + M4_PITCH,
-                    [*group("SAN"), x_logic + wd_x["SAN"]],
-                ),
+                (sa_line + M4_PITCH, [*group("SAN"), x_logic + sa_x["SAN"]]),
+                (wd_line + M4_PITCH, [*group("SAN"), x_logic + wd_x["SAN"]]),
             ],
-            "QA": [(ol_y + M4_PITCH, [x_logic + sa_x["QA"], x_logic + ol_x["QA"]])],
+            "QA": [(q_line, [x_logic + sa_x["QA"], x_logic + ol_x["QA"]])],
             "QAN": [
-                (ol_y + 2 * M4_PITCH, [x_logic + sa_x["QAN"], x_logic + ol_x["QAN"]])
+                (q_line + M4_PITCH, [x_logic + sa_x["QAN"], x_logic + ol_x["QAN"]])
             ],
         }
+
+    def _on_track(self, y: float, down: bool = False) -> float:
+        """`y`, or the M4 track of `m4_grid` nearest it (`down`: the one at or below it)."""
+        if self.m4_grid is None:
+            return y
+        off = (y - self.m4_grid[1]) % M4_PITCH
+        return y - off if down or off < M4_PITCH / 2 else y + M4_PITCH - off
 
     @property
     def cell_name(self) -> str:
@@ -239,6 +259,7 @@ class IoColumnSpec:
             f"{mux._variant_tag}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}_ol{ol.fingers}"
             f"{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
             f"{'_2s' if self.two_sided else ''}"
+            f"{'' if self.m4_grid is None else '_g' + 'x'.join(f'{v:g}'.replace('.', 'p') for v in self.m4_grid)}"
         )
 
     @property
@@ -519,7 +540,7 @@ def build_io_column(
                     m3_column(cell, riser_x, sa_top - CAP, y + V3_M3_CAP)
                     continue
                 m3_column(cell, riser_x, sa_top - CAP, y + V3_M3_CAP)
-            m4_track(cell, y, xs)
+            m4_track(cell, y, xs, x_grid=0 if spec.m4_grid is None else spec.m4_grid[0])
 
     if strap := spec.sense_phase_strap:
         x, y0, y1 = strap

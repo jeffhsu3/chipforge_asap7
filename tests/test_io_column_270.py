@@ -6,6 +6,7 @@ The physical tests skip when KLayout or the public runset is missing;
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import gdspy
@@ -153,6 +154,34 @@ def test_predecoded_16_to_1_takes_its_selects_once():
     assert not any(p.startswith(("YSEL[", "YSELN[")) for p in pins)
     assert {f"YPA[{k}]" for k in range(4)} | {f"YPB[{k}]" for k in range(4)} <= set(pins)
     assert spec.width == SIXTEEN_COLUMN.width - 108
+
+
+@pytest.mark.parametrize("spec", [FOUR, EIGHT_COLUMN, SIXTEEN_PD], ids=lambda spec: spec.cell_name)
+@pytest.mark.parametrize("gy", [0, 13.5, 30, 45.5])
+def test_an_m4_grid_puts_the_compact_blocks_lines_on_its_tracks(spec, gy):
+    placed = replace(spec, m4_grid=(6, gy))
+    cell = build_sideways_io_column(placed, lib=_library())
+    m4 = [(p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max())
+          for p in cell.get_polygons(by_spec=True)[(40, 0)]]
+    # The leaves' M4 is the bitlines' (the array's): every other line is on a track.
+    leaves = {round(y, 3) for row in range(spec.selects) for y in spec.bitline_ys(row).values()}
+    lines = [box for box in m4 if round((box[1] + box[3]) / 2, 3) not in leaves]
+    assert len(lines) == len(_routes_m4(spec)) + 2  # the routes and the driver's two enables
+    for x0, y0, x1, y1 in lines:
+        assert ((y0 + y1) / 2 - gy) % 48 == 0, (y0, y1)
+        assert (x0 - 6) % 24 == 0 and (x1 - 6) % 24 == 0
+    assert placed.write_driver.cell_name != spec.write_driver.cell_name
+
+
+def _routes_m4(spec):
+    """The block's own M4 lines: one per route but where a riser meets its stub on M3."""
+    return [y for lines in spec.routes.values() for y, xs in lines if len(set(xs)) > 1]
+
+
+def test_only_the_compact_block_takes_an_m4_grid():
+    with pytest.raises(ValueError, match="compact"):
+        SidewaysIoColumnSpec(m4_grid=(0, 0))
+    assert replace(FOUR, m4_grid=(0, 0)).cell_name == FOUR.cell_name + "_g0x0"
 
 
 @pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN, EIGHT_LY, SIXTEEN_LY, EIGHT_COLUMN, SIXTEEN_COLUMN,

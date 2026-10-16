@@ -270,20 +270,21 @@ def stack_to_m3(cell: Any, x: float, y: float) -> None:
     square(cell, "V2", x, y)
 
 
-def m4_track(cell: Any, y: float, xs: Sequence[float]) -> tuple[float, float]:
+def m4_track(cell: Any, y: float, xs: Sequence[float], x_grid: float = 0) -> tuple[float, float]:
     """A horizontal M4 wire over every column in `xs`, with an 18 x 24 V3 on each.
 
     M4 only runs horizontally, 24 nm wide, and a V3 is exactly as tall as it;
     the wire ends `V3_M4_CAP` past the outer vias, rounded out to the 24 nm
-    grid the public deck holds M4 vertices to in x.  (A 594 nm row is not a
-    whole number of M4 pitches, so nothing holds the wire's y to a grid.)  The M3 under each via has to reach
-    `V3_M3_CAP` past it, which is the caller's business.  Returns the wire's
-    x extent.
+    grid the public deck holds M4 vertices to in x, which has a line at
+    `x_grid`.  (A 594 nm row is not a whole number of M4 pitches, so the
+    wire's y is the caller's to put on a track.)  The M3 under each via has
+    to reach `V3_M3_CAP` past it, which is the caller's business too.
+    Returns the wire's x extent.
     """
     x0 = min(xs) - V3_M4_CAP
     x1 = max(xs) + V3_M4_CAP
-    x0 -= x0 % M4_X_GRID
-    x1 += -x1 % M4_X_GRID
+    x0 -= (x0 - x_grid) % M4_X_GRID
+    x1 += -(x1 - x_grid) % M4_X_GRID
     box(cell, "M4", x0, y - M4_HALF, x1, y + M4_HALF)
     for x in xs:
         box(cell, "V3", x - HALF, y - M4_HALF, x + HALF, y + M4_HALF)

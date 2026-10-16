@@ -47,7 +47,7 @@ from typing import Any
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import M4_PITCH
+from ..layout.rules import M4_PITCH, M4_X_GRID
 from .bitline_mux import BitlineMuxSpec
 from .bitline_mux_270 import ROW, SidewaysMuxSpec, build_sideways_mux_group
 from .cli import parse_spec, write_gds
@@ -113,6 +113,10 @@ class SidewaysIoColumnSpec:
         predecode: each leaf makes ``YSELN`` from two predecoded groups,
             ``YPA[0..3]`` and ``YPB[0..selects/4)``, the block's select pins
             (shared by every leaf): at 16:1 the leaves are 648 nm, not 756.
+        m4_grid: ``(x, y)``, nm in the block, of a point on the DRM's
+            absolute M4 grid where the block is placed (`IoColumnSpec`'s);
+            the compact block only.  Its lines and the write driver's then
+            take tracks within their M3's reach.
     """
 
     selects: int = 4
@@ -128,6 +132,7 @@ class SidewaysIoColumnSpec:
     compact: bool = False
     local_ysel: bool = False
     predecode: bool = False
+    m4_grid: tuple[float, float] | None = None
     two_sided = False
     row_pitch = ROW
 
@@ -135,8 +140,19 @@ class SidewaysIoColumnSpec:
         object.__setattr__(self, "bitline_entry", tuple(self.bitline_entry))
         if self.selects < 2 or self.selects % 2:
             raise ValueError(f"selects must be even and at least 2, got {self.selects}")
+        if self.m4_grid is not None:
+            if not self.is_compact:
+                raise ValueError("only the compact block draws its M4 on a given grid")
+            x, y = self.m4_grid
+            object.__setattr__(self, "m4_grid", (x % M4_X_GRID, y % M4_PITCH))
         if self.is_compact:
             self._take_compact_cells()
+            if self.m4_grid is not None:
+                # The driver is mirrored in y: its top edge on its placement's y + height.
+                wd = self.write_driver
+                x, y = self.placements["write_driver"]
+                grid = (self.m4_grid[0] - x, y + wd.height - self.m4_grid[1])
+                object.__setattr__(self, "write_driver", replace(wd, m4_grid=grid))
             if self.height < 4 * ROW:
                 raise ValueError(f"the compact logic needs a 4:1 block or taller, got {self.selects}:1")
             if self.logic_top > self.height:
@@ -357,6 +373,7 @@ class SidewaysIoColumnSpec:
                 f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_c270"
                 f"{'' if self.one_sense_phase is False else '_1ph'}"
                 f"{'_pd' if self.predecode else '_ly' if self.local_ysel else ''}"
+                f"{'' if self.m4_grid is None else '_g' + 'x'.join(f'{v:g}'.replace('.', 'p') for v in self.m4_grid)}"
             )
         return (
             f"iocol270_x{self.selects}_in{y_bl}x{y_bln}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}"
@@ -401,10 +418,16 @@ class SidewaysIoColumnSpec:
                 # Over the seam: QA's track (past the latch's width) climbs
                 # beside it and crosses to its input; QAN's (under it) jogs out
                 # to a free column near the amplifier's top, climbs, crosses.
+                # On tracks: QA's between the latch's stub's two ends, QAN's
+                # low line under the amplifier's top, where its track ends.
                 seam = math.ceil(self.latch_y)
                 jog = sa_x + QAN_JOG
-                routes["QA"] = [(seam + M4_PITCH, [sa_x + sa["QA"], ol_x + ol["QA"]])]
-                routes["QAN"] = [(seam - 40, [sa_x + sa["QAN"], jog]), (seam + 2 * M4_PITCH, [jog, ol_x + ol["QAN"]])]
+                qa = self._on_track(seam + M4_PITCH, "up")
+                qan = self._on_track(self.placements["sense_amp"][1] + self.sense_amp.height - V3_M3_CAP, "down")
+                if self.m4_grid is None:
+                    qan = seam - 40
+                routes["QA"] = [(qa, [sa_x + sa["QA"], ol_x + ol["QA"]])]
+                routes["QAN"] = [(qan, [sa_x + sa["QAN"], jog]), (qa + M4_PITCH, [jog, ol_x + ol["QAN"]])]
             else:
                 routes["QA"] = [(self._qa_lines[0], [sa_x + sa["QA"], ol_x + ol["QA"]])]
                 routes["QAN"] = [(self._qa_lines[1], [sa_x + sa["QAN"], ol_x + ol["QAN"]])]
@@ -440,11 +463,14 @@ class SidewaysIoColumnSpec:
         # rail.  Its SAN takes a line under its WRENA M4 (mirrored, 30 nm
         # under its top), a pitch clear of it, over the control pins' rows.
         # (QA/QAN cross the amplifier's middle: `_qa_lines`.)
+        # On tracks the pitch is exact: WRENA's line is on one too.
         y = math.ceil(wd_y) + wd.height - 30 - M4_PITCH - 4
+        if self.m4_grid is not None:
+            y = wd_y + wd.height - wd.m4_lines["WRENA"] - M4_PITCH
         lines: dict[str, list[tuple[int, float]]] = {"SA": [], "SAN": [(y, wd_x + wd.track_x["SAN"])]}
-        y = math.ceil(sa_y)
-        lines["SA"].append((y + 2 * M4_PITCH, sa_x + sa.track_x["SA"]))
-        lines["SAN"].append((y + 3 * M4_PITCH, sa_x + sa.track_x["SAN"]))
+        y = self._on_track(math.ceil(sa_y) + 2 * M4_PITCH)
+        lines["SA"].append((y, sa_x + sa.track_x["SA"]))
+        lines["SAN"].append((y + M4_PITCH, sa_x + sa.track_x["SAN"]))
         return lines
 
     @property
@@ -452,8 +478,17 @@ class SidewaysIoColumnSpec:
         """The compact block's QA/QAN lines beside the latch: across the amplifier's
         middle, where its QA/QAN tracks run, clear of its sense lines and under the
         latch's output pins."""
-        y = math.ceil(self.placements["sense_amp"][1])
-        return (y + 6 * M4_PITCH, y + 7 * M4_PITCH)
+        y = self._on_track(math.ceil(self.placements["sense_amp"][1]) + 6 * M4_PITCH)
+        return (y, y + M4_PITCH)
+
+    def _on_track(self, y: float, way: str = "near") -> float:
+        """`y`, or the M4 track of `m4_grid` nearest it (`way` "up", "down": at or above, below it)."""
+        if self.m4_grid is None:
+            return y
+        off = (y - self.m4_grid[1]) % M4_PITCH
+        if way == "down" or (way == "near" and off < M4_PITCH / 2):
+            return y - off
+        return y + (M4_PITCH - off) % M4_PITCH
 
     @property
     def sense_phase_strap(self) -> tuple[float, float, float] | None:
@@ -594,7 +629,7 @@ def build_sideways_io_column(
                 if net == "QA":
                     m3_column(cell, xs[0], top - CAP, y + V3_M3_CAP)
                 elif y > top:
-                    m3_column(cell, xs[0], math.ceil(spec.latch_y) - 40 - V3_M3_CAP, y + V3_M3_CAP)
+                    m3_column(cell, xs[0], spec.routes["QAN"][0][0] - V3_M3_CAP, y + V3_M3_CAP)
             elif net in ("QA", "QAN") and compact:
                 # The amplifier's track runs its height; the latch's input
                 # climbs from the latch's bottom edge up its own (otherwise free) column.
@@ -611,7 +646,7 @@ def build_sideways_io_column(
                 # the pair's top edge: carry both up to the line.
                 for x in xs:
                     m3_column(cell, x, top - CAP, y + V3_M3_CAP)
-            m4_track(cell, y, xs)
+            m4_track(cell, y, xs, x_grid=0 if spec.m4_grid is None else spec.m4_grid[0])
     if strap := spec.sense_phase_strap:
         x, y0, y1 = strap
         m3_column(cell, x, y0, y1)
