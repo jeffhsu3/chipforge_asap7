@@ -7,7 +7,7 @@ ASAP7 is a chipforge core PDK target and critical for deteremining the size and 
 ASAP7 SRAM wrapper, `sram_backend` strings and chip-top flows. What lives here
 is the ASAP7 *geometry* that core's hand-built array compilers.
 
-chipforge_asap7 is also a critical dependency for opensource FinFET compilers (primarily 8T versions, see OpenFinRAM)
+chipforge_asap7 is also a critical dependency for opensource FinFET compilers (primarily 8T versions, see https://github.com/shao-chien-lu/OpenFinRAM)
 
 ## Install
 
