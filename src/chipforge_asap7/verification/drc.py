@@ -17,23 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
-    "DRC_DECK_ENV",
-    "DRC_ENGINE_ENV",
     "GDSCHECK_ENV",
     "DRCViolation",
-    "default_drc_engine",
     "drc_counts",
-    "find_drc_deck",
     "find_gdscheck",
     "run_drc",
     "run_gdscheck",
-    "runset_height_enumeration",
 ]
 
-DRC_DECK_ENV = "ASAP7_DRC_DECK"
-DRC_ENGINE_ENV = "ASAP7_DRC_ENGINE"
 GDSCHECK_ENV = "GDSCHECK"
-_DEFAULT_DECK = Path.home() / "iv4/repos/ASAP7_for_KLayout/drc/drc_ASAP7.lydrc"
 _DEFAULT_GDSCHECKS = (
     Path.home() / "iv4/repos/OpenFinRAM/build/tools/gdscheck/bin/gdscheck",
     Path.home() / "iv4/repos/gdscheck/target/release/gdscheck",
@@ -49,28 +41,6 @@ class DRCViolation:
 
     category: str
     bbox: Box | None
-
-
-def find_drc_deck(deck: str | Path | None = None) -> Path:
-    """Resolve the runset, or raise `FileNotFoundError` saying where it looked."""
-    candidates = [deck, os.environ.get(DRC_DECK_ENV), _DEFAULT_DECK]
-    for candidate in candidates:
-        if candidate and Path(candidate).expanduser().is_file():
-            return Path(candidate).expanduser().resolve()
-    raise FileNotFoundError(
-        f"the public ASAP7 KLayout runset was not found; set {DRC_DECK_ENV} "
-        f"(looked at {[str(c) for c in candidates if c]})"
-    )
-
-
-def default_drc_engine() -> str:
-    """Always ``gdscheck``: the sole DRC authority for this package."""
-    return "gdscheck"
-
-
-def runset_height_enumeration(_engine: str | None = None) -> set[str]:
-    """Tall but on-grid ACTIVE/SDT height rules are clean under gdscheck."""
-    return set()
 
 
 def find_gdscheck(binary: str | Path | None = None) -> Path:
@@ -165,7 +135,6 @@ def run_drc(
     binary: str | Path | None = None,
     suite: str = "main",
     timeout: float = 600,
-    **_kwargs,
 ) -> list[DRCViolation]:
     """Run ASAP7 DRC on `cell_name` of `gds` via gdscheck; an empty list means clean."""
     return run_gdscheck(

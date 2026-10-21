@@ -77,17 +77,15 @@ the released collateral. `FinFETSpec.drc_verifiable` reports which side of the
 line a device falls on.
 
 `tests/test_finfet_drc.py` runs a representative NMOS/PMOS, VT, fin, finger,
-multiplier and row-height matrix through the public ASAP7 KLayout runset,
-restricted to `drc_verifiable` specs, and asserts it is clean. A companion test
-builds the 13- and 18-fin devices and asserts the runset's violation set is
-*exactly* `{ACTIVE.W.2, SDT.W.3}` — so a real violation on a tall device shows
-up as a new category, and a future deck that fixes the enumeration fails the
-test and lets `MAX_VERIFIABLE_FINS` be raised. Both auto-discover this
-workspace's tools or accept `KLAYOUT_BIN` and `ASAP7_DRC_DECK`; set
-`ASAP7_REQUIRE_TOOLS=1` to turn "tool not installed" skips into failures. `tests/test_finfet_connectivity.py` independently subtracts
-GCUT, traces LI/V0/M1 connectivity, proves D/G/S/B are separate, and checks the
-physical channel count. The public educational runset is the DRC authority for
-this project; it is not a claim of commercial foundry sign-off.
+multiplier and row-height matrix through gdscheck and asserts it is clean.
+A companion test requires clean results for legal 13- and 18-fin devices
+under gdscheck. `MAX_VERIFIABLE_FINS` and `drc_verifiable` describe the
+historical KLayout height-enumeration limit; they do not restrict gdscheck.
+The tests discover gdscheck in the workspace or accept `GDSCHECK`; set
+`ASAP7_REQUIRE_TOOLS=1` to turn missing-tool skips into failures.
+`tests/test_finfet_connectivity.py` independently subtracts GCUT, traces
+LI/V0/M1 connectivity, proves D/G/S/B are separate, and checks the physical
+channel count. gdscheck is the DRC authority for this project.
 
 ```bash
 uv run asap7-finfet --fins 2 --fingers 2 --multipliers 2 --out build/nmos_fin_222.gds

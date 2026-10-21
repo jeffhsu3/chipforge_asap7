@@ -11,15 +11,13 @@ import pytest
 Box = tuple[float, float, float, float]
 
 #: Set to ``1`` to turn "external tool not installed" skips into failures.
-#: Without it a machine that lacks KLayout, the public ASAP7 KLayout runset or
+#: Without it a machine that lacks KLayout, gdscheck or
 #: the released standard-cell library still reports a green suite while the
 #: geometry claims in `chipforge_asap7.devices.finfet` go unverified.
 REQUIRE_TOOLS_ENV = "ASAP7_REQUIRE_TOOLS"
-#: Overrides the search for the public ASAP7 KLayout rule deck.
-DRC_DECK_ENV = "ASAP7_DRC_DECK"
 
 
-def find_asap7_drc_deck() -> Path | None:
+def find_gdscheck_or_none() -> Path | None:
     """Locate the gdscheck binary."""
     from chipforge_asap7.verification.drc import find_gdscheck
 

@@ -7,7 +7,7 @@ sign-off replacement.  See :mod:`chipforge_asap7.verification.pex` for the
 assumptions and machine-readable uncertainty report.
 """
 
-from .drc import DRCViolation, drc_counts, find_drc_deck, run_drc
+from .drc import DRCViolation, drc_counts, find_gdscheck, run_drc
 from .lvs import (
     LVSResult,
     find_klayout,
@@ -92,7 +92,6 @@ __all__ = [
     "DRCViolation",
     "DisjointSetUnion",
     "EDGE_CELL_NAMES",
-    "Edit",
     "HierarchicalLVSResult",
     "LVSResult",
     "METALS",
@@ -104,10 +103,7 @@ __all__ = [
     "PULLUP_RATIO",
     "Parasitics",
     "RECOMMENDED_MIN_CELL_RATIO",
-    "ReductionConfig",
-    "ReductionResult",
     "VIAS",
-    "ValidationResult",
     "assert_close",
     "bitline_entries",
     "calibration_manifest",
@@ -117,8 +113,8 @@ __all__ = [
     "extract_connectivity",
     "filtered_polygon_fingerprint",
     "fin_grid_offset",
-    "find_drc_deck",
     "find_fastercap",
+    "find_gdscheck",
     "find_klayout",
     "group_tie_bands",
     "hierarchical_fingerprint",
@@ -134,7 +130,6 @@ __all__ = [
     "port_io_name",
     "port_nodes",
     "process_fingerprint",
-    "reduce_layout",
     "render_bitline_mux_group_lvs_schematic",
     "render_bitline_mux_lvs_schematic",
     "render_driver_slice_lvs_schematic",
@@ -153,7 +148,6 @@ __all__ = [
     "summarize_lvsdb",
     "supply_rails",
     "tie_bands",
-    "validate_released_inverter",
     "verify_cap_topology",
     "verify_decoder_physical",
     "verify_dummy_topology",

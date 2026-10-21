@@ -1,4 +1,4 @@
-"""Run the public ASAP7 KLayout runset on the stacked-band inverter.
+"""Run gdscheck on the stacked-band inverter.
 
 The inverter is a *logic* cell.  It carries no body tap, so latch-up is the
 placed design's problem, and in `abut` style its implant deliberately overhangs
@@ -7,7 +7,7 @@ tests assert the exact residual category set rather than silence: a new
 category is a real regression, and a category disappearing means a rule or a
 deck changed and the reasoning below needs revisiting.
 
-Skips when KLayout or the runset is missing; set ``ASAP7_REQUIRE_TOOLS=1`` to
+Skips when gdscheck is missing; set ``ASAP7_REQUIRE_TOOLS=1`` to
 make that a failure instead.
 """
 
@@ -18,7 +18,6 @@ import gdspy
 from chipforge_asap7.devices import InverterSpec, build_inverter, build_inverter_row
 from chipforge_asap7.devices.finfet import MAX_VERIFIABLE_FINS
 from chipforge_asap7.devices.inverter import MIN_INPUT_REACH
-from chipforge_asap7.verification.drc import runset_height_enumeration
 
 #: No logic cell satisfies this alone -- it needs a tap row within 30 um.  The
 #: released `dec_inv_62f_halved_AND` has no tap either.
@@ -32,11 +31,6 @@ ROW_END_ENCLOSURE = {
     "NSELECT.ACTIVE.EN.1",
     "PSELECT.ACTIVE.EN.1",
 }
-#: The deck enumerates ACTIVE/SDT heights 1x27..12x27 instead of testing for a
-#: multiple of 27, so a taller band reads as a violation.  See
-#: `chipforge_asap7.devices.finfet.MAX_VERIFIABLE_FINS`.
-#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
-DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 RELEASED = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
 
@@ -154,10 +148,10 @@ def test_abutted_row_residual_does_not_grow_with_the_row(asap7_drc):
     assert counts[1] == counts[2] == counts[4]
 
 
-def test_the_released_decoder_inverter_only_adds_the_decks_height_enumeration(
+def test_the_released_decoder_inverter_has_only_placement_residuals(
     asap7_drc,
 ):
-    """13- and 18-fin bands are legal ASAP7 and beyond what the deck decides."""
+    """Legal 13- and 18-fin bands add no DRC categories under gdscheck."""
     assert not RELEASED.drc_verifiable
     library, top = _library(
         [
@@ -168,4 +162,4 @@ def test_the_released_decoder_inverter_only_adds_the_decks_height_enumeration(
         ]
     )
     categories = set(asap7_drc(library, top, tag="released"))
-    assert categories == NO_TAP_IN_CELL | ROW_END_ENCLOSURE | DECK_HEIGHT_ENUMERATION
+    assert categories == NO_TAP_IN_CELL | ROW_END_ENCLOSURE

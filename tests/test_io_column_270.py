@@ -1,6 +1,6 @@
 """The single-column column IO for 270 nm (6T) rows: placement and pins, then DRC and flat LVS.
 
-The physical tests skip when KLayout or the public runset is missing;
+The physical tests skip when KLayout (LVS) or gdscheck (DRC) is missing;
 ``ASAP7_REQUIRE_TOOLS=1`` makes that a failure.
 """
 
@@ -12,13 +12,10 @@ import gdspy
 import pytest
 
 from chipforge_asap7.devices import (
-    OutputLatch270Spec,
     SidewaysIoColumnSpec,
-    StaggeredIoColumnSpec,
     build_sideways_io_column,
     io_column_pins,
     sideways_block_netlist,
-    staggered_block_netlist,
 )
 from chipforge_asap7.devices.rowcell import label
 from chipforge_asap7.verification.lvs import render_io_column_lvs_schematic, run_lvs
@@ -40,11 +37,11 @@ def _library():
     return library
 
 
-@pytest.mark.parametrize("spec", [FOUR, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
-def test_one_column_is_narrower_than_the_staggered_two(spec):
-    staggered = StaggeredIoColumnSpec(selects=spec.selects)
-    assert spec.height == staggered.height == spec.selects * 270
-    assert spec.width <= staggered.width - 800
+@pytest.mark.parametrize(("spec", "width"), [(FOUR, 1998), (EIGHT, 1944), (SIXTEEN, 2484)])
+def test_single_column_footprint(spec, width):
+    """Block dimensions in nm for the compact 4:1 and stacked 8:1/16:1 layouts."""
+    assert spec.height == spec.selects * 270
+    assert spec.width == width
 
 
 def test_each_row_enters_its_leaf_at_the_arrays_own_heights():
@@ -70,23 +67,45 @@ def _devices(netlist: str) -> list[str]:
     return [line for line in netlist.splitlines() if line[:1] == "M"]
 
 
-def test_pins_and_netlist_are_the_staggered_blocks():
-    """A drop-in for `StaggeredIoColumnSpec`: same pins, same devices."""
-    for spec in (FOUR_WIDE, SIXTEEN):
-        staggered = StaggeredIoColumnSpec(selects=spec.selects)
-        assert set(spec.pin_positions) == set(io_column_pins(spec)) == set(io_column_pins(staggered))
-        body = _devices(sideways_block_netlist(spec, name="b"))
-        assert body == _devices(staggered_block_netlist(staggered, name="b"))
+@pytest.mark.parametrize("spec", [FOUR, FOUR_WIDE, EIGHT, SIXTEEN], ids=lambda spec: spec.cell_name)
+def test_pins_and_bitline_netlist(spec):
+    """Each row has two transmission gates and two precharge devices."""
+    pins = tuple(
+        f"{pin}[{row}]"
+        for row in range(spec.selects)
+        for pin in ("BL", "BLN", "YSEL", "YSELN")
+    ) + ("PRECHN", "SAE", "D", "WRENA", "WRENAN", "OE", "OEB", "Q", "VDD", "VSS")
+    netlist = sideways_block_netlist(spec, name="block")
+    assert io_column_pins(spec) == pins
+    assert set(spec.pin_positions) == set(pins)
+    assert next(line for line in netlist.splitlines() if line.startswith(".SUBCKT")) == (
+        ".SUBCKT block " + " ".join(pins)
+    )
+    body = _devices(netlist)
+    leaves = [line for line in body if line[1].isdigit()]
+    expected = []
+    for row in range(spec.selects):
+        for name, nodes, model in (
+            ("NT", f"BL[{row}] YSEL[{row}] SA VSS", "nmos"),
+            ("NC", f"BLN[{row}] YSEL[{row}] SAN VSS", "nmos"),
+            ("PT", f"SA YSELN[{row}] BL[{row}] VDD", "pmos"),
+            ("PC", f"SAN YSELN[{row}] BLN[{row}] VDD", "pmos"),
+            ("PPT", f"BL[{row}] PRECHN VDD VDD", "pmos"),
+            ("PPC", f"BLN[{row}] PRECHN VDD VDD", "pmos"),
+        ):
+            expected.append(f"M{row}_{name} {nodes} {model}_rvt nfin=3 l=20n nf=1 m=1")
+    assert leaves == expected
+    assert len([line for line in body if line.startswith("Msa_")]) == 18
+    assert len([line for line in body if line.startswith("Mwd_")]) == 12
+    assert len(body) == 6 * spec.selects + 18 + 12 + (16 if spec.compact else 18)
 
 
-def test_compact_block_is_the_staggered_one_but_for_its_latch():
-    """Same pins, the same leaves, amplifier and write driver; the latch is the 270 nm one's devices."""
-    staggered = StaggeredIoColumnSpec(selects=4)
-    assert set(FOUR.pin_positions) == set(io_column_pins(FOUR)) == set(io_column_pins(staggered))
+def test_compact_block_changes_only_the_latch_netlist():
+    """Compaction preserves the leaves, amplifier and write-driver connectivity."""
     body = _devices(sideways_block_netlist(FOUR, name="b"))
-    reference = _devices(staggered_block_netlist(staggered, name="b"))
+    reference = _devices(sideways_block_netlist(FOUR_WIDE, name="b"))
     assert [d for d in body if not d.startswith("Mol_")] == [d for d in reference if not d.startswith("Mol_")]
-    assert len([d for d in body if d.startswith("Mol_")]) == len(OutputLatch270Spec().devices)
+    assert len([d for d in body if d.startswith("Mol_")]) == 16
 
 
 def test_compact_block_puts_the_driver_under_the_amplifier_and_the_latch_beside():

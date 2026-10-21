@@ -14,7 +14,7 @@ from pathlib import Path
 
 import gdspy
 import pytest
-from conftest import find_asap7_drc_deck
+from conftest import find_gdscheck_or_none
 
 from chipforge_asap7.devices import InverterSpec, build_inverter
 from chipforge_asap7.layout.layers import LAYERS
@@ -278,7 +278,7 @@ def test_inverter_gives_up_its_dead_strap_but_extraction_keeps_the_gate_tie(
     gate resistance.  Resistance floors only: no field solve, so this is quick.
     """
     external_tool(
-        find_asap7_drc_deck() is not None, "the public ASAP7 DRC deck is not installed"
+        find_gdscheck_or_none() is not None, "gdscheck is not installed (set GDSCHECK)"
     )
     spec, gds, reference = _inverter(tmp_path)
     only = {"layers": ("V0", "M1", "LIG"), "shrink": False, "max_passes": 2}
@@ -330,7 +330,7 @@ def test_nothing_is_left_to_take_from_an_inverter_built_with_its_input_knobs(
     still refuses the row-1 gate tie for the same reason.
     """
     external_tool(
-        find_asap7_drc_deck() is not None, "the public ASAP7 DRC deck is not installed"
+        find_gdscheck_or_none() is not None, "gdscheck is not installed (set GDSCHECK)"
     )
     spec = InverterSpec(
         rows=((4, 6), (3, 3)),
@@ -379,7 +379,7 @@ def test_full_reduction_lowers_the_switched_capacitance(
     input-to-output coupling that the two straps carried goes with the rest.
     """
     external_tool(
-        find_asap7_drc_deck() is not None, "the public ASAP7 DRC deck is not installed"
+        find_gdscheck_or_none() is not None, "gdscheck is not installed (set GDSCHECK)"
     )
     external_tool(_fastercap() is not None, "FasterCap is not built")
     _, gds, reference = _inverter(tmp_path)
