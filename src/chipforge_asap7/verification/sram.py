@@ -88,33 +88,6 @@ PULLUP_RATIO = PULLUP_NFIN / ACCESS_NFIN
 RECOMMENDED_MIN_CELL_RATIO = 1.5
 
 
-def sizing_report() -> list[str]:
-    """The cell's strength ratios, derived from the sizing constants.
-
-    Every device shares one gate pitch, so fin counts alone fix these ratios;
-    verify_topology has already asserted the extracted GDS matches the
-    constants, so reporting from the constants reports the layout.
-    """
-    lines = [
-        f"pull-down nfin={PULLDOWN_NFIN}, access nfin={ACCESS_NFIN}, "
-        f"pull-up nfin={PULLUP_NFIN} (shared L, one gate pitch)",
-        f"cell ratio (pull-down/access)      = {CELL_RATIO:.2f}",
-        f"  with both ports selected         = {CONCURRENT_CELL_RATIO:.2f}",
-        f"pull-up ratio (pull-up/access)     = {PULLUP_RATIO:.2f}",
-    ]
-    if CELL_RATIO < RECOMMENDED_MIN_CELL_RATIO:
-        lines.append(
-            f"WARNING: cell ratio {CELL_RATIO:.2f} is below the "
-            f"{RECOMMENDED_MIN_CELL_RATIO:.2f} usually recommended for a "
-            f"single-port read, and both ports selected halves it to "
-            f"{CONCURRENT_CELL_RATIO:.2f}.  docs/asap7_8t_bitcell.md declares "
-            f"same-address read/read legal, so this is the sizing that "
-            f"contract rests on.  Measure it: "
-            f"ctest -R asap7_8t_stability_check"
-        )
-    return lines
-
-
 CELL_NAME = "sram_cell_8t"
 VARIANT_B_NAME = CELL_NAME + "_b"
 VARIANT_B_END_NAME = CELL_NAME + "_b_end"

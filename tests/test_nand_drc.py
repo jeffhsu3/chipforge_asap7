@@ -1,9 +1,9 @@
-"""Run the public ASAP7 KLayout runset on the parametric NAND2.
+"""Run gdscheck on the parametric NAND2.
 
 Same contract as the inverter: an abutting logic cell carries no tap and
 stops its implant 9 nm past its own ACTIVE, so on its own it reports exactly
 the categories a placed row closes, and inside ``filler row filler tap
-filler`` it reports none.  Skips when KLayout or the runset is missing;
+filler`` it reports none.  Skips when gdscheck is missing;
 ``ASAP7_REQUIRE_TOOLS=1`` makes that a failure.
 """
 
@@ -18,12 +18,9 @@ from chipforge_asap7.devices import (
     build_nand_row,
     build_row_support,
 )
-from chipforge_asap7.verification.drc import runset_height_enumeration
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 ROW_END_ENCLOSURE = {"ACTIVE.WELL.EN.1", "NSELECT.ACTIVE.EN.1", "PSELECT.ACTIVE.EN.1"}
-#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
-DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 
 def _library():
@@ -87,9 +84,9 @@ def test_terminated_rows_are_clean(asap7_drc):
         assert asap7_drc(*_terminated(spec, 3, tag), tag=tag) == [], tag
 
 
-def test_released_size_trips_only_the_decks_height_enumeration(asap7_drc):
-    """A 14-fin band is past the runset's enumerated height list; nothing else fires."""
+def test_released_size_is_drc_clean(asap7_drc):
+    """A terminated row with a 14-fin band is clean under gdscheck."""
     spec = NandSpec(rows=((14, 7),), fingers=2)
     assert not spec.drc_verifiable
     categories = set(asap7_drc(*_terminated(spec, 2, "released"), tag="released"))
-    assert categories == DECK_HEIGHT_ENUMERATION
+    assert categories == set()

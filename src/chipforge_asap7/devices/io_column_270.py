@@ -1,9 +1,7 @@
 """Column IO for the 6T cell's 270 nm rows, its leaves in one column.
 
-`StaggeredIoColumnSpec` puts the 297 nm `BitlineMuxSpec` leaves in two
-staggered columns, because no leaf of that row style fits one 270 nm row.
-`SidewaysMuxSpec` does (the released ASAP7 leaf's arrangement), so here one
-column of them serves every row, each leaf beside its own row::
+`SidewaysMuxSpec` fits one 270 nm row using the released ASAP7 leaf's
+arrangement. One column serves every row, each leaf beside its own row::
 
         ←── array rows (BL/BLN on M2) enter here, at x = 0
         │ leaves       │gap│ write  │ sense │ output│tap│
@@ -20,8 +18,8 @@ to meet the array's mirrored odd rows.  The bitlines enter each leaf on M2 at
 the array's own heights, across `entry_margin` (the array's last column
 reaches past its edge): no lift, no M4.
 
-The logic is `StaggeredIoColumnSpec`'s: the 594 nm row pairs of the write
-driver, sense amplifier and output latch (mirrored) side by side, ``SA`` and
+The default logic uses the 594 nm row pairs of the write driver, sense
+amplifier and output latch (mirrored) side by side, ``SA`` and
 ``SAN`` reaching them on M4 from the leaves' tracks, ``QA``/``QAN`` crossing
 on M4 above them.  Supplies: every rail runs into the gap, to a VSS and a VDD
 M3 strap there that run the block's height.

@@ -1,10 +1,10 @@
-"""What a tap and a filler are actually for, measured with the public runset.
+"""What a tap and a filler are actually for, measured with gdscheck.
 
 An abutting logic row is as clean as a logic cell can be on its own and still
 reports eight violations, because two of the rules are not properties of a
 cell.  These tests are the evidence for that claim and for the fix.
 
-Skips when KLayout or the runset is missing; set ``ASAP7_REQUIRE_TOOLS=1`` to
+Skips when gdscheck is missing; set ``ASAP7_REQUIRE_TOOLS=1`` to
 make that a failure instead.
 """
 
@@ -21,7 +21,6 @@ from chipforge_asap7.devices import (
 )
 from chipforge_asap7.devices.finfet import MAX_VERIFIABLE_FINS
 from chipforge_asap7.devices.row_support import ROW_SUPPORT_KINDS
-from chipforge_asap7.verification.drc import runset_height_enumeration
 
 #: No logic cell satisfies this alone -- it needs a body tie within 30 um.
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
@@ -31,10 +30,6 @@ ROW_END_ENCLOSURE = {
     "NSELECT.ACTIVE.EN.1",
     "PSELECT.ACTIVE.EN.1",
 }
-#: The deck enumerates ACTIVE/SDT heights 1x27..12x27 rather than testing for a
-#: multiple of 27; a tap fills its band, so a tall stack lands past that list.
-#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
-DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 INVERTER = InverterSpec(rows=((4, 6),))
 _KIND_OF = {"f": "filler", "t": "tap", "d": "decap", "r": None}
@@ -102,8 +97,8 @@ def test_support_cells_are_drc_clean_on_their_own(asap7_drc):
     assert set(asap7_drc(*_matrix(decaps, "decap"), tag="decap")) <= NO_TAP_IN_CELL
 
 
-def test_a_tall_stacks_tie_only_trips_the_decks_height_enumeration(asap7_drc):
-    """A tap has no fins, but its tie still has a height the deck cannot decide."""
+def test_tall_support_cells_have_only_missing_tap_residuals(asap7_drc):
+    """Tall tap and decap bands add no height violations under gdscheck."""
     tall = RowStack(rows=((18, 18), (13, 13)))
     specs = [RowSupportSpec(stack=tall, kind=kind) for kind in ("tap", "decap")]
     assert all(not spec.drc_verifiable for spec in specs)
@@ -112,7 +107,7 @@ def test_a_tall_stacks_tie_only_trips_the_decks_height_enumeration(asap7_drc):
     )
     categories = set(asap7_drc(*_matrix(specs, "tall"), tag="tall"))
     # The decap's untied gates aside (see above).
-    assert categories - NO_TAP_IN_CELL == DECK_HEIGHT_ENUMERATION
+    assert categories <= NO_TAP_IN_CELL
 
 
 def test_a_terminated_row_is_finally_clean(asap7_drc):

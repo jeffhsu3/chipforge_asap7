@@ -35,11 +35,6 @@ from .io_column import (
     build_io_column,
     io_column_pins,
 )
-from .io_column_staggered import (
-    StaggeredIoColumnSpec,
-    build_staggered_io_column,
-    staggered_block_netlist,
-)
 from .nand import NAND_PINS, NandSpec, build_nand, build_nand_row
 from .output_latch import OUTPUT_LATCH_PINS, OutputLatchSpec, build_output_latch
 from .output_latch_270 import (
@@ -48,6 +43,16 @@ from .output_latch_270 import (
     build_output_latch_270,
     render_output_latch_270_lvs_schematic,
 )
+from .rom_bitcell import (
+    ROM_TILE_WORDS,
+    RomArraySpec,
+    RomBitcellSpec,
+    build_rom_array,
+    build_rom_bitcell,
+    build_rom_strap,
+    build_rom_tap,
+)
+from .rom_decoder import RomDecoderSpec, build_rom, build_rom_decoder
 from .row import RowBand, RowStack
 from .row_support import (
     ROW_SUPPORT_KINDS,
@@ -79,6 +84,7 @@ __all__ = [
     "NAND_PINS",
     "OUTPUT_LATCH_PINS",
     "OUTPUT_LATCH_270_PINS",
+    "ROM_TILE_WORDS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
     "TRISTATE_PINS",
@@ -95,13 +101,15 @@ __all__ = [
     "NandSpec",
     "OutputLatchSpec",
     "OutputLatch270Spec",
+    "RomArraySpec",
+    "RomBitcellSpec",
+    "RomDecoderSpec",
     "RowBand",
     "RowStack",
     "RowSupportSpec",
     "SenseAmpRowSpec",
     "SenseAmpTransistor",
     "Stage",
-    "StaggeredIoColumnSpec",
     "TristateSpec",
     "WriteDriverSpec",
     "WriteDriver270Spec",
@@ -126,9 +134,14 @@ __all__ = [
     "build_nand_row",
     "build_output_latch",
     "build_output_latch_270",
+    "build_rom",
+    "build_rom_array",
+    "build_rom_bitcell",
+    "build_rom_decoder",
+    "build_rom_strap",
+    "build_rom_tap",
     "build_row_support",
     "build_sense_amp_row",
-    "build_staggered_io_column",
     "build_tristate",
     "build_write_driver",
     "build_write_driver_270",
@@ -141,5 +154,4 @@ __all__ = [
     "sense_amp_transistors",
     "size_decoder",
     "split_fins_into_rows",
-    "staggered_block_netlist",
 ]

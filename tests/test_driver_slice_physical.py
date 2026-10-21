@@ -3,7 +3,7 @@
 Same contract as its leaf cells: tapless and abutting, so alone it reports
 the missing body tap and the row-end implant enclosure, and between a filler
 and a tap column of its own height it reports nothing.  LVS runs with
-``tie_bodies=True``.  Skips without KLayout or the public runset;
+``tie_bodies=True``.  Skips without KLayout (LVS) or gdscheck (DRC);
 ``ASAP7_REQUIRE_TOOLS=1`` makes that a failure.
 """
 
@@ -24,12 +24,9 @@ from chipforge_asap7.devices import (
 )
 from chipforge_asap7.devices.driver_slice import RUNSET_ACTIVE_FINS
 from chipforge_asap7.verification.lvs import render_driver_slice_lvs_schematic, run_lvs
-from chipforge_asap7.verification.drc import runset_height_enumeration
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 ROW_END_ENCLOSURE = {"ACTIVE.WELL.EN.1", "NSELECT.ACTIVE.EN.1", "PSELECT.ACTIVE.EN.1"}
-#: What a tall but on-grid ACTIVE/SDT trips: the KLayout runset's 1-12 fin lists; nothing in gdscheck.
-DECK_HEIGHT_ENUMERATION = runset_height_enumeration()
 
 SMALL = DriverSliceSpec(
     nand=NandSpec(rows=((6, 4),)), inverter=InverterSpec(rows=((8, 8), (4, 4)))
@@ -87,10 +84,10 @@ def test_terminated_slices_are_clean(spec, tag, asap7_drc):
     assert asap7_drc(*_terminated(spec, 2, f"{tag}_x2"), tag=f"{tag}_x2") == []
 
 
-def test_released_size_trips_only_the_decks_height_enumeration(asap7_drc):
+def test_released_size_is_drc_clean(asap7_drc):
     assert not RELEASED.drc_verifiable
     categories = set(asap7_drc(*_terminated(RELEASED, 1, "released"), tag="released"))
-    assert categories == DECK_HEIGHT_ENUMERATION
+    assert categories == set()
 
 
 @pytest.mark.parametrize("spec", [SMALL, ONE_ROW, RELEASED, C64])

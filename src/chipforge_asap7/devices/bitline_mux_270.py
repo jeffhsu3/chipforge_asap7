@@ -1,10 +1,8 @@
 """A bitline precharge + column-mux leaf one ASAP7 6T row (270 nm) tall.
 
-`BitlineMuxSpec` stacks an n band under a p band, which needs a 297 nm row:
-the 6T bitcell's row is 270 nm, so its IO had to stagger two columns of
-leaves (`StaggeredIoColumnSpec`).  The released ASAP7 SRAM's own leaf
-(``sram_prech_ymux_6t112_v1`` in ``srambank_32b``) fits 270 nm another way,
-and this draws that arrangement:
+The released ASAP7 SRAM's leaf (``sram_prech_ymux_6t112_v1`` in
+``srambank_32b``) fits the 6T bitcell's 270 nm row. This draws that
+arrangement:
 
 * the pFETs and nFETs stand **side by side** in x, each region the full row
   tall; the gates run vertically through two 3-fin strips, the lower strip

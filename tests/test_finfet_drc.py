@@ -1,7 +1,7 @@
-"""Run the public ASAP7 KLayout rule deck when it is available locally.
+"""Run ASAP7 DRC with gdscheck when it is available locally.
 
 This is the regression behind the "DRC clean" claim in
-`chipforge_asap7.devices.finfet`.  It skips when KLayout or the runset is
+`chipforge_asap7.devices.finfet`.  It skips when gdscheck is
 missing; set ``ASAP7_REQUIRE_TOOLS=1`` to make that a failure instead, so CI
 cannot report green on a machine where the claim was never checked.
 """
@@ -12,7 +12,6 @@ import gdspy
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet
 from chipforge_asap7.devices.finfet import MAX_FINS, MAX_VERIFIABLE_FINS
-from chipforge_asap7.verification.drc import runset_height_enumeration
 
 
 def _tile(specs: list[FinFETSpec], tag: str):
@@ -29,10 +28,8 @@ def _tile(specs: list[FinFETSpec], tag: str):
 
 
 def test_representative_finfet_matrix_is_asap7_drc_clean(asap7_drc):
-    # Exercise every fin height the runset can actually decide, for both
-    # polarities, then add nontrivial fold counts, VT markers and a custom band.
-    # Anything above MAX_VERIFIABLE_FINS is covered by the companion test below,
-    # which pins down the deck's false positive rather than asserting silence.
+    # Exercise both polarities, fold counts, VT markers and a custom band.
+    # The companion test covers the released decoder's taller devices.
     specs = [
         FinFETSpec(flavor=flavor, fins=fins)
         for flavor in ("n", "p")
@@ -53,19 +50,11 @@ def test_representative_finfet_matrix_is_asap7_drc_clean(asap7_drc):
     assert asap7_drc(*_tile(specs, "drc_matrix"), tag="drc_matrix") == []
 
 
-def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(asap7_drc):
-    """Above MAX_VERIFIABLE_FINS the deck is wrong, and only in two ways.
+def test_tall_devices_are_drc_clean(asap7_drc):
+    """Check legal 13- and 18-fin devices with gdscheck.
 
-    ACTIVE.W.2 and SDT.W.3 both read "vertical height increment is an integer
-    multiple of 27nm", but KLayout has no integer-multiple predicate so the
-    deck enumerates 1x27..12x27.  A 13- or 18-fin device *is* a multiple of 27
-    and still falls out of that list.  ASU's own SRAM hits this: running the
-    same runset on `dec_inv_62f_halved_AND` reports these two rules too.
-
-    Asserting the exact violation set keeps this honest in both directions --
-    if a future deck fixes the enumeration this test fails and
-    MAX_VERIFIABLE_FINS can be raised; if a tall device grows a *real*
-    violation, that shows up here as a new category.
+    The KLayout runset's historical height enumeration limited the
+    `drc_verifiable` flag to 12 fins; it does not limit gdscheck.
     """
     # The two fin heights the released decoder inverter is built from.
     specs = [
@@ -77,5 +66,5 @@ def test_tall_devices_only_trip_the_runsets_enumerated_height_rules(asap7_drc):
     assert max(spec.fins for spec in specs) == MAX_FINS
 
     categories = set(asap7_drc(*_tile(specs, "tall_devices"), tag="tall_devices"))
-    # gdscheck reads ACTIVE.W.2 as written (and does not check SDT.W.3): nothing.
-    assert categories == runset_height_enumeration()
+    # Tall, on-grid ACTIVE heights need no exemption from gdscheck.
+    assert categories == set()
