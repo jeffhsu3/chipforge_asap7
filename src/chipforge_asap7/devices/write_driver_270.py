@@ -36,6 +36,7 @@ from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH
 from ..layout.layers import box, require_gdspy
+from ..layout.rules import M4_PITCH, M4_X_GRID
 from .cli import parse_spec, write_gds
 from .row import RowBand, RowStack
 from .rowcell import (
@@ -101,24 +102,61 @@ GATES = (
     (9, "D", Y_GATE_HI),
     (10, "WRENA", Y_GATE_LO),
 )
-#: M3 columns, by net (x, y0, y1); a net's pin is its first.
-M3 = {
-    "SA": [(col(0), 0, Y_P)],  # to the edge: a sense amplifier's SA track above takes it
-    "W": [(col(1), Y_N, Y_P)],
-    "WRENAN": [(col(2), Y_GATE_HI, Y_M4["WRENAN"]), (gate(6), Y_GATE_LO, Y_M4["WRENAN"])],
-    "WRENA": [(col(3), Y_M4["WRENA"], TOP_OF_WRENA), (472, Y_M4["WRENA"], Y_GATE_LO)],
-    "WN": [(col(5), Y_N, Y_P), (col(10), Y_N, Y_185)],
-    "D": [(gate(8), Y_77, Y_P - 1)],
-    "SAN": [(col(11), 0, Y_P)],
-}
+
+
+def m3_columns(m4: dict[str, float]) -> dict[str, list[tuple[float, float, float]]]:
+    """M3 columns, by net (x, y0, y1), for the enables' M4 lines at `m4`; a net's pin is its first."""
+    return {
+        "SA": [(col(0), 0, Y_P)],  # to the edge: a sense amplifier's SA track above takes it
+        "W": [(col(1), Y_N, Y_P)],
+        "WRENAN": [(col(2), Y_GATE_HI, m4["WRENAN"]), (gate(6), Y_GATE_LO, m4["WRENAN"])],
+        "WRENA": [(col(3), m4["WRENA"], TOP_OF_WRENA), (472, m4["WRENA"], Y_GATE_LO)],
+        "WN": [(col(5), Y_N, Y_P), (col(10), Y_N, Y_185)],
+        "D": [(gate(8), Y_77, Y_P - 1)],
+        "SAN": [(col(11), 0, Y_P)],
+    }
+
+
+M3 = m3_columns(Y_M4)
 PIN_NETS = ("D", "WRENA", "WRENAN", "SA", "SAN")
 
 
 @dataclass(frozen=True)
 class WriteDriver270Spec:
-    """`WriteDriverSpec` (3-fin nFETs and transmission gates, 1-fin keepers) on one 297 nm row."""
+    """`WriteDriverSpec` (3-fin nFETs and transmission gates, 1-fin keepers) on one 297 nm row.
+
+    Args:
+        m4_grid: ``(x, y)``, nm in the cell, of a point on the DRM's absolute
+            M4 grid where the cell is placed: a line of the 24 nm vertex grid
+            in x (M4.AUX.1) and a track's centre in y, the tracks 48 nm apart
+            (M4.AUX.2).  Each enable's line then takes the one track its M3
+            reaches: ``WRENA``'s the first a via's M3 clears the bottom edge
+            under, ``WRENAN``'s the last it clears the top edge over.  None:
+            29.5 nm in from either edge, the cell's own vertex grid.
+    """
 
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
+    m4_grid: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.m4_grid is not None:
+            x, y = self.m4_grid
+            object.__setattr__(self, "m4_grid", (x % M4_X_GRID, y % M4_PITCH))
+
+    @property
+    def m4_lines(self) -> dict[str, float]:
+        """y of each enable's M4 line."""
+        if self.m4_grid is None:
+            return dict(Y_M4)
+        low, high, track = M3_PAST_V3, ROW - M3_PAST_V3, self.m4_grid[1]
+        return {
+            "WRENA": low + (track - low) % M4_PITCH,
+            "WRENAN": high - (high - track) % M4_PITCH,
+        }
+
+    @property
+    def m3(self) -> dict[str, list[tuple[float, float, float]]]:
+        return m3_columns(self.m4_lines)
 
     @property
     def reference(self) -> WriteDriverSpec:
@@ -148,18 +186,19 @@ class WriteDriver270Spec:
 
     @property
     def cell_name(self) -> str:
-        return f"wrdrv297{'' if self.vt == 'rvt' else '_' + self.vt}"
+        grid = "" if self.m4_grid is None else "_g" + "x".join(f"{v:g}".replace(".", "p") for v in self.m4_grid)
+        return f"wrdrv297{'' if self.vt == 'rvt' else '_' + self.vt}{grid}"
 
     @property
     def track_x(self) -> dict[str, int]:
         """x of each pin's M3."""
-        return {net: M3[net][0][0] for net in PIN_NETS}
+        return {net: self.m3[net][0][0] for net in PIN_NETS}
 
     @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
         pins: dict[str, tuple[str, tuple[float, float]]] = {}
         for net in PIN_NETS:
-            x, y0, y1 = M3[net][0]
+            x, y0, y1 = self.m3[net][0]
             pins[net] = ("M3", (x, (y0 + y1) / 2))
 
         pins["VSS"] = ("M1", (self.width / 2, 0))
@@ -322,16 +361,17 @@ def build_write_driver_270(
         "D": [(gate(8), Y_77), (gate(8), Y_GATE_HI)],
         "SAN": [(col(11), Y_N), (col(11), Y_P)],
     }
-    for net, columns in M3.items():
+    m4, m3 = spec.m4_lines, spec.m3
+    for net, columns in m3.items():
         for x, y0, y1 in columns:
             lo, hi = min(y0, y1), max(y0, y1)
-            on_m4 = net in Y_M4
-            box(cell, "M3", x - HALF, max(0, lo - (M3_PAST_V3 if on_m4 and lo == Y_M4.get(net) else PAD)),
-                x + HALF, min(ROW, hi + (M3_PAST_V3 if on_m4 and hi == Y_M4.get(net) else PAD)))  # fmt: skip
+            on_m4 = net in m4
+            box(cell, "M3", x - HALF, max(0, lo - (M3_PAST_V3 if on_m4 and lo == m4.get(net) else PAD)),
+                x + HALF, min(ROW, hi + (M3_PAST_V3 if on_m4 and hi == m4.get(net) else PAD)))  # fmt: skip
         for x, y in v2.get(net, []):
             square(cell, "V2", x, y)
-    for net, y in Y_M4.items():
-        m4_track(cell, y, [x for x, _, _ in M3[net]])
+    for net, y in m4.items():
+        m4_track(cell, y, [x for x, _, _ in m3[net]], x_grid=0 if spec.m4_grid is None else spec.m4_grid[0])
 
     if draw_pin_labels:
         for pin, (metal, origin) in spec.pin_positions.items():

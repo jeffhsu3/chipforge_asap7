@@ -58,6 +58,21 @@ def test_devices_and_pins_are_the_two_row_cells():
     assert SPEC.track_x["SA"] == SENSE_AMP.track_x["SA"]  # straight up into the amplifier's
 
 
+def test_an_m4_grid_puts_each_enable_on_the_one_track_its_m3_reaches():
+    assert SPEC.m4_lines == {"WRENA": 29.5, "WRENAN": 267.5}
+    for half_nm in range(96):
+        spec = WriteDriver270Spec(m4_grid=(0, half_nm / 2))
+        lines = spec.m4_lines
+        assert 17 <= lines["WRENA"] < 17 + 48 and 280 - 48 < lines["WRENAN"] <= 280
+        assert all((y - spec.m4_grid[1]) % 48 == 0 for y in lines.values())
+        assert spec.cell_name.startswith("wrdrv297_g")
+    spec = WriteDriver270Spec(m4_grid=(7, 5))
+    cell = build_write_driver_270(spec, lib=_library())
+    m4 = cell.get_polygons(by_spec=True)[(40, 0)]
+    assert sorted((p[:, 1].min() + p[:, 1].max()) / 2 for p in m4) == sorted(spec.m4_lines.values())
+    assert all((x - 7) % 24 == 0 for p in m4 for x in (p[:, 0].min(), p[:, 0].max()))
+
+
 def test_in_a_tapped_row_is_drc_clean(asap7_drc):
     library = _library()
     cell = build_write_driver_270(SPEC, lib=library)

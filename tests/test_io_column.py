@@ -109,6 +109,48 @@ def test_the_block_draws_m4_only_for_its_routes(boxes_on):
     assert boxes_on(cell, "BOUNDARY") == [(0, 0, 1620, 2376)]
 
 
+def _m4(cell):
+    """Every M4 box of `cell`, its cells' too."""
+    polygons = cell.get_polygons(by_spec=True).get((40, 0), [])
+    return [(p[:, 0].min(), p[:, 1].min(), p[:, 0].max(), p[:, 1].max()) for p in polygons]
+
+
+@pytest.mark.parametrize("grid", [(0, 0), (12, 6), (5.5, 30.5), (23, 47)])
+def test_an_m4_grid_puts_every_line_on_its_tracks(grid):
+    spec = IoColumnSpec(m4_grid=grid)
+    gx, gy = spec.m4_grid
+    m4 = _m4(build_io_column(spec, lib=_library()))
+    assert len(m4) == 5
+    for x0, y0, x1, y1 in m4:
+        assert ((y0 + y1) / 2 - gy) % 48 == 0
+        assert (x0 - gx) % 24 == 0 and (x1 - gx) % 24 == 0
+    nominal, routes = IoColumnSpec().routes, spec.routes
+    # The amplifier's lines go down its stubs, the others the nearer way;
+    # one cell's lines stay a pitch apart.
+    assert nominal["SA"][0][0] - 48 < routes["SA"][0][0] <= nominal["SA"][0][0]
+    assert abs(routes["SA"][1][0] - nominal["SA"][1][0]) <= 24
+    assert abs(routes["QA"][0][0] - nominal["QA"][0][0]) <= 24
+    for k in range(2):
+        assert routes["SAN"][k][0] - routes["SA"][k][0] == 48
+    assert routes["QAN"][0][0] - routes["QA"][0][0] == 48
+
+
+def test_an_m4_grid_is_one_period_and_names_the_block():
+    assert IoColumnSpec(m4_grid=(36, 100)).m4_grid == (12, 4)
+    assert IoColumnSpec(m4_grid=(12, 19.5)).cell_name == IoColumnSpec().cell_name + "_g12x19p5"
+
+
+@pytest.mark.parametrize("grid", [(12, 6), (0, 19.5)])
+def test_placed_on_its_m4_grid_no_m4_grid_rule_fires(grid, asap7_drc):
+    library = _library()
+    spec = IoColumnSpec(m4_grid=grid)
+    block = build_io_column(spec, lib=library)
+    top = library.new_cell("placed")
+    # The grid's point to an absolute one: x on 24 nm, y a track's centre (12 mod 48).
+    top.add(gdspy.CellReference(block, origin=(-grid[0] % 24, (12 - grid[1]) % 48)))
+    assert not {c for c in asap7_drc(library, top, tag="placed") if c.startswith("M4.")}
+
+
 def test_a_taller_group_gets_more_support_pairs():
     spec = IoColumnSpec(
         mux=BitlineMuxSpec(rows=2, selects=8, bitline_entry=(348.5, 245.5))
