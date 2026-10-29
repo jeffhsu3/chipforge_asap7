@@ -27,8 +27,8 @@ __all__ = [
 
 GDSCHECK_ENV = "GDSCHECK"
 _DEFAULT_GDSCHECKS = (
-    Path.home() / "iv4/repos/OpenFinRAM/build/tools/gdscheck/bin/gdscheck",
     Path.home() / "iv4/repos/gdscheck/target/release/gdscheck",
+    Path.home() / "iv4/repos/OpenFinRAM/build/tools/gdscheck/bin/gdscheck",
 )
 _POINT = re.compile(r"(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
 
@@ -93,20 +93,23 @@ def run_gdscheck(
     *,
     cell_name: str,
     binary: str | Path | None = None,
+    pdk_file: str | Path | None = None,
     suite: str = "main",
     timeout: float = 600,
 ) -> list[DRCViolation]:
     """Run gdscheck's ASAP7 `suite` on `cell_name` of `gds`; an empty list means clean.
 
     One `DRCViolation` per marker (an item's multiplicity counted out).
+    `pdk_file` selects an explicit pdk.yml, useful for checks against pinned rules.
     """
     gds_path = Path(gds).expanduser().resolve()
     out = Path(output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     report = out / f"{cell_name}.lyrdb"
     report.unlink(missing_ok=True)
+    process = str(Path(pdk_file).expanduser().resolve()) if pdk_file else "asap7"
     completed = subprocess.run(
-        [str(find_gdscheck(binary)), "run", "--input", str(gds_path), "--process", "asap7",
+        [str(find_gdscheck(binary)), "run", "--input", str(gds_path), "--process", process,
          "--suite", suite, "--topcell", cell_name, "--report", str(report)],
         check=False, capture_output=True, text=True, timeout=timeout,
     )  # fmt: skip
