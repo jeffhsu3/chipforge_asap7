@@ -29,11 +29,14 @@ dependencies = []
 [project.optional-dependencies]
 gds = ["gdspy>=1.6.13", "tyro>=1.0"]
 plot = ["matplotlib>=3.7"]
+timing = ["numpy>=1.24"]
 pex = ["klayout-pex>=0.3.12,<0.4; python_version >= '3.12'"]
 
 [project.scripts]
 asap7-finfet = "chipforge_asap7.devices.finfet:main"
 asap7-bitline-mux = "chipforge_asap7.devices.bitline_mux:main"
+asap7-brom = "chipforge_asap7.brom.__main__:main"
+asap7-brom-timing = "chipforge_asap7.brom.timing:main"
 asap7-inverter = "chipforge_asap7.devices.inverter:main"
 asap7-io-column = "chipforge_asap7.devices.io_column:main"
 asap7-nand = "chipforge_asap7.devices.nand:main"
