@@ -71,8 +71,12 @@ PRECHN is active low; EVAL and SAMPLE are active high.
    precharge. Q is unspecified until the first completed sample.
 
 SAMPLE is a level-sensitive latch enable, not an edge-triggered clock.
-This version has no self-timed replica controller. GT2N's clock delays, replica sizing and
-read-cycle numbers are not applicable to these ASAP7 devices and wires.
+An optional [clocked controller](brom_controller.md) now generates these phases
+from CLK, RESETN and four external completion acknowledgments (`--clocked`).
+The experimental [selector replica](brom_replica.md) supplies internal feedback
+with `--self-timed`. Extracted interconnect timing is not yet qualified. GT2N's
+clock delays, replica sizing and read-cycle numbers are not applicable to these
+ASAP7 devices and wires.
 
 ## Physical implementation and migration
 

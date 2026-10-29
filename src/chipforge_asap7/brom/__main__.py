@@ -13,13 +13,17 @@ from ..verification.lvs import run_lvs
 from ..verification.lvs_report import summarize_lvsdb
 from . import (
     BromSpec,
+    ReplicaSpec,
     build_macro,
     build_periphery,
     cgen_circuit,
+    clocked_macro_circuit,
+    controller_circuit,
     decoder_circuit,
     macro_circuit,
     output_circuit,
     selector_map,
+    self_timed_macro_circuit,
 )
 from .layout import macro_periphery, macro_plan
 from .periphery import periphery_plan
@@ -32,6 +36,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--self-timed",
+        action="store_true",
+        help="Experimental internal selector-replica feedback",
+    )
+    parser.add_argument("--replica-guard-pairs", type=int)
+    parser.add_argument("--replica-extra-blocks", type=int)
+    mode.add_argument(
+        "--clocked",
+        action="store_true",
+        help="Integrate clock controller; completion feedback remains external",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--drc",
@@ -44,24 +61,63 @@ def main(argv: list[str] | None = None) -> None:
         help="Run unit-fin KLayout LVS on every emitted top",
     )
     args = parser.parse_args(argv)
+    if not args.self_timed and (
+        args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
+    ):
+        parser.error("replica options require --self-timed")
     words = json.loads(args.words.read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
     spec = BromSpec(len(words), args.bits, args.ways, args.fins, args.vt)
-    macro = macro_circuit(spec, words)
+    macro = (
+        self_timed_macro_circuit(
+            spec,
+            words,
+            replica=ReplicaSpec(
+                4 if args.replica_guard_pairs is None else args.replica_guard_pairs,
+                1 if args.replica_extra_blocks is None else args.replica_extra_blocks,
+            ),
+        )
+        if args.self_timed
+        else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
+    )
     circuits = {
         "macro": macro,
         "cgen": cgen_circuit(spec.fins, spec.vt),
         "decoder": decoder_circuit(spec),
         "output": output_circuit(spec.fins, spec.vt),
     }
+    if args.clocked or args.self_timed:
+        circuits["controller"] = controller_circuit(spec.fins, spec.vt)
     args.out.mkdir(parents=True, exist_ok=True)
     bank_plan = periphery_plan(macro_periphery(macro))
     report = {
         "spec": asdict(spec),
         "top_cell": macro.name,
         "selector_map": selector_map(spec, words),
-        "pins": spec.pins,
+        "pins": macro.pins,
+        "controller": (
+            "replica_feedback"
+            if args.self_timed
+            else "external_completion_handshake"
+            if args.clocked
+            else "external_phases"
+        ),
+        "replica_integrated": bool(macro.replica),
+        "replica": (
+            {
+                "blocks": len(macro.replica.selector.mapping),
+                "columns": spec.columns,
+                "guard_pairs": macro.replica.guard_pairs,
+                "extra_blocks": macro.replica.extra_blocks,
+                "candidate": 15,
+                "selector_devices": len(macro.replica.selector.device_names) // 2,
+                "isolation_devices": len(macro.replica.selector.device_names) // 2,
+                "feedback_timing_qualified": False,
+            }
+            if macro.replica
+            else None
+        ),
         "layout": "compact_selector_array",
         "selector_plan": asdict(macro.array.plan),
         "array_core_nm": [
@@ -84,7 +140,13 @@ def main(argv: list[str] | None = None) -> None:
         "isolation_devices": spec.blocks * spec.columns,
         "periphery_devices": len(macro_periphery(macro).devices),
         "timing_qualified": False,
-        "interface": "PRECHN active low; EVAL and SAMPLE active high; nonoverlapping read phases",
+        "interface": (
+            "CLK high precharges, low requests read; RESETN active low; internal replica feedback"
+            if args.self_timed
+            else "CLK high precharges, low requests read; RESETN active low; four external completion inputs"
+            if args.clocked
+            else "PRECHN active low; EVAL and SAMPLE active high; nonoverlapping read phases"
+        ),
         "artifacts": {},
     }
     report_path = args.out / "manifest.json"

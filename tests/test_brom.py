@@ -17,7 +17,7 @@ from chipforge_asap7.brom import (
 )
 
 
-def settle(circuit, inputs, previous=None):
+def settle(circuit, inputs, previous=None, *, ideal_controls=()):
     """Ideal transistor switches, retaining charge on isolated nodes.
 
     Only supply-connected components drive a new value. Input inverters settle
@@ -40,6 +40,21 @@ def settle(circuit, inputs, previous=None):
             values[d] = 1 - fixed[g]
     nets = {n for d in circuit.devices for n in d.nodes}
     for _ in range(200):
+        # Explicit ideal complements for internally generated latch controls.
+        # Analog overlap and control skew must be checked in SPICE instead.
+        for n in circuit.devices:
+            d, g, source, _ = n.nodes
+            if (
+                n.spec.flavor == "n"
+                and source == "VSS"
+                and g in ideal_controls
+                and g in values
+                and any(
+                    p.spec.flavor == "p" and p.nodes[:3] == (d, g, "VDD")
+                    for p in circuit.devices
+                )
+            ):
+                values[d] = 1 - values[g]
         parent = {n: n for n in nets}
 
         def root(n, parent=parent):

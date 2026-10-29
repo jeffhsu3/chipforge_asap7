@@ -26,6 +26,14 @@ class SelectorInstance:
     device_names: frozenset[str]
 
 
+@dataclass(frozen=True)
+class ReplicaInstance:
+    selector: SelectorInstance
+    port_nets: dict[str, str]
+    guard_pairs: int
+    extra_blocks: int
+
+
 class Circuit:
     def __init__(
         self, name: str, pins: tuple[str, ...], fins: int = 2, vt: str = "rvt"
@@ -36,6 +44,7 @@ class Circuit:
         self.devices: list[Device] = []
         self._serial = 0
         self.array: SelectorInstance | None = None
+        self.replica: ReplicaInstance | None = None
         self.placement_groups: list[tuple[str, tuple[str, ...]]] = []
         self.array_width: int | None = None
 

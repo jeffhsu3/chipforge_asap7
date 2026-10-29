@@ -38,30 +38,58 @@ class MacroPlan:
     array_height: int
 
 
-def macro_plan(circuit: Circuit) -> MacroPlan:
+def selector_placements(circuit: Circuit):
+    """Keep replica BL escapes to the right of the data core, candidates above it."""
     if circuit.array is None:
         raise ValueError("build_macro requires a macro_circuit with a selector array")
-    array = circuit.array
-    blocks, columns = len(array.mapping), len(array.mapping[0])
-    width, height = columns * array.plan.width, blocks * array.plan.height
-    ports = [
-        ArrayPort(f"C<{b},{k}>", metal, -24, b * array.plan.height + y)
-        for b in range(blocks)
-        for k, (metal, y) in enumerate(array.plan.tracks)
-    ]
-    ports += [
-        ArrayPort(f"BL<{c}>", "M3", c * array.plan.width + 81, 0)
-        for c in range(columns)
-    ]
-    ports.append(ArrayPort("VSS", "M2", 0, height + 81))
+    yield "", circuit.array, 0, 0
+    if circuit.replica is not None:
+        width = len(circuit.array.mapping[0]) * circuit.array.plan.width
+        height = len(circuit.array.mapping) * circuit.array.plan.height
+        x = ((width + 432 + 431) // 432) * 432
+        yield "R", circuit.replica.selector, x, height + 432
+
+
+def macro_plan(circuit: Circuit) -> MacroPlan:
+    placements = list(selector_placements(circuit))
+    ports = []
+    bank_y = 0
+    for prefix, array, ox, oy in placements:
+        blocks, columns = len(array.mapping), len(array.mapping[0])
+        height = blocks * array.plan.height
+        bank_y = max(bank_y, oy + height + 432)
+
+        def net(name, prefix=prefix):
+            return circuit.replica.port_nets[name] if prefix else name
+
+        ports += [
+            ArrayPort(
+                net(f"C<{b},{k}>"), metal, ox - 24, oy + b * array.plan.height + y
+            )
+            for b in range(blocks)
+            for k, (metal, y) in enumerate(array.plan.tracks)
+        ]
+        ports += [
+            ArrayPort(net(f"BL<{col}>"), "M3", ox + col * array.plan.width + 81, oy)
+            for col in range(columns)
+        ]
+        ports.append(ArrayPort("VSS", "M2", ox, oy + height + 81))
     access = tuple(-144 - 72 * i for i in range(len(ports)))
-    # M5 centres lie on 12 + 48*k. Twice-minimum pitch separates unequal tips.
     first_trunk = ((min(access) - 192 - 12) // 48) * 48 + 12
     trunks = tuple(first_trunk - 96 * i for i in range(len(ports)))
     routes = tuple(
         p.y if p.layer == "M4" else -84 - 96 * i for i, p in enumerate(ports)
     )
-    return MacroPlan(tuple(ports), height + 432, access, trunks, routes, width, height)
+    array = circuit.array
+    return MacroPlan(
+        tuple(ports),
+        bank_y,
+        access,
+        trunks,
+        routes,
+        len(array.mapping[0]) * array.plan.width,
+        len(array.mapping) * array.plan.height,
+    )
 
 
 def macro_periphery(circuit: Circuit) -> Circuit:
@@ -74,9 +102,10 @@ def macro_periphery(circuit: Circuit) -> Circuit:
     )
     bank.array_width = plan.array_width
     bank.placement_groups = list(circuit.placement_groups)
-    bank.devices = [
-        d for d in circuit.devices if d.name not in circuit.array.device_names
-    ]
+    array_devices = set(circuit.array.device_names)
+    if circuit.replica is not None:
+        array_devices.update(circuit.replica.selector.device_names)
+    bank.devices = [d for d in circuit.devices if d.name not in array_devices]
     return bank
 
 
@@ -102,9 +131,16 @@ def build_macro(circuit: Circuit, *, lib: Any = None) -> Any:
     top = gdspy.Cell(circuit.name, exclude_from_current=True)
     if lib is not None:
         lib.add(top)
-    array = build_selector_array(circuit.array.plan, circuit.array.mapping, lib=lib)
-    array.labels.clear()  # Array interface nets are internal to this macro.
-    top.add(gdspy.CellReference(array))
+    for prefix, instance, x, y in selector_placements(circuit):
+        array = build_selector_array(instance.plan, instance.mapping)
+        array.name += "_replica" if prefix else "_core"
+        array.labels.clear()
+        if lib is not None:
+            if array.name in lib.cells:
+                array = lib.cells[array.name]
+            else:
+                lib.add(array)
+        top.add(gdspy.CellReference(array, (x, y)))
     bank = macro_periphery(circuit)
     bank_cell = build_periphery(bank, lib=lib, label_pins=False)
     top.add(gdspy.CellReference(bank_cell, (0, plan.bank_y)))
@@ -126,11 +162,11 @@ def build_macro(circuit: Circuit, *, lib: Any = None) -> Any:
             _v3(top, access, y)
             _m4(top, trunk, access, y)
         elif port.layer == "M3":
-            box(top, "M3", port.x - 9, y - 17, port.x + 9, 14)
+            box(top, "M3", port.x - 9, y - 17, port.x + 9, port.y + 14)
             _v3(top, port.x, y)
             _m4(top, trunk, port.x, y)
         else:
-            _m4(top, trunk, 0, y)
+            _m4(top, trunk, port.x + 24, y)
         _v4(top, trunk, y)
         box(top, "M5", trunk - 12, min(y, bank_y) - 24, trunk + 12, max(y, bank_y) + 24)
         _v4(top, trunk, bank_y)
@@ -171,6 +207,6 @@ def verify_macro_routes(circuit: Circuit, top: Any) -> None:
         sink = component("M4", 0, plan.bank_y + buses[port.net])
         if source != sink:
             raise ValueError(f"disconnected macro route: {port.net}")
-        if source in seen:
+        if source in seen and seen[source] != port.net:
             raise ValueError(f"shorted macro routes: {seen[source]} and {port.net}")
         seen[source] = port.net
