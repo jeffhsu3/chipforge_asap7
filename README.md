@@ -89,6 +89,7 @@ against a unit-fin LVS reference in the tests. The full write-up of each is in
 | [`IoColumnSpec`](docs/column_io.md#the-column-io-block) | One port's column IO: mux group, sense amp, latch, write driver |
 | [`RomBitcellSpec`](docs/rom.md) | Via-programmed NOR-ROM tile with a poly wordline, 81 x 81 nm per bit at two fins |
 | [`RomDecoderSpec`](docs/rom.md#wordline-decoder) | The ROM's wordline decoder: NAND and driver per word, interleaved over rows above the array |
+| [`BromSpec`](docs/brom.md) | Four-word BROM compact-array compiler with CGEN, block decoder, precharge/readout, mux and output latches; routed GDS and transistor CDL |
 
 ## Simulation and verification
 

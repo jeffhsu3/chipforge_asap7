@@ -8,9 +8,11 @@ outside the periodic core and are not charged to its area.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from math import isfinite
+from pathlib import Path
 from typing import Any
 
 from ..devices.finfet import VT_LAYERS
@@ -167,3 +169,11 @@ def selector_lvs_reference(
                         f"M{tag}_{b}_{col}_{fin} BL<{col}> {gate} VSS VSS nmos_{plan.vt} L=20n W=7n"
                     )
     return "\n".join([*lines, f".ends {name}", ".end", ""])
+
+
+def default_selector_plan(fins: int = 2, vt: str = "rvt") -> SelectorPlan:
+    """Frozen CP-SAT witness plans; no solver is needed during compilation."""
+    if type(fins) is not int or fins not in (1, 2, 3):
+        raise ValueError("compact BROM selectors support 1..3 fins")
+    plans = json.loads(Path(__file__).with_name("selector_plans.json").read_text())
+    return replace(SelectorPlan(**plans[str(fins)]), vt=vt)
