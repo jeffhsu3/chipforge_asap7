@@ -37,11 +37,13 @@ def report(scale=1, status="passed"):
     }
 
 
-def test_period_bracket_excludes_numerical_errors_and_reports_duty():
+def test_schedule_transition_excludes_numerical_errors_and_reports_duty():
     a = summarize_sweep([report(0.7, "error"), report()])
     assert a["estimated_minimum_period_bracket_ps"] is None
+    assert a["observed_schedule_transition_ps"] is None
     b = summarize_sweep([report(0.6, "failed"), report(0.7, "error"), report()])
-    assert b["estimated_minimum_period_bracket_ps"] == [600, 1000]
+    assert b["estimated_minimum_period_bracket_ps"] is None
+    assert b["observed_schedule_transition_ps"] == [600, 1000]
     assert b["passing_clock_constraints"] == {
         "high_ps": 450,
         "low_ps": 550,
@@ -54,9 +56,9 @@ def test_period_bracket_excludes_numerical_errors_and_reports_duty():
     )
 
 
-def test_nonmonotonic_period_sweep_cannot_claim_bracket():
+def test_nonmonotonic_schedule_sweep_reports_no_transition_pair():
     r = summarize_sweep([report(0.6, "failed"), report(0.8), report(1, "failed")])
-    assert r["nonmonotonic"] and r["estimated_minimum_period_bracket_ps"] is None
+    assert r["nonmonotonic"] and r["observed_schedule_transition_ps"] is None
 
 
 @pytest.mark.parametrize(
@@ -152,6 +154,7 @@ def test_register_pulse_trials_preserve_ramp_widths_and_both_polarities(tmp_path
         assert {r["high"] for r in records if r["kind"] == kind} == {False, True}
     assert "1497.5p" in deck and "1502.5p" in deck
     assert "173600p" in deck
+    assert "166542.5p" in deck and "166547.5p" in deck
 
 
 def test_registered_rc_stress_includes_pin_clock_and_phase_feedback(tmp_path):
@@ -164,7 +167,18 @@ def test_registered_rc_stress_includes_pin_clock_and_phase_feedback(tmp_path):
         tmp_path / "model.osdi",
         wire_rc_controls=True,
     )
-    for net in ("CLK", "REG_CLKB", "REG_M", "REG_MB", "REG_S", "REG_SB"):
+    for net in (
+        "CLK",
+        "REG_CLKB",
+        "REG_M",
+        "REG_MB",
+        "REG_S",
+        "REG_SB",
+        "REG_M_OFF",
+        "REG_S_OFF",
+        "REG_M_CLOSED",
+        "REG_S_CLOSED",
+    ):
         assert f"* estimated control wire: {net}\n" in deck
     assert "CLK_RECEIVER" in signals
     assert "Vstim0 rcdrv_" in deck
@@ -206,6 +220,7 @@ def test_startup_ramp_is_explicit_and_finishes_before_address(tmp_path):
 
 
 def test_register_report_requires_matching_load_and_model(tmp_path):
+    from chipforge_asap7.brom.output_register import output_register_circuit
     from chipforge_asap7.brom.timing_estimate import add_register_estimate
 
     summary = summarize_sweep([report()])
@@ -221,12 +236,21 @@ def test_register_report_requires_matching_load_and_model(tmp_path):
         "reference_clk_to_valid_ps": {},
         "scope": "standalone ideal wires",
         "delay_degradation_limit": 0.1,
+        "register_cell_sha256": hashlib.sha256(
+            output_register_circuit().netlist().encode()
+        ).hexdigest(),
     }
     path = tmp_path / "register.json"
     path.write_text(json.dumps(r))
     assert not add_register_estimate(summary, path)["standalone_register"][
         "macro_address_setup_hold"
     ]
+    current_hash = r.pop("register_cell_sha256")
+    path.write_text(json.dumps(r))
+    with pytest.raises(ValueError, match="conditions/model"):
+        add_register_estimate(summary, path)
+    r["register_cell_sha256"] = current_hash
+
     r["conditions"] = {**r["conditions"], "output_load_ff": 4}
     path.write_text(json.dumps(r))
     with pytest.raises(ValueError, match="conditions"):
@@ -265,3 +289,52 @@ def test_sweep_retains_solver_errors_and_propagates_startup(tmp_path, monkeypatc
     assert r["fastest_tested_passing_period_ps"] == 1000
     assert r["estimated_minimum_period_bracket_ps"] is None
     assert r["samples"][0]["status"] == "error"
+
+
+def test_register_startup_ramp_preserves_conditioning_interval(tmp_path):
+    args = (TimingConditions(), tmp_path / "models.pm", tmp_path / "model.osdi")
+    deck, _ = render_register_bench(*args, startup_ramp_ps=25)
+    assert "Vsupply vdd 0 PWL(0 0 25p 0.7)" in deck
+    assert "uic" not in deck
+    with pytest.raises(ValueError, match="first register data edge"):
+        render_register_bench(*args, startup_ramp_ps=50)
+
+
+def test_scaled_schedule_does_not_attribute_failures_to_a_read_path():
+    slow = report(0.6, "failed")
+    slow["conditions"]["phase_scale"] = 0.3
+    slow["failures"] = ["address 0: registered Q[0] did not capture"]
+    slow["conditions"]["slew_ps"] = 2
+    fast = report()
+    fast["conditions"]["phase_scale"] = 0.5
+    fast["conditions"]["slew_ps"] = 2
+    r = summarize_sweep([slow, fast])
+    assert r["observed_schedule_transition_ps"] == [300, 500]
+    assert r["failed_checks_at_schedule_transition"] == slow["failures"]
+    assert r["estimated_minimum_period_bracket_ps"] is None
+    assert r["limiting_constraint"] is None
+    assert not r["address_setup_hold_swept"]
+    assert r["samples"][0]["scheduled_address_lead_to_falling_clk_ps"] == 48
+    assert r["samples"][0]["scheduled_address_settled_before_falling_ramp_ps"] == 46
+    assert r["samples"][1]["scheduled_address_lead_to_falling_clk_ps"] == 80
+
+
+def test_schedule_report_exposes_sparse_pattern_coverage_and_spacing():
+    from chipforge_asap7.brom.timing import pattern_words
+
+    sparse = report(0.6, "failed")
+    sparse["spec"] = asdict(BromSpec(4, 2, registered_output=True))
+    sparse["words"] = pattern_words(BromSpec(**sparse["spec"]))
+    passing = deepcopy(sparse)
+    passing.update(status="passed", passed=True)
+    passing["conditions"]["phase_scale"] = 0.7
+    r = summarize_sweep([sparse, passing])
+    assert r["image_coverage"]["selector_patterns"] == [0, 1]
+    assert not r["image_coverage"]["all_16_selector_patterns"]
+    assert r["observed_schedule_spacing_ps"] == pytest.approx(100)
+    full = report()
+    full["spec"] = asdict(BromSpec(4, 16, registered_output=True))
+    full["words"] = pattern_words(BromSpec(**full["spec"]))
+    coverage = summarize_sweep([full])["image_coverage"]
+    assert coverage["all_16_selector_patterns"]
+    assert not coverage["worst_case_qualified"]

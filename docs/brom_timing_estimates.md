@@ -3,7 +3,8 @@
 The timing tools now characterize the rising-edge output register, sweep
 complete self-timed read schedules, and attach matching results to compiler
 manifests. Results remain estimates: `timing_qualified`, `extracted` and
-`setup_hold_qualified` stay false.
+`setup_hold_qualified` stay false. These regenerated results use the
+[both-control closure interlock](brom_clock_closure.md).
 
 ## Standalone register
 
@@ -33,15 +34,19 @@ RVT/two-fin, ideal-wire results (ps):
 
 | Corner, load, input ramp | CLK→Q fall / rise | Setup passing bound | Hold passing bound | High / low pulse passing bounds |
 |---|---:|---:|---:|---:|
-| TT, 0.70 V, 25 °C, 1 fF, 5 ps | 44.8 / 50.9 | 0 | 10 | 40 / 20 |
-| TT, 0.70 V, 25 °C, 1 fF, 2 ps | 44.1 / 50.3 | 0 | 10 | 40 / 20 |
-| TT, 0.70 V, 25 °C, 4 fF, 5 ps | 77.4 / 92.7 | 0 | 10 | 40 / 20 |
-| TT, 0.70 V, 25 °C, 4 fF, 2 ps | 76.8 / 92.1 | 0 | 10 | 40 / 20 |
-| SS, 0.63 V, 125 °C, 1 fF, 5 ps | 64.0 / 75.5 | 0 | 20 | 40 / 40 |
-| FF, 0.77 V, −40 °C, 1 fF, 5 ps | 33.2 / 36.6 | 0 | 10 | 20 / 20 |
+| TT, 0.70 V, 25 °C, 1 fF, 5 ps | 56.5 / 63.0 | 0 | 10 | 40 / 40 |
+| TT, 0.70 V, 25 °C, 1 fF, 2 ps | 55.8 / 62.4 | 0 | 10 | 40 / 40 |
+| TT, 0.70 V, 25 °C, 4 fF, 5 ps | 89.1 / 104.9 | 0 | 10 | 80 / 40 |
+| TT, 0.70 V, 25 °C, 4 fF, 2 ps | 88.5 / 104.2 | 0 | 10 | 80 / 40 |
+| SS, 0.63 V, 125 °C, 1 fF, 5 ps | 80.6 / 92.6 | 0 | 20 | 80 / 80 |
+| FF, 0.77 V, −40 °C, 1 fF, 5 ps | Numerical failure | — | — | — |
 
-All setup samples at −10 ps fail the delay/capture criterion; 0 ps and larger
-pass. A 0 ps sampled bound does not mean the register has no setup requirement:
+For the completed TT/SS cases, setup samples at −10 ps fail the delay/capture
+criterion; 0 ps and larger pass. TT/1 fF/5 ps uses KLU; the other passing
+standalone cases use SPARSE. The updated FF standalone sweep aborts numerically
+near a late stimulus event, including KLU and a finer 0.25 ps retry, so it
+supplies no setup/hold or pulse-width bounds. Its earlier-register results are
+archived and must not be reused for this topology. A 0 ps sampled bound does not mean the register has no setup requirement:
 internal clock delay permits data capture after the pin's 50% crossing, and
 the actual boundary lies between samples. SS hold is bracketed by 10 ps
 failing and 20 ps passing; other hold cases by 0 and 10 ps. These constraints
@@ -58,40 +63,75 @@ PYTHONPATH=src python -m chipforge_asap7.brom.timing_estimate \
 ```
 
 Generate the matching standalone report first, using `--slew-ps 2`. The
-optional attachment checks model/OSDI hashes, fin count, VT, supply,
+optional attachment checks the register-cell netlist hash, model/OSDI hashes,
+fin count, VT, supply,
 temperature, output load, input slew and timestep. Each macro case preserves
 its deck, waveform, report, model hashes and circuit hash. Numerical errors
 remain errors and cannot establish a failing timing boundary. Use `--words`
 to characterize a particular JSON ROM image; otherwise the existing selector
 pattern generator supplies the words.
 
-The clock sweep uses a fixed 45% high / 55% low duty cycle. Its minimum-period
-bracket is inferred between a failing and a passing sampled schedule, assuming
-monotonic behavior between them. It is suppressed if sampled results are
-nonmonotonic. The fastest tested passing schedule is reported separately.
-High and low times are a tested pair, not independently minimized limits.
+The sweep **jointly scales clock and address timing** at a fixed 45% high /
+55% low duty cycle, including the initial precharge interval. Input slew and
+the final request’s 60 ps reset-cancellation delay remain fixed. It cannot isolate a minimum read-path period or
+identify the limiting constraint. Address setup/hold is not independently swept.
 
 For the 4×2 mux1 TT macro programmed `[2,0,0,0]`, 1 fF loads and 2 ps ramps:
 
-- 300 and 400 ps schedules fail; 500 and 600 ps pass.
-- Sampled minimum-period bracket: **400–500 ps**, at the tested duty cycle.
-- Fastest passing schedule: **225 ps high / 275 ps low**.
-- At 500 ps: worst falling-CLK→DATA is 189.3 ps, falling-CLK→sampled
-  word is 199.3 ps, and rising-CLK→idle controller plus restored bitlines is
-  196.2 ps. Worst rising-CLK→valid Q is 47.8 ps.
+| Tested period | Scheduled address lead before falling CLK (50%→50%) | Result and observed failed checks |
+|---|---:|---|
+| 300 ps | 48 ps | No first sample; subsequent idle/precharge and bitline-restoration failures; invalid sampled data/capture; canceled-read sampling. |
+| 400 ps | 64 ps | Incomplete return to precharge; PRECHN not idle on later requests; one bitline-restoration failure. |
+| 500 ps | 80 ps | Passes the exercised protocol checks. |
+| 600 ps | 96 ps | Passes the exercised protocol checks. |
 
-Those path metrics include controller/decoder/readout behavior; they cannot
-be summed into a universal frequency bound. Address setup/hold is not swept.
-All complete-cycle cases also check replica margin, latch closure,
-candidate/precharge exclusion, output retention and a reset-canceled request.
+These address leads describe scheduled transitions, not measured setup margins;
+not every address bit changes on every event. With the fixed 2 ps input ramps,
+the address ramp finishes only 46 ps before the falling CLK ramp starts at the
+300 ps schedule. A passing result does not establish an address setup/hold limit.
+
+For this single image, 500 ps is the fastest tested passing complete schedule, with 225 ps high,
+275 ps low and the corresponding address timing. The 400/500 ps observations
+are a failing/passing schedule pair, not a minimum-period bracket. The failure
+lists above describe symptoms and do not distinguish address setup failure from
+read-path, recovery, or interacting constraints. In particular, the 400 ps run
+reports recovery/precharge failures; that is not proof of an isolated read limit.
+
+The JSON exposes `observed_schedule_transition_ps`, the endpoint's exact
+`failed_checks_at_schedule_transition`, and per-sample address lead times.
+`estimated_minimum_period_bracket_ps` is retained as null for v1 consumers;
+`limiting_constraint` is null and `address_setup_hold_swept` is false.
+Numerical errors cannot supply a failing endpoint, and a nonmonotonic sweep
+suppresses the transition pair. Each sample retains its full failure list.
+
+At the passing 500 ps schedule, worst falling-CLK→DATA is 113.8 ps,
+falling-CLK→sampled word is 191.8 ps, rising-CLK→idle plus restored bitlines
+is 196.2 ps, and rising-CLK→valid Q is 59.3 ps. These measured paths do not
+establish independent minimum high/low widths or a universal frequency bound.
+The failing/passing samples are 100 ps apart; the sweep does not resolve the
+transition inside that interval. No midpoint or tighter bound is inferred.
+The JSON records that spacing and the selector patterns actually present.
+
+This 4×2 image is the default generator's output for that shape, but its two
+selectors cover only patterns 0 and 1. It is an illustrative case, not a
+worst-case headline. A default 4×16 mux1 or 16×4 mux4 image covers all sixteen
+selector patterns; those larger macros need their own schedule sweeps and
+finer sampling near a transition. They also change geometry and loading, so
+same-shape image sweeps are needed for a direct 4×2 comparison. All-pattern
+coverage alone does not prove worst-case timing. Those broader, finer sweeps
+have not been performed here.
+
+To attribute a constraint, hold the other schedule components at validated
+margins and sweep address setup/hold, evaluation time and recovery time
+independently; this flow does not yet perform those sweeps.
 
 Additional ideal-wire checks at a 1 ns period and 5 ps input ramps:
 
 | Macro / condition | Falling CLK→sampled word | Rising CLK→idle and precharged | Rising CLK→Q |
 |---|---:|---:|---:|
-| 16×2 mux4, TT | 240.2 ps | 218.0 ps | 55.4 ps |
-| 4×2 mux1, one-fin keeper, SS | 288.9 ps | 273.8 ps | 81.7 ps |
-| 4×2 mux1, FF, ramped startup | 148.0 ps | 149.5 ps | 39.9 ps |
+| 16×2 mux4, TT | 240.2 ps | 218.0 ps | 67.5 ps |
+| 4×2 mux1, one-fin keeper, SS | 277.4 ps | 273.8 ps | 98.7 ps |
+| 4×2 mux1, FF, ramped startup | 148.0 ps | 149.5 ps | 48.9 ps |
 
 The full-ROM FF DC solve failed with SPARSE, KLU and additional legal clock
 phase NODESET hints. `replica_timing --startup-ramp-ps 25` converged and passed:
@@ -117,7 +157,7 @@ contents invalidates the attachment. It never promotes estimates to signoff.
 ## Routed clock/control RC
 
 For a registered macro, `replica_timing --wire-rc-controls` now adds routed
-Rpath pi sections to CLK and all five named register phase/complement nets,
+Rpath pi sections to CLK and all nine named phase, complement and closure nets,
 in addition to the existing sized control chains. The external CLK source is
 on the driver side; its receiver waveform is also saved. Register latency is
 measured from the external pin. Feedback and latch gates use the receiving
@@ -129,17 +169,20 @@ here; the report includes the clock-net estimates. Each net still has one
 lumped receiver node. It does not resolve skew between individual receiving
 gates, and excludes bitline/data-path RC, coupling and local device wiring.
 
-The registered 4×2 TT stress case at 10 ns **fails the conservative phase
-nonoverlap criterion**, even though it captures the expected words. Observed
-overlap samples span up to 13 ps near falling transitions and 2.5 ps near
-rising transitions. The checker uses 20%/80% transmission-gate control
-thresholds; this is a warning about the modeled phase relationship, not proof
-of silicon race-through. The failed run produces no passing timing margins
-or qualified frequency. Slower periods do not remove this transition-local
-problem. Clock-phase distribution and receiver-specific feedback need work
-before claiming an RC-safe operating schedule.
+The earlier complement-only registered 4×2 TT stress case at 10 ns failed
+non-overlap, with up to 13 ps of observed overlap. The
+[both-control closure interlock](brom_clock_closure.md) now passes full 4×2 TT
+and SS RC reads, with minimum gaps of 32.5 ps and 48.7 ps. TT also passes for
+both `[2,0,0,0]` and `[0,1,2,3]` ROM images. The checker retains its 20%/80%
+thresholds and additionally rejects interpolated negative gaps between samples.
+
+The register phases pass at FF with a 21.1 ps minimum gap, but that full RC
+macro fails the controller SAMPLE-closure check. A wider 4×4 TT case likewise
+passes register non-overlap but fails controller closure; the same controller
+failure occurs on the pre-fix 4×4 circuit. These are explicit remaining limits,
+so neither a universal RC-safe period nor extracted timing signoff is claimed.
 
 Generated evidence, including failed attempts, is under `build/brom_estimates`.
-The next physical timing step is to address that phase-distribution finding,
-then correlate the lumped model against extraction and broaden the shape,
+The next physical timing step is to qualify controller SAMPLE closure and
+correlate the lumped model against extraction, then broaden the shape,
 content, load/slew, PVT and duty-cycle coverage.

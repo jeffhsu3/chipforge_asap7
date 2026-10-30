@@ -78,7 +78,7 @@ def render_replica_bench(
     ]
     if spec.registered_output:
         signals += [f"SAMPLED<{i}>" for i in range(spec.bits)]
-        signals += ["REG_M", "REG_MB", "REG_S", "REG_SB"]
+        signals += [net for net in c.output_register["clock_nets"] if net != "CLK"]
     signals += [
         f"RBL<{spec.columns - 1}>",
         f"RC<{spec.blocks + replica.extra_blocks - 1},15>",
@@ -134,7 +134,7 @@ def render_replica_bench(
         if spec.registered_output:
             # These are gate-only clock nets; never split latch storage/data.
             routes = routed_control_rc(c)
-            for net in ("CLK", "REG_CLKB", "REG_M", "REG_MB", "REG_S", "REG_SB"):
+            for net in c.output_register["clock_nets"]:
                 rc_nets[net] = routes[net]
     for i, (net, edges) in enumerate(changes.items()):
         old = initial[net]
@@ -454,8 +454,7 @@ def characterize_replica(
             if spec.registered_output:
                 routes = routed_control_rc(physical)
                 report["register_clock_rc"] = {
-                    net: routes[net]
-                    for net in ("CLK", "REG_CLKB", "REG_M", "REG_MB", "REG_S", "REG_SB")
+                    net: routes[net] for net in physical.output_register["clock_nets"]
                 }
         report["circuit_sha256"] = hashlib.sha256(
             physical.netlist().encode()

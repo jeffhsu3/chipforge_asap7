@@ -23,6 +23,38 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
     ]
     if np.any(overlap):
         failures.append("output register master/slave input gates overlap")
+    handoffs = []
+    for cycle in range(len(words)):
+        for edge_name, start, end, closing, opening in (
+            ("falling", 200, 750, "REG_S", "REG_M"),
+            ("rising", 750, 1200, "REG_M", "REG_S"),
+        ):
+            begin = (cycle * 1000 + start) * phase_scale
+            finish = min((cycle * 1000 + end) * phase_scale, t[-1])
+            if begin >= finish:
+                continue
+            closed = [
+                crossing(t, traces[closing], begin, finish, 0.2 * vdd, False),
+                crossing(t, traces[closing + "B"], begin, finish, 0.8 * vdd, True),
+            ]
+            opened = [
+                crossing(t, traces[opening], begin, finish, 0.2 * vdd, True),
+                crossing(t, traces[opening + "B"], begin, finish, 0.8 * vdd, False),
+            ]
+            margin = (
+                None if None in closed or None in opened else min(opened) - max(closed)
+            )
+            handoffs.append(
+                {"cycle": cycle, "clock_edge": edge_name, "nonoverlap_ps": margin}
+            )
+            if margin is None:
+                failures.append(
+                    f"cycle {cycle}: missing {edge_name} register phase handoff"
+                )
+            elif margin < 0:
+                failures.append(
+                    f"cycle {cycle}: negative {edge_name} register nonoverlap margin"
+                )
     for address, word in enumerate(words):
         start = (address * 1000 + 750) * phase_scale
         end = (address * 1000 + 1000) * phase_scale
@@ -101,5 +133,9 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
         if reads and not failures
         else None,
         "phase_overlap_intervals": intervals,
+        "phase_handoffs": handoffs,
+        "minimum_nonoverlap_ps": min(r["nonoverlap_ps"] for r in handoffs)
+        if handoffs and all(r["nonoverlap_ps"] is not None for r in handoffs)
+        else None,
         "setup_hold_qualified": False,
     }

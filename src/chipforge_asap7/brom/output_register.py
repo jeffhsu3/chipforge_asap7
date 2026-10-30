@@ -6,7 +6,7 @@ from .circuit import Circuit
 
 
 def add_register_bank(c, connections):
-    """Two 8T latches per bit; complementary phase feedback prevents overlap.
+    """Two 8T latches per bit with both-rail closure feedback.
 
     The receiving master data still has a finite setup/hold aperture around
     CLK rising. This is not a synchronizer or an asynchronous-ready handshake.
@@ -20,9 +20,17 @@ def add_register_bank(c, connections):
         c.group_since(name, start)
 
     gate("inv", "register_clock_inverter", "CLK", "REG_CLKB")
-    gate("and2", "register_master_enable", "REG_CLKB", "REG_SB", "REG_M")
+    # Each acknowledgment observes both receiving TG controls. A complement
+    # alone can advance through its threshold while the other rail is still
+    # closing on a loaded route. Keep these acknowledgments in the feedback
+    # loop, not in a free-running delay chain.
+    gate("inv", "register_master_off", "REG_M", "REG_M_OFF")
+    gate("and2", "register_master_closed", "REG_M_OFF", "REG_MB", "REG_M_CLOSED")
+    gate("inv", "register_slave_off", "REG_S", "REG_S_OFF")
+    gate("and2", "register_slave_closed", "REG_S_OFF", "REG_SB", "REG_S_CLOSED")
+    gate("and2", "register_master_enable", "REG_CLKB", "REG_S_CLOSED", "REG_M")
     gate("inv", "register_master_complement", "REG_M", "REG_MB")
-    gate("and2", "register_slave_enable", "CLK", "REG_MB", "REG_S")
+    gate("and2", "register_slave_enable", "CLK", "REG_M_CLOSED", "REG_S")
     gate("inv", "register_slave_complement", "REG_S", "REG_SB")
     for bit, (data, output) in enumerate(connections):
         master = f"REG_DATA<{bit}>"
@@ -37,6 +45,20 @@ def add_register_bank(c, connections):
         "master_complement": "REG_MB",
         "slave_enable": "REG_S",
         "slave_complement": "REG_SB",
+        "clock_topology": "both_rail_closure_interlock",
+        "closure_feedback": {"master": "REG_M_CLOSED", "slave": "REG_S_CLOSED"},
+        "clock_nets": [
+            "CLK",
+            "REG_CLKB",
+            "REG_M",
+            "REG_MB",
+            "REG_S",
+            "REG_SB",
+            "REG_M_OFF",
+            "REG_S_OFF",
+            "REG_M_CLOSED",
+            "REG_S_CLOSED",
+        ],
         "setup_hold_qualified": False,
         "reset_clears_q": False,
     }

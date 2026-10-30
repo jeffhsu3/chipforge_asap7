@@ -1,4 +1,4 @@
-"""Sweep fixed-duty BROM clock schedules and report sampled operating bounds."""
+"""Sweep complete BROM stimulus schedules without attributing a limiting path."""
 
 import argparse
 import hashlib
@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..devices.spice import find_default_model_card
-from .compiler import BromSpec
+from .compiler import BromSpec, selector_map
 from .replica_timing import characterize_replica
 from .timing import TimingConditions
 
@@ -51,6 +51,11 @@ def summarize_sweep(reports):
                 "period_ps": period,
                 "low_ps": 0.55 * period,
                 "high_ps": 0.45 * period,
+                # Address and clock ramp starts both scale; slew does not.
+                # These are stimulus opportunities, not measured setup limits.
+                "scheduled_address_lead_to_falling_clk_ps": 0.16 * period,
+                "scheduled_address_settled_before_falling_ramp_ps": 0.16 * period
+                - r["conditions"]["slew_ps"],
                 "status": r["status"],
                 "passed": r["passed"],
                 "failures": r.get("failures", []),
@@ -75,8 +80,26 @@ def summarize_sweep(reports):
         for r in samples
         if r["status"] == "failed" and best and r["period_ps"] < best["period_ps"]
     ]
+    transition = [max(below), best["period_ps"]] if below and not nonmonotonic else None
+    transition_failures = sorted(
+        {
+            failure
+            for r in samples
+            if transition
+            and r["period_ps"] == transition[0]
+            and r["status"] == "failed"
+            for failure in r["failures"]
+        }
+    )
+    mapping = selector_map(BromSpec(**first["spec"]), first["words"])
+    patterns = sorted({pattern for row in mapping for pattern in row})
     return {
         "schema": "brom_timing_estimate_v1",
+        "image_coverage": {
+            "selector_patterns": patterns,
+            "all_16_selector_patterns": len(patterns) == 16,
+            "worst_case_qualified": False,
+        },
         "timing_qualified": False,
         "extracted": False,
         **{k: first.get(k) for k in identity},
@@ -84,9 +107,17 @@ def summarize_sweep(reports):
         "scope": first["scope"],
         "duty_cycle_high": 0.45,
         "fastest_tested_passing_period_ps": best["period_ps"] if best else None,
-        "estimated_minimum_period_bracket_ps": [max(below), best["period_ps"]]
-        if below and not nonmonotonic
+        # Retained as null for readers of v1; this sweep cannot identify a
+        # minimum period independent of the jointly scaled address schedule.
+        "estimated_minimum_period_bracket_ps": None,
+        "observed_schedule_transition_ps": transition,
+        "observed_schedule_spacing_ps": transition[1] - transition[0]
+        if transition
         else None,
+        "failed_checks_at_schedule_transition": transition_failures,
+        "limiting_constraint": None,
+        "address_setup_hold_swept": False,
+        "schedule_scaling": "clock phases, address events and initial precharge scale together; slew is fixed",
         "nonmonotonic": nonmonotonic,
         "passing_clock_constraints": {
             "high_ps": best["high_ps"],
@@ -104,7 +135,8 @@ def summarize_sweep(reports):
         "samples": samples,
         "limitations": [
             "Sampled schedules at fixed duty cycle; numerical errors are not failing timing bounds.",
-            "Bracket assumes monotonic behavior between samples and is not a guaranteed minimum period.",
+            "The observed transition is between complete tested schedules, not a read-path or minimum-period bound.",
+            "Failed checks are symptoms, not root-cause attribution; address setup/hold may be limiting.",
             "Wire model excludes core bitlines, coupling, data paths and receiver-specific skew.",
             "No macro address setup/hold or independent minimum high/low pulse qualification.",
         ],
@@ -166,10 +198,18 @@ def sweep_timing(
 
 def add_register_estimate(summary, path):
     """Attach standalone bounds only at the same model, load and slew."""
+    from .output_register import output_register_circuit
+
+    expected_register = hashlib.sha256(
+        output_register_circuit(fins=summary["spec"]["fins"], vt=summary["spec"]["vt"])
+        .netlist()
+        .encode()
+    ).hexdigest()
     r = json.loads(Path(path).read_text())
     fields = ("vdd", "temperature_c", "slew_ps", "output_load_ff", "step_ps")
     if (
-        r.get("status") != "passed"
+        r.get("register_cell_sha256") != expected_register
+        or r.get("status") != "passed"
         or not r.get("passed")
         or r.get("fins") != summary["spec"]["fins"]
         or r.get("vt") != summary["spec"]["vt"]
@@ -177,13 +217,14 @@ def add_register_estimate(summary, path):
         or any(r["conditions"].get(k) != summary["conditions"].get(k) for k in fields)
     ):
         raise ValueError(
-            "register characterization does not match timing conditions/model"
+            "register characterization does not match timing conditions/model or register cell"
         )
     summary["standalone_register"] = {
         "report": str(Path(path).resolve()),
         "report_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
         "bounds": r["bounds"],
         "reference_clk_to_valid_ps": r["reference_clk_to_valid_ps"],
+        "register_cell_sha256": r["register_cell_sha256"],
         "scope": r["scope"],
         "delay_degradation_limit": r["delay_degradation_limit"],
         "macro_address_setup_hold": False,

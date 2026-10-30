@@ -8,6 +8,7 @@ qualification or Liberty constraints. Wire parasitics are excluded here.
 import argparse
 import hashlib
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -43,7 +44,14 @@ def trials():
     return result
 
 
-def render_register_bench(conditions, model_card, osdi, *, fins=2, vt="rvt", klu=False):
+def render_register_bench(
+    conditions, model_card, osdi, *, fins=2, vt="rvt", klu=False, startup_ramp_ps=0
+):
+    if (
+        not math.isfinite(startup_ramp_ps)
+        or not 0 <= startup_ramp_ps < 50 - conditions.slew_ps / 2
+    ):
+        raise ValueError("startup ramp must finish before the first register data edge")
     c = output_register_circuit(fins=fins, vt=vt)
     nodes = {
         n: f"n{i}"
@@ -84,15 +92,19 @@ def render_register_bench(conditions, model_card, osdi, *, fins=2, vt="rvt", klu
         ".options "
         + ("klu " if klu else "")
         + "method=gear reltol=1e-3 abstol=1e-12 vntol=1e-6 rshunt=1e15",
-        f"Vsupply vdd 0 {conditions.vdd:g}",
+        (
+            f"Vsupply vdd 0 PWL(0 0 {startup_ramp_ps:g}p {conditions.vdd:g})"
+            if startup_ramp_ps
+            else f"Vsupply vdd 0 {conditions.vdd:g}"
+        ),
     ]
     for i, (net, events) in enumerate(edges.items()):
         pts, old = ["0 0"], 0
         for t, value in events[1:]:
             if value != old:
                 pts += [
-                    f"{t - slew / 2:g}p {old * conditions.vdd:g}",
-                    f"{t + slew / 2:g}p {value * conditions.vdd:g}",
+                    f"{t - slew / 2:.12g}p {old * conditions.vdd:g}",
+                    f"{t + slew / 2:.12g}p {value * conditions.vdd:g}",
                 ]
             old = value
         lines.append(f"Vstim{i} {nodes[net]} 0 PWL({' '.join(pts)})")
@@ -117,7 +129,7 @@ def render_register_bench(conditions, model_card, osdi, *, fins=2, vt="rvt", klu
         f"pre_osdi {_osdi_command_path(osdi)}",
         "set wr_singlescale",
         "set wr_vecnames",
-        "set numdgt=12",
+        "set numdgt=17",
         "save " + vectors,
         f"tran {conditions.step_ps:g}p {stop}p 0 {conditions.step_ps:g}p",
         "wrdata waveform.dat " + vectors,
@@ -234,7 +246,15 @@ def analyze_register_trials(time, traces, records, vdd):
 
 
 def characterize_register(
-    *, out, model_card, osdi, conditions=None, fins=2, vt="rvt", klu=False
+    *,
+    out,
+    model_card,
+    osdi,
+    conditions=None,
+    fins=2,
+    vt="rvt",
+    klu=False,
+    startup_ramp_ps=0,
 ):
     conditions = conditions or TimingConditions()
     out = Path(out).resolve()
@@ -250,6 +270,10 @@ def characterize_register(
         "vt": vt,
         "linear_solver": "KLU" if klu else "SPARSE",
         "delay_degradation_limit": 0.1,
+        "startup_ramp_ps": startup_ramp_ps,
+        "register_cell_sha256": hashlib.sha256(
+            output_register_circuit(fins=fins, vt=vt).netlist().encode()
+        ).hexdigest(),
     }
     path = out / "report.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
@@ -262,7 +286,13 @@ def characterize_register(
             )
         )
         deck, records = render_register_bench(
-            conditions, model, osdi, fins=fins, vt=vt, klu=klu
+            conditions,
+            model,
+            osdi,
+            fins=fins,
+            vt=vt,
+            klu=klu,
+            startup_ramp_ps=startup_ramp_ps,
         )
         spice = out / "register.sp"
         spice.write_text(deck)
@@ -304,12 +334,14 @@ def main():
     p.add_argument("--output-load-ff", type=float, default=1)
     p.add_argument("--step-ps", type=float, default=0.5)
     p.add_argument("--klu", action="store_true")
+    p.add_argument("--startup-ramp-ps", type=float, default=0)
     args = p.parse_args()
     r = characterize_register(
         out=args.out,
         model_card=args.model_card,
         osdi=args.osdi,
         klu=args.klu,
+        startup_ramp_ps=args.startup_ramp_ps,
         conditions=TimingConditions(
             vdd=args.vdd,
             temperature_c=args.temperature_c,

@@ -11,9 +11,9 @@ python -m chipforge_asap7.brom words.json --bits 2 --self-timed \
 The default remains the SAMPLE-controlled output latch. The registered mode
 retains that latch on internal `SAMPLED<i>` nets and adds a static master/slave
 register driving each public `Q[i]`. The master opens during CLK low; the slave
-opens during CLK high. Shared interlocked complementary enables prevent both
-input transmission gates from opening together. The added cost is 16 transistors
-per output bit plus 18 shared clock-control transistors. Placement uses groups
+opens during CLK high. Shared interlocked enables acknowledge both opposite transmission-gate
+controls before permitting the next phase; see [clock closure](brom_clock_closure.md). The added cost is 16 transistors
+per output bit plus 34 shared clock-control transistors. Placement uses groups
 of at most eight devices. The CLI emits a standalone `output_register` artifact
 and records the edge, internal connections and qualification status in the
 manifest. External phase-only macros reject this option because they lack CLK.
@@ -55,12 +55,15 @@ closure, sampled-data stability through closure, and canceled-read retention.
 
 | Case | Maximum CLK-to-valid Q | Minimum sampled-data lead before CLK edge |
 |---|---:|---:|
-| 4×2 mux1, TT / 0.70 V / 25 °C | 48.5 ps | 357.5 ps |
-| 4×2 mux1, SS / 0.63 V / 125 °C, one-fin keeper | 69.4 ps | 272.5 ps |
-| 16×2 mux4, TT / 0.70 V / 25 °C | 55.4 ps | 309.8 ps |
+| 4×2 mux1, TT / 0.70 V / 25 °C | 60.0 ps | 357.5 ps |
+| 4×2 mux1, SS / 0.63 V / 125 °C, one-fin keeper | 98.7 ps | 272.6 ps |
+| 16×2 mux4, TT / 0.70 V / 25 °C | 67.5 ps | 309.8 ps |
 
 The TT mux1 case also passes with address changes 10 ps after the rising ramp
-starts. Results and reproducible decks are under `build/brom_register/`.
+starts. The table uses the both-control closure interlock. Regenerated reports are
+under `build/brom_estimates`, with the nominal 1 ns TT run in
+`build/brom_clock_closure/ideal_tt`. Earlier-register evidence remains under
+`build/brom_register/`.
 The FF / 0.77 V / −40 °C attempt failed numerical convergence and provides no
 fast-corner timing qualification.
 
@@ -74,7 +77,8 @@ a required setup time or a guaranteed maximum operating frequency.
 ## Follow-up timing estimates
 
 [Timing estimates](brom_timing_estimates.md) now cover sampled setup/hold and
-pulse-width bounds, full-cycle period sweeps and routed register-clock stress.
+pulse-width bounds, complete-schedule sweeps and routed register-clock stress.
 A follow-up FF full-ROM run passes with an explicit 25 ps supply/input startup
-ramp. The routed clock stress fails the phase nonoverlap check, so RC timing
-remains unqualified.
+ramp. The earlier routed clock stress failed the phase nonoverlap check.
+[Both-control closure feedback](brom_clock_closure.md) now passes the selected
+4×2 TT/SS stress cases; extracted timing remains unqualified.

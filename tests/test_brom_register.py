@@ -105,3 +105,60 @@ def test_registered_checker_rejects_overlap_late_data_and_wrong_capture(
     t, traces, spec, words = waveform()
     traces[net][index] = value
     assert not analyze_registered_output(t, traces, spec, words, 1)["passed"]
+
+
+@pytest.mark.parametrize("clk", [0, 1])
+@pytest.mark.parametrize("enable,complement", [(0, 0), (1, 0), (1, 1), (0, 1)])
+def test_register_waits_for_both_receiving_gate_controls(clk, enable, complement):
+    # Split only the acknowledgment inputs to represent independently delayed
+    # receiving rails. Driving a local complement is not an acknowledgment.
+    c = output_register_circuit()
+    sense_groups = {
+        "register_master_off",
+        "register_master_closed",
+        "register_slave_off",
+        "register_slave_closed",
+    }
+    sense = {
+        member
+        for name, members in c.placement_groups
+        if name in sense_groups
+        for member in members
+    }
+    rails = {"REG_M", "REG_MB", "REG_S", "REG_SB"}
+    c.devices = [
+        replace(d, nodes=(d.nodes[0], "RETURN_" + d.nodes[1], *d.nodes[2:]))
+        if d.name in sense and d.nodes[1] in rails
+        else d
+        for d in c.devices
+    ]
+    inputs = {
+        "CLK": clk,
+        "D<0>": 0,
+        "RETURN_REG_M": 0,
+        "RETURN_REG_MB": 1,
+        "RETURN_REG_S": 0,
+        "RETURN_REG_SB": 1,
+    }
+    opposite = "REG_M" if clk else "REG_S"
+    inputs["RETURN_" + opposite] = enable
+    inputs["RETURN_" + opposite + "B"] = complement
+    state = settle(c, inputs, ideal_controls=("REG_M", "REG_S"))
+    assert state["REG_S" if clk else "REG_M"] == int(enable == 0 and complement == 1)
+    assert state["REG_M" if clk else "REG_S"] == 0
+
+
+def test_interpolated_phase_handoff_catches_between_sample_overlap():
+    from chipforge_asap7.brom.register_timing import analyze_registered_output
+
+    t, traces, spec, words = waveform()
+    traces["REG_S"][:220] = 1
+    traces["REG_SB"][:220] = 0
+    traces["REG_MB"][220:225] = 0
+    r = analyze_registered_output(t, traces, spec, words, 1)
+    # Adjacent samples show opposite open latches, but the interpolated rails
+    # overlap between samples. A pointwise Boolean test alone would miss it.
+    assert not r["phase_overlap_intervals"]
+    assert not r["passed"]
+    assert r["minimum_nonoverlap_ps"] == pytest.approx(-0.6)
+    assert any("negative falling" in f for f in r["failures"])
