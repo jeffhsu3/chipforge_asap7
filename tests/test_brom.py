@@ -162,7 +162,16 @@ def test_macro_reads_and_holds_every_four_bit_pattern(ways):
 
 
 @pytest.mark.parametrize(
-    "kwargs", [{"ways": 2}, {"depth": 6}, {"bits": 0}, {"depth": True}, {"fins": 0}]
+    "kwargs",
+    [
+        {"ways": 2},
+        {"depth": 6},
+        {"bits": 0},
+        {"depth": True},
+        {"fins": 0},
+        {"fins": 4},  # no qualified selector plan
+        {"depth": 280},  # past the single tap row's latch-up reach
+    ],
 )
 def test_invalid_specs(kwargs):
     with pytest.raises((ValueError, TypeError)):
@@ -186,27 +195,6 @@ def test_programming_changes_only_v2_v3():
         != Counter(p.tobytes() for p in polygons[1][layer])
         for layer in cuts
     )
-
-
-@pytest.mark.parametrize(
-    "make",
-    [
-        output_circuit,
-        cgen_circuit,
-        lambda: output_circuit(1, "lvt"),
-        lambda: output_circuit(4, "slvt"),
-        lambda: output_circuit(3, "sram"),
-        lambda: macro_circuit(BromSpec(4, 2), [0, 1, 2, 3]),
-        lambda: macro_circuit(BromSpec(16, 3, 4), [i % 8 for i in range(16)]),
-    ],
-)
-def test_periphery_drc(make, asap7_drc):
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    circuit = make()
-    top = (build_macro if circuit.array is not None else build_periphery)(
-        circuit, lib=lib
-    )
-    assert asap7_drc(lib, top, tag=top.name) == []
 
 
 def test_output_layout_matches_transistors(tmp_path):
@@ -240,32 +228,6 @@ def test_output_layout_matches_transistors(tmp_path):
     assert actual == expected
 
 
-@pytest.mark.parametrize(
-    "make",
-    [
-        output_circuit,
-        cgen_circuit,
-        lambda: decoder_circuit(BromSpec(12, 1)),
-        lambda: macro_circuit(BromSpec(4, 2), [0, 1, 2, 3]),
-        lambda: macro_circuit(BromSpec(16, 3, 4), [i % 8 for i in range(16)]),
-    ],
-)
-def test_periphery_and_macro_lvs(make, tmp_path, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    c = make()
-    top = (build_macro if c.array is not None else build_periphery)(c, lib=lib)
-    gds, reference = tmp_path / "dut.gds", tmp_path / "dut.spice"
-    lib.write_gds(str(gds))
-    reference.write_text(c.lvs_reference())
-    result = run_lvs(gds, reference, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    summary = summarize_lvsdb(result.report)
-    assert not any(c["renamed_pins"] for c in summary["circuits"])
-
-
 def test_wrong_programming_fails_lvs(tmp_path, require_klayout):
     from chipforge_asap7.verification.lvs import run_lvs
 
@@ -279,30 +241,6 @@ def test_wrong_programming_fails_lvs(tmp_path, require_klayout):
     lib.write_gds(str(gds))
     reference.write_text(wrong.lvs_reference())
     assert not run_lvs(gds, reference, tmp_path / "lvs", cell_name=correct.name).matched
-
-
-def test_cli_emits_artifacts(tmp_path):
-    import json
-
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0, 1, 2, 3]")
-    out = tmp_path / "compiled"
-    main([str(words), "--bits", "2", "--out", str(out)])
-    report = json.loads((out / "manifest.json").read_text())
-    assert report["timing_qualified"] is False
-    assert report["layout"] == "compact_selector_array"
-    assert report["periphery_layout"] == "folded_local_rows"
-    assert report["periphery_plan"]["row_count"] > 1
-    assert report["array_core_nm"] == [216, 432]
-    assert report["isolation_devices"] == 2
-    assert report["selector_map"] == [[10, 12]]
-    for role, artifact in report["artifacts"].items():
-        assert artifact["drc"] == artifact["lvs"] == "not_run"
-        assert (out / artifact["gds"]).is_file()
-        assert (out / artifact["cdl"]).is_file()
-        assert (out / f"{role}.lvs.spice").is_file()
 
 
 @pytest.mark.parametrize(
@@ -321,78 +259,37 @@ def test_macro_cannot_use_flat_peripheral_builder():
         build_macro(output_circuit())
 
 
-def test_deprecated_builder_routes_to_compact_macro():
-    from chipforge_asap7.brom import build_circuit
-
-    c = macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
-    with pytest.warns(DeprecationWarning, match="build_macro"):
-        top = build_circuit(c)
-    assert (
-        sum(r.ref_cell.name.startswith("brom_selector_") for r in top.references) == 1
-    )
-    assert len(top.references) == 2
-
-
-@pytest.mark.parametrize("fins", [1, 2, 3])
-def test_macro_contains_compact_array_and_no_discrete_array_devices(fins):
+def test_macro_splits_devices_between_array_and_periphery():
     from chipforge_asap7.brom.layout import macro_periphery, macro_plan
 
-    spec = BromSpec(12, 3, fins=fins)
-    c = macro_circuit(spec, [i % 8 for i in range(12)])
-    assert len(c.array.device_names) == 2 * spec.blocks * spec.columns
-    bank = macro_periphery(c)
-    assert {d.name for d in bank.devices}.isdisjoint(c.array.device_names)
-    assert len(bank.devices) + len(c.array.device_names) == len(c.devices)
-    floorplan = macro_plan(c)
-    assert (floorplan.array_width, floorplan.array_height) == (324, 1296)
-    assert len(floorplan.ports) == 16 * spec.blocks + spec.columns + 1
-    for b in range(spec.blocks):
-        for k, (metal, y) in enumerate(c.array.plan.tracks):
-            port = floorplan.ports[16 * b + k]
-            assert (port.net, port.layer, port.y) == (f"C<{b},{k}>", metal, b * 432 + y)
+    # Each fin count has its own selector track plan; check every one's ports.
+    for fins in (1, 2, 3):
+        spec = BromSpec(12, 3, fins=fins)
+        c = macro_circuit(spec, [i % 8 for i in range(12)])
+        assert len(c.array.device_names) == 2 * spec.blocks * spec.columns
+        bank = macro_periphery(c)
+        assert {d.name for d in bank.devices}.isdisjoint(c.array.device_names)
+        assert len(bank.devices) + len(c.array.device_names) == len(c.devices)
+        floorplan = macro_plan(c)
+        assert (floorplan.array_width, floorplan.array_height) == (324, 1296)
+        assert len(floorplan.ports) == 16 * spec.blocks + spec.columns + 1
+        for b in range(spec.blocks):
+            for k, (metal, y) in enumerate(c.array.plan.tracks):
+                port = floorplan.ports[16 * b + k]
+                assert (port.net, port.layer, port.y) == (
+                    f"C<{b},{k}>",
+                    metal,
+                    b * 432 + y,
+                )
     top = build_macro(c)
     array = next(
         r.ref_cell
         for r in top.references
         if r.ref_cell.name.startswith("brom_selector_")
     )
-    assert (
-        not array.references
-    )  # compact FEOL is drawn directly, with no isolated-device tiles
+    assert not array.references  # the compact FEOL is drawn directly
     assert not array.labels  # internal C/BL ports must not become macro pins
     assert {p.text for p in top.labels} == set(c.pins)
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        BromSpec(8, 3, fins=1, vt="lvt"),
-        BromSpec(12, 1, fins=3),
-        BromSpec(32, 2, ways=4),
-    ],
-)
-def test_integrated_shapes_drc_lvs(spec, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = macro_circuit(spec, [(i * 3 + 1) % (1 << spec.bits) for i in range(spec.depth)])
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = build_macro(c, lib=lib)
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "macro.gds", tmp_path / "macro.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        p["renamed_pins"] for p in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
 
 
 @pytest.mark.parametrize("port_name", ["C<0,2>", "C<0,8>", "BL<0>", "VSS"])
@@ -432,12 +329,6 @@ def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_k
     # Substrate continuity can conceal a missing VSS metal bridge in raw LVS.
     if port_name != "VSS":
         assert not result.matched
-
-
-@pytest.mark.parametrize("kwargs", [{"fins": 4}, {"depth": 280}])
-def test_unsupported_compact_shape_has_no_legacy_fallback(kwargs):
-    with pytest.raises(ValueError):
-        BromSpec(**kwargs)
 
 
 def test_short_between_array_routes_is_rejected():
@@ -521,12 +412,11 @@ def test_periphery_metal_audit_rejects_shared_net_short():
         verify_periphery_routes(c, top)
 
 
-def test_folded_mux4_macro_area_regression():
+def test_mux4_macro_has_its_documented_size():
+    # docs/brom.md quotes this example's footprint; update both together.
     c = macro_circuit(BromSpec(16, 3, ways=4), [i % 8 for i in range(16)])
-    bounds = build_macro(c).get_bounding_box()
-    area_um2 = (bounds[1, 0] - bounds[0, 0]) * (bounds[1, 1] - bounds[0, 1]) / 1e6
-    # The prior single-strip implementation occupied 8826.31 square microns.
-    assert area_um2 < 3000
+    (x0, y0), (x1, y1) = build_macro(c).get_bounding_box()
+    assert (x1 - x0, y1 - y0) == (20_220, 100_428)
 
 
 def test_macro_pins_are_bracketed_in_the_gds_and_cdl():

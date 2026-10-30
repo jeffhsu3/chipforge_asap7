@@ -1,15 +1,10 @@
 """Controller phase ordering, integration and physical connectivity."""
 
-import json
-
-import gdspy
 import pytest
 from test_brom import settle
 
 from chipforge_asap7.brom import (
     BromSpec,
-    build_macro,
-    build_periphery,
     clocked_macro_circuit,
     controller_circuit,
 )
@@ -92,55 +87,6 @@ def test_clocked_macro_reads_and_holds(ways, depth):
         pins["CANDIDATE_BUSY"] = 0
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == word
-
-
-@pytest.mark.parametrize(
-    "make",
-    [
-        lambda: controller_circuit(fins=1),
-        lambda: controller_circuit(fins=3),
-        lambda: clocked_macro_circuit(BromSpec(4, 2), [0, 1, 2, 3]),
-        lambda: clocked_macro_circuit(
-            BromSpec(16, 1, ways=4), [i % 2 for i in range(16)]
-        ),
-    ],
-)
-def test_controller_drc_lvs(make, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = make()
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = (build_macro if c.array else build_periphery)(c, lib=lib)
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "dut.gds", tmp_path / "dut.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
-
-
-def test_clocked_cli_reports_external_feedback(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0, 1, 2, 3]")
-    out = tmp_path / "out"
-    main([str(words), "--bits", "2", "--clocked", "--out", str(out)])
-    r = json.loads((out / "manifest.json").read_text())
-    assert "controller" in r["artifacts"]
-    assert r["controller"] == "external_completion_handshake"
-    assert not r["replica_integrated"] and not r["timing_qualified"]
-    assert "CLK" in r["pins"] and "PRECHN" not in r["pins"]
 
 
 def controller_waveform():

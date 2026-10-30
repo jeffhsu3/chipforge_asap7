@@ -168,8 +168,7 @@ a timing result. The selector proof does not establish minimum macro area.
 The previous discrete-device **macro array layout has been removed**, with
 no legacy layout option or fallback. Use `build_macro(macro_circuit(...))`
 for macros and `build_periphery(...)` for standalone peripheral circuits.
-`build_circuit` is a deprecated compatibility shim dispatching to those
-builders; it cannot generate the old macro layout. `build_periphery` rejects
+`build_periphery` rejects
 macro circuits to prevent accidentally rebuilding a discrete-device array.
 
 The manifest records the selected plan, core dimensions, peripheral origin,

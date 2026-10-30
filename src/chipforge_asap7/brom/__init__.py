@@ -10,7 +10,7 @@ from .compiler import (
 )
 from .controller import clocked_macro_circuit, controller_circuit
 from .distribution import DistributionSpec, size_control_distribution
-from .layout import build_circuit, build_macro
+from .layout import build_macro
 from .output_register import output_register_circuit
 from .periphery import build_periphery
 from .replica import ReplicaSpec, self_timed_macro_circuit
@@ -23,7 +23,6 @@ __all__ = [
     "ReplicaSpec",
     "SelectorPlan",
     "WireRCSpec",
-    "build_circuit",
     "build_macro",
     "build_periphery",
     "build_selector_array",

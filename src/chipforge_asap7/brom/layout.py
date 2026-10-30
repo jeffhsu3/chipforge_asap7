@@ -7,7 +7,6 @@ M5 trunks join every array interface to the peripheral bank above the core.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -180,18 +179,6 @@ def build_macro(circuit: Circuit, *, lib: Any = None) -> Any:
     box(top, "BOUNDARY", bounds[0, 0], bounds[0, 1], bounds[1, 0], bounds[1, 1])
     verify_macro_routes(circuit, top)
     return top
-
-
-def build_circuit(circuit: Circuit, *, lib: Any = None) -> Any:
-    """Deprecated API: dispatches to the new macro/peripheral builders only."""
-    warnings.warn(
-        "build_circuit is deprecated; use build_macro or build_periphery",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if circuit.array is not None:
-        return build_macro(circuit, lib=lib)
-    return build_periphery(circuit, lib=lib)
 
 
 def verify_macro_routes(circuit: Circuit, top: Any) -> None:

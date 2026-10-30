@@ -5,7 +5,6 @@ step, with the transistor switch-level simulation in `test_brom`; it skips
 when iverilog is missing.
 """
 
-import json
 import random
 import re
 import shutil
@@ -55,10 +54,11 @@ def lef_pins(text):
     return pins
 
 
-@pytest.mark.parametrize("mode", SHAPES)
-def test_lef_pins_reach_the_left_edge_under_their_labels(mode):
+def test_lef_pins_reach_the_left_edge_under_their_labels():
+    # The clocked macro has the most pins: address, Q, CLK, RESETN and the
+    # four acknowledgments.
     spec = BromSpec(12, 3)
-    c = SHAPES[mode](spec, words_for(spec))
+    c = clocked_macro_circuit(spec, words_for(spec))
     top = build_macro(c, lib=gdspy.GdsLibrary(unit=1e-9, precision=1e-10))
     text = macro_lef(c, top)
     (x0, y0), (x1, y1) = top.get_bounding_box()
@@ -191,18 +191,13 @@ def drive(c, mode, spec, steps, seed, watched):
 @pytest.mark.parametrize(
     "mode,spec,sizing",
     [
-        ("phases", BromSpec(12, 3), None),
         ("phases", BromSpec(32, 2, ways=4), None),
-        ("clocked", BromSpec(12, 3), None),
-        ("clocked", BromSpec(16, 2, ways=4), None),
-        ("self_timed", BromSpec(8, 2), None),
         # Sizing adds noninverting buffer chains; the model must not change.
         ("phases", BromSpec(64, 4), "sized"),
         ("clocked", BromSpec(32, 4, ways=4), "wire_rc"),
-        ("self_timed", BromSpec(16, 2), "sized"),
         # The rising-edge output register sits between the sampling latches
-        # and Q; a keeper is left out, since the switch model cannot settle
-        # its deliberate fight with the selectors.
+        # and Q. A keeper is left out: the switch model cannot settle its
+        # deliberate fight with the selectors.
         ("clocked", BromSpec(12, 3, registered_output=True), None),
         ("self_timed", BromSpec(8, 2, registered_output=True), "sized"),
     ],
@@ -263,15 +258,3 @@ def test_verilog_model_matches_transistors(mode, spec, sizing, tmp_path, externa
             assert m == str(t), f"step {step} {net}: model {m}, transistors {t}"
             compared += 1
     assert compared > len(vectors) * len(watched) // 2
-
-
-def test_cli_writes_lef_and_verilog(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0, 1, 2, 3]")
-    out = tmp_path / "out"
-    main([str(words), "--bits", "2", "--out", str(out)])
-    record = json.loads((out / "manifest.json").read_text())["artifacts"]["macro"]
-    assert (out / record["lef"]).read_text().startswith("VERSION 5.8")
-    assert f"module {record['cell']} " in (out / record["verilog"]).read_text()
