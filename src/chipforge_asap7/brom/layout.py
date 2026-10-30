@@ -7,7 +7,6 @@ M5 trunks join every array interface to the peripheral bank above the core.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -171,24 +170,15 @@ def build_macro(circuit: Circuit, *, lib: Any = None) -> Any:
         box(top, "M5", trunk - 12, min(y, bank_y) - 24, trunk + 12, max(y, bank_y) + 24)
         _v4(top, trunk, bank_y)
         _m4(top, trunk, 0, bank_y)
-    for pin in circuit.pins:
-        label(top, pin, "M4", (24, plan.bank_y + buses[pin]))
     bounds = top.get_bounding_box()
+    for pin in circuit.pins:
+        y = plan.bank_y + buses[pin]
+        # Carry the pin's M4 bus out to the left edge, where a router can reach it.
+        box(top, "M4", bounds[0, 0], y - 12, 48, y + 12)
+        label(top, pin, "M4", (24, y))
     box(top, "BOUNDARY", bounds[0, 0], bounds[0, 1], bounds[1, 0], bounds[1, 1])
     verify_macro_routes(circuit, top)
     return top
-
-
-def build_circuit(circuit: Circuit, *, lib: Any = None) -> Any:
-    """Deprecated API: dispatches to the new macro/peripheral builders only."""
-    warnings.warn(
-        "build_circuit is deprecated; use build_macro or build_periphery",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if circuit.array is not None:
-        return build_macro(circuit, lib=lib)
-    return build_periphery(circuit, lib=lib)
 
 
 def verify_macro_routes(circuit: Circuit, top: Any) -> None:

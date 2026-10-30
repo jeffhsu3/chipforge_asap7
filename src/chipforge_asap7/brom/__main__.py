@@ -30,6 +30,7 @@ from . import (
 )
 from .layout import macro_periphery, macro_plan
 from .periphery import periphery_plan
+from .views import macro_lef, macro_verilog
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -260,6 +261,9 @@ def main(argv: list[str] | None = None) -> None:
         }
         if role == "macro":
             record["array_route_connectivity"] = "passed"
+            (args.out / "macro.lef").write_text(macro_lef(circuit, top))
+            (args.out / "macro.v").write_text(macro_verilog(circuit, spec, words))
+            record["lef"], record["verilog"] = "macro.lef", "macro.v"
         report["artifacts"][role] = record
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         if args.drc:

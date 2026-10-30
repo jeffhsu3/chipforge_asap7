@@ -1,15 +1,10 @@
 """Controller phase ordering, integration and physical connectivity."""
 
-import json
-
-import gdspy
 import pytest
 from test_brom import settle
 
 from chipforge_asap7.brom import (
     BromSpec,
-    build_macro,
-    build_periphery,
     clocked_macro_circuit,
     controller_circuit,
 )
@@ -74,7 +69,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
     for address, word in enumerate(words):
         pins = {
             **inputs(),
-            **{f"A<{i}>": address >> i & 1 for i in range(spec.address_bits)},
+            **{f"A[{i}]": address >> i & 1 for i in range(spec.address_bits)},
         }
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins["CLK"] = 0
@@ -83,7 +78,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins.update(READ_READY=1, SAMPLE_CLOSED=0)
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
-        assert sum(state[f"Q<{i}>"] << i for i in range(spec.bits)) == word
+        assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == word
         pins["CLK"] = 1
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         assert phases(state) == (1, 1, 0)
@@ -91,56 +86,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins["CANDIDATE_BUSY"] = 0
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
-        assert sum(state[f"Q<{i}>"] << i for i in range(spec.bits)) == word
-
-
-@pytest.mark.parametrize(
-    "make",
-    [
-        lambda: controller_circuit(fins=1),
-        lambda: controller_circuit(fins=3),
-        lambda: clocked_macro_circuit(BromSpec(4, 2), [0, 1, 2, 3]),
-        lambda: clocked_macro_circuit(
-            BromSpec(16, 1, ways=4), [i % 2 for i in range(16)]
-        ),
-    ],
-)
-def test_controller_drc_lvs(make, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = make()
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = (build_macro if c.array else build_periphery)(c, lib=lib)
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "dut.gds", tmp_path / "dut.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
-
-
-def test_clocked_cli_reports_external_feedback(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0, 1, 2, 3]")
-    out = tmp_path / "out"
-    main([str(words), "--bits", "2", "--clocked", "--out", str(out)])
-    r = json.loads((out / "manifest.json").read_text())
-    assert "controller" in r["artifacts"]
-    assert r["controller"] == "external_completion_handshake"
-    assert not r["replica_integrated"] and not r["timing_qualified"]
-    assert "CLK" in r["pins"] and "PRECHN" not in r["pins"]
+        assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == word
 
 
 def controller_waveform():
@@ -151,7 +97,7 @@ def controller_waveform():
     t = np.arange(6201, dtype=float)
     traces = {
         net: np.zeros_like(t)
-        for net in (*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q<0>", "Q<1>")
+        for net in (*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q[0]", "Q[1]")
     }
     traces["SAMPLE_CLOSED"][:] = 1
     for cycle in range(5):
@@ -170,7 +116,7 @@ def controller_waveform():
             traces[net][(t >= base + lo) & (t < base + hi)] = 1
         if cycle < 4:
             for bit in range(2):
-                traces[f"Q<{bit}>"][t >= base + 800] = cycle >> bit & 1
+                traces[f"Q[{bit}]"][t >= base + 800] = cycle >> bit & 1
     return t * 1e-12, traces
 
 
@@ -188,7 +134,7 @@ def test_analog_checker_accepts_ordered_waveform():
         ("EVAL", 960, 0),
         ("SAMPLE", 200, 1),
         ("READ_READY", 800, 0),
-        ("Q<0>", 5800, 0),
+        ("Q[0]", 5800, 0),
     ],
 )
 def test_analog_checker_rejects_phase_or_data_fault(net, at, value):

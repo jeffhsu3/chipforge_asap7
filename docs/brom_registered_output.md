@@ -10,7 +10,7 @@ python -m chipforge_asap7.brom words.json --bits 2 --self-timed \
 
 The default remains the SAMPLE-controlled output latch. The registered mode
 retains that latch on internal `SAMPLED<i>` nets and adds a static master/slave
-register driving each public `Q<i>`. The master opens during CLK low; the slave
+register driving each public `Q[i]`. The master opens during CLK low; the slave
 opens during CLK high. Shared interlocked complementary enables prevent both
 input transmission gates from opening together. The added cost is 16 transistors
 per output bit plus 18 shared clock-control transistors. Placement uses groups

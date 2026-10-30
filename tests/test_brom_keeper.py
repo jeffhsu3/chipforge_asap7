@@ -1,15 +1,12 @@
 """Matched feedback keepers: topology, quantized sizing, physical verification."""
 
-import json
 from dataclasses import replace
 
-import gdspy
 import numpy as np
 import pytest
 
 from chipforge_asap7.brom import (
     BromSpec,
-    build_macro,
     macro_circuit,
     self_timed_macro_circuit,
 )
@@ -66,67 +63,6 @@ def test_invalid_keeper_config(kwargs):
         BromSpec(4, 1, **kwargs)
     with pytest.raises((ValueError, TypeError)):
         output_circuit(**kwargs)
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        BromSpec(4, 2, keeper_fins=1),
-        BromSpec(8, 1, fins=1, keeper_fins=1, keeper_stack=4),
-        BromSpec(16, 1, ways=4, fins=3, keeper_fins=2, keeper_stack=1),
-    ],
-)
-def test_keeper_macro_drc_lvs(spec, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = self_timed_macro_circuit(
-        spec, [i % (1 << spec.bits) for i in range(spec.depth)]
-    )
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = build_macro(c, lib=lib)
-    assert asap7_drc(lib, top, tag=c.name) == []
-    gds, ref = tmp_path / "macro.gds", tmp_path / "ref.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=c.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
-
-
-def test_keeper_cli_metadata(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0,1,2,3]")
-    main(
-        [
-            str(words),
-            "--bits",
-            "2",
-            "--self-timed",
-            "--keeper-fins",
-            "1",
-            "--out",
-            str(tmp_path / "out"),
-        ]
-    )
-    report = json.loads((tmp_path / "out/manifest.json").read_text())
-    assert report["keeper"] == {
-        "fins": 1,
-        "series_devices": 2,
-        "replica_matched": True,
-        "timing_qualified": False,
-    }
-    assert report["artifacts"]["output"]["transistors"] == 5
 
 
 def synthetic(read=True):

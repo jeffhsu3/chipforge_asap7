@@ -7,7 +7,7 @@ ASAP7 is a chipforge core PDK target and critical for deteremining the size and 
 ASAP7 SRAM wrapper, `sram_backend` strings and chip-top flows. What lives here
 is the ASAP7 *geometry* that core's hand-built array compilers.
 
-chipforge_asap7 is also a critical dependency for opensource FinFET compilers (primarily 8T versions, see OpenFinRAM)
+chipforge_asap7 is also a critical dependency for opensource FinFET SRAM compilers (primarily 8T versions, see https://github.com/shao-chien-lu/OpenFinRAM)
 
 ## Install
 
@@ -89,7 +89,7 @@ against a unit-fin LVS reference in the tests. The full write-up of each is in
 | [`IoColumnSpec`](docs/column_io.md#the-column-io-block) | One port's column IO: mux group, sense amp, latch, write driver |
 | [`RomBitcellSpec`](docs/rom.md) | Via-programmed NOR-ROM tile with a poly wordline, 81 x 81 nm per bit at two fins |
 | [`RomDecoderSpec`](docs/rom.md#wordline-decoder) | The ROM's wordline decoder and predecoders: address pins to an AND gate per word, interleaved over rows above the array, with the predecoders and bitline ends in a center lane between two half arrays |
-| [`BromSpec`](docs/brom.md) | Four-word BROM compact-array compiler with CGEN, block decoder, precharge/readout, mux and output latches; routed GDS and transistor CDL |
+| [`BromSpec`](docs/brom.md) | Four-word BROM compact-array compiler with CGEN, block decoder, precharge/readout, mux and output latches; routed GDS, transistor CDL, LEF abstract and Verilog model |
 
 ## Simulation and verification
 

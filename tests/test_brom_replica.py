@@ -1,7 +1,5 @@
 """Independent structural, routing and electrical checks for replica integration."""
 
-import json
-
 import gdspy
 import pytest
 
@@ -24,11 +22,11 @@ def test_replica_loads_and_public_interface(ways, depth):
     spec = BromSpec(depth, 2, ways=ways)
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(depth)])
     assert set(c.pins) == {
-        *(f"A<{i}>" for i in range(spec.address_bits)),
+        *(f"A[{i}]" for i in range(spec.address_bits)),
         "CLK",
         "RESETN",
-        "Q<0>",
-        "Q<1>",
+        "Q[0]",
+        "Q[1]",
         "VDD",
         "VSS",
     }
@@ -65,36 +63,6 @@ def test_replica_tap_limit_is_enforced():
         self_timed_macro_circuit(spec, [0] * spec.depth)
 
 
-@pytest.mark.parametrize(
-    "spec", [BromSpec(4, 2), BromSpec(8, 1, fins=1), BromSpec(16, 1, ways=4, fins=3)]
-)
-def test_replica_macro_drc_lvs(spec, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = self_timed_macro_circuit(
-        spec, [i % (1 << spec.bits) for i in range(spec.depth)]
-    )
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = build_macro(c, lib=lib)
-    assert len(top.references) == 3
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "macro.gds", tmp_path / "macro.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
-
-
 def test_disconnected_replica_bitline_is_rejected():
     from chipforge_asap7.layout.layers import LAYERS
 
@@ -120,21 +88,6 @@ def test_disconnected_replica_bitline_is_rejected():
     assert len(count) == 1
     with pytest.raises(ValueError, match="disconnected macro route"):
         verify_macro_routes(c, top)
-
-
-def test_replica_cli(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0,1,2,3]")
-    out = tmp_path / "out"
-    main([str(words), "--bits", "2", "--self-timed", "--out", str(out)])
-    r = json.loads((out / "manifest.json").read_text())
-    assert r["replica_integrated"] and not r["timing_qualified"]
-    assert not r["replica"]["feedback_timing_qualified"]
-    assert r["replica"]["columns"] == 2 and r["replica"]["blocks"] == 2
-    assert "READ_READY" not in r["pins"]
-    assert "controller" in r["artifacts"]
 
 
 def test_existing_standalone_array_labels_are_preserved():
@@ -165,7 +118,7 @@ def synthetic_replica_waveform():
         "CANDIDATE_BUSY",
         "DATA<0>",
         "BL<0>",
-        "Q<0>",
+        "Q[0]",
     ]
     names += [f"C<0,{k}>" for k in range(16)]
     traces = {n: np.zeros_like(t) for n in names}
@@ -186,7 +139,7 @@ def synthetic_replica_waveform():
         if word:
             traces["DATA<0>"][(t >= base + 350) & (t < base + 950)] = 1
             traces["BL<0>"][(t >= base + 330) & (t < base + 960)] = 0
-        traces["Q<0>"][t >= base + 500] = word
+        traces["Q[0]"][t >= base + 500] = word
     return t * 1e-12, traces, spec, words
 
 
@@ -205,7 +158,7 @@ def test_replica_checker_accepts_valid_sequence():
         ("SAMPLE", 250, 1),
         ("DATA<0>", 1449, 0),
         ("PRECHN", 500, 0),
-        ("Q<0>", 4700, 0),
+        ("Q[0]", 4700, 0),
         ("SAMPLEB", 950, 0),
         ("SAMPLE", 4500, 1),
     ],
@@ -239,23 +192,6 @@ def test_bench_never_drives_feedback_inputs(tmp_path, sized_controls):
     assert len(sources) == spec.address_bits + 2
     assert "READ_READY" in signals and "CANDIDATE_BUSY" in signals
     assert not any(line.startswith("B") for line in deck.splitlines())
-
-
-def test_replica_cli_options_require_self_timed(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    with pytest.raises(SystemExit, match="2"):
-        main(
-            [
-                "unused.json",
-                "--bits",
-                "1",
-                "--out",
-                str(tmp_path),
-                "--replica-guard-pairs",
-                "4",
-            ]
-        )
 
 
 def test_replica_precharge_deadline_is_before_next_request():

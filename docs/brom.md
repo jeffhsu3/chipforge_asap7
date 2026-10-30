@@ -23,11 +23,54 @@ python -m chipforge_asap7.brom words.json --bits 8 --ways 1 \
 
 The installed command is `asap7-brom`. Each output directory contains
 `macro`, `cgen`, `decoder` and `output` GDS/CDL/LVS files, plus
-`manifest.json`. `--drc` runs the full ASAP7 gdscheck suite; `--lvs` runs
+`manifest.json`; the macro also gets a LEF abstract and a Verilog model
+(see [Integration views](#integration-views)). `--drc` runs the full ASAP7 gdscheck suite; `--lvs` runs
 the packaged KLayout unit-fin extractor, including real body connections.
 Either failed check makes the command fail. Checks omitted from the command
 are recorded as `not_run`, and an old successful manifest is invalidated
 before a new build starts.
+
+## Integration views
+
+`asap7-brom` writes `macro.lef` and `macro.v` beside the macro's GDS; the
+same text comes from `macro_lef(circuit, top)` and
+`macro_verilog(circuit, spec, words)` in `chipforge_asap7.brom.views`.
+
+- **LEF** (5.8, `CLASS BLOCK`) is read off the built GDS. Its origin is the
+  boundary's lower-left corner, and `FOREIGN` records where the GDS origin
+  then sits, since the macro's routing reaches below and left of it. Every
+  pin is an M4 bar that runs from its label out to the left edge, where a
+  router can reach it; `build_macro` draws that bar for exactly this.
+  VDD and VSS are one such bar each, so a PDN must strap onto them.
+  M1-M3 are blocked over the whole footprint and M4-M5 only where drawn,
+  which leaves M6 and up free over the macro.
+- **Verilog** is a zero-delay behavioral model with the ROM contents inline.
+  It follows the transistors rather than an idealized read: address latches
+  open while PRECHN is low, bitlines are dynamic and keeperless (they stay
+  discharged until the next precharge), unused address codes read zero, and
+  Q latches are transparent while SAMPLE is high, with the rising-edge
+  output register after them when the macro has one. A bitline keeper only
+  holds a level the model already holds, so it adds nothing to the model
+  (and is the one option the switch-level comparison below cannot cover,
+  since it cannot settle the keeper's deliberate fight with a selector). The clocked macro carries
+  the controller's equations with the four acknowledgments as ports; the
+  self-timed one ties them to their meanings with zero delay. Under
+  `SYNTHESIS` the module body drops out, leaving a black box.
+
+The macro's bus pins are named `A[3]` and `Q[3]` everywhere (GDS labels,
+CDL, LEF, Verilog), as a gate netlist and DEF name them, so chip-level LVS
+needs no pin map; nets inside the macro keep `<>`. Neither view carries timing: there is no Liberty file yet,
+since it needs characterized, extracted timing (`timing_qualified` is still
+false). Tests check the LEF pins against the GDS labels and read it with
+KLayout, and run the Verilog under Icarus against the transistor switch-level
+model on random reads, comparing Q and, where the macro generates them,
+PRECHN, EVAL and SAMPLE at every step.
+
+Every cell a macro carries is named by its contents, so macros merged into one
+chip GDS cannot clash: the macro and selector array by a hash of their
+programming, and each peripheral transistor cell (`brom_<device>_<hash>`) by
+a hash of its drawn shapes, so a device drawn differently by another compiler
+version gets a different name rather than silently replacing this one.
 
 ## Circuit and programming
 
@@ -58,7 +101,7 @@ offset, and the remaining bits select the block. Physical column
 
 ## Read interface
 
-The macro exposes `A<i>`, `PRECHN`, `EVAL`, `SAMPLE`, `Q<i>`, VDD and VSS.
+The macro exposes `A[i]`, `PRECHN`, `EVAL`, `SAMPLE`, `Q[i]`, VDD and VSS.
 PRECHN is active low; EVAL and SAMPLE are active high.
 
 1. Keep SAMPLE low. Deassert EVAL and let all candidates fall before
@@ -125,8 +168,7 @@ a timing result. The selector proof does not establish minimum macro area.
 The previous discrete-device **macro array layout has been removed**, with
 no legacy layout option or fallback. Use `build_macro(macro_circuit(...))`
 for macros and `build_periphery(...)` for standalone peripheral circuits.
-`build_circuit` is a deprecated compatibility shim dispatching to those
-builders; it cannot generate the old macro layout. `build_periphery` rejects
+`build_periphery` rejects
 macro circuits to prevent accidentally rebuilding a discrete-device array.
 
 The manifest records the selected plan, core dimensions, peripheral origin,

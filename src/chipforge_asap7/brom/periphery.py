@@ -7,6 +7,7 @@ must be placed by the periodic selector generator, never by this builder.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any
 
 from ..devices.finfet import build_finfet
@@ -16,17 +17,29 @@ from .circuit import Circuit, Device
 from .routing import metal_components
 
 
-def _device(spec: Any, name: str, lib: Any) -> Any:
+def geometry_digest(cell: Any) -> str:
+    """Short hash of a flat cell's drawn shapes, independent of polygon order."""
+    shapes = sorted(
+        (layer, datatype, tuple(map(tuple, points.round(3).tolist())))
+        for (layer, datatype), polygons in cell.get_polygons(by_spec=True).items()
+        for points in polygons
+    )
+    return sha256(repr(shapes).encode()).hexdigest()[:12]
+
+
+def _device(spec: Any, lib: Any) -> Any:
     """Single-finger access: narrow drain column and a local source pad.
 
     The standalone FinFET's wide folded-drain landing violates the current
     M1 short-edge rule for this single-finger use. Keep its device/tap
     geometry, but use vertical drain access and stop the source metal at
     its contact instead of extending it beneath the drain.
+
+    The cell is named after its drawn geometry as well as its spec, so two
+    macros whose device cells differ (say, from different compiler versions)
+    can never meet under one name when a chip merges their GDS.
     """
-    cell = build_finfet(spec, name=name, draw_pin_labels=False)
-    if lib is not None:
-        lib.add(cell)
+    cell = build_finfet(spec, name=f"brom_{spec.cell_name}", draw_pin_labels=False)
     act_lo, act_hi = spec.active_span()
     drain = spec.drain_xs[0]
     targets = {
@@ -50,6 +63,11 @@ def _device(spec: Any, name: str, lib: Any) -> Any:
     box(cell, "M1", source - 14, -9, source + 14, 9)
     _, dy = spec.pin_positions["D"]
     box(cell, "M1", drain - 9, min(act_lo, dy - 14), drain + 9, max(act_hi, dy + 14))
+    cell.name += f"_{geometry_digest(cell)}"
+    if lib is not None:
+        if cell.name in lib.cells:
+            return lib.cells[cell.name]
+        lib.add(cell)
     return cell
 
 
@@ -163,11 +181,7 @@ def build_periphery(
         for i, device in enumerate(row.devices):
             spec = device.spec
             if spec not in cache:
-                name = f"brom_{spec.cell_name}"
-                if lib is not None and name in lib.cells:
-                    cache[spec] = lib.cells[name]
-                else:
-                    cache[spec] = _device(spec, name, lib)
+                cache[spec] = _device(spec, lib)
             cursor = 108 + i * plan.device_pitch
             top.add(gdspy.CellReference(cache[spec], (cursor, row.y)))
             columns = {
