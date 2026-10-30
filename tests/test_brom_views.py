@@ -21,6 +21,8 @@ from chipforge_asap7.brom import (
     clocked_macro_circuit,
     macro_circuit,
     self_timed_macro_circuit,
+    size_control_distribution,
+    size_wire_rc_distribution,
 )
 from chipforge_asap7.brom.layout import macro_periphery, macro_plan
 from chipforge_asap7.brom.periphery import bus_positions
@@ -30,6 +32,11 @@ SHAPES = {
     "phases": macro_circuit,
     "clocked": clocked_macro_circuit,
     "self_timed": self_timed_macro_circuit,
+}
+SIZING = {
+    None: lambda c: c,
+    "sized": size_control_distribution,
+    "wire_rc": size_wire_rc_distribution,
 }
 
 
@@ -126,11 +133,16 @@ def drive(c, mode, spec, steps, seed, watched):
     power of two; so are CLK, RESETN and the phases. Only the orderings the
     switch model needs are kept, since it cannot resolve a crowbar or a race:
     evaluation ends before precharge, acknowledgments follow the circuit
-    rather than arriving with the clock, and an internally driven PRECHN
-    never opens the address latches onto a value they do not hold.
+    rather than arriving with the clock, and neither EVAL nor the address
+    moves on a PRECHN edge.
     """
     rng = random.Random(seed)
+    # Latch controls switch as ideal complements; sizing may move their loads
+    # onto a buffered copy of the net, whose complement is then ideal too.
     ideal = () if mode == "phases" else ("PRECHN", "SAMPLE")
+    for record in (c.distribution or {}).get("nets", ()):
+        if record["net"] in ("PRECHN", "SAMPLE"):
+            ideal += (record["receiver_net"],)
     state, vectors, expected = {}, [], []
 
     def step(vector):
@@ -146,6 +158,14 @@ def drive(c, mode, spec, steps, seed, watched):
             prechn, evaluate, sample = (rng.randrange(2) for _ in range(3))
             if state.get("PRECHN") and state.get("EVAL") and not prechn:
                 step({**vectors[-1], "EVAL": 0})
+            if state and prechn != state["PRECHN"]:
+                # Nothing else moves with a precharge edge: evaluation waits
+                # for it, and the pins show what the latches hold while they
+                # open or close; the address moves on another step.
+                evaluate = 0
+                vector = {
+                    k: state.get(f"ADDR<{k[2:-1]}>", v) for k, v in vector.items()
+                }
             vector.update(PRECHN=prechn, EVAL=evaluate, SAMPLE=sample)
             step(vector)
             continue
@@ -170,20 +190,25 @@ def drive(c, mode, spec, steps, seed, watched):
 
 
 @pytest.mark.parametrize(
-    "mode,spec",
+    "mode,spec,sizing",
     [
-        ("phases", BromSpec(12, 3)),
-        ("phases", BromSpec(32, 2, ways=4)),
-        ("clocked", BromSpec(12, 3)),
-        ("clocked", BromSpec(16, 2, ways=4)),
-        ("self_timed", BromSpec(8, 2)),
+        ("phases", BromSpec(12, 3), None),
+        ("phases", BromSpec(32, 2, ways=4), None),
+        ("clocked", BromSpec(12, 3), None),
+        ("clocked", BromSpec(16, 2, ways=4), None),
+        ("self_timed", BromSpec(8, 2), None),
+        # Sizing adds noninverting buffer chains; the model must not change.
+        ("phases", BromSpec(64, 4), "sized"),
+        ("clocked", BromSpec(32, 4, ways=4), "wire_rc"),
+        ("self_timed", BromSpec(16, 2), "sized"),
     ],
 )
-def test_verilog_model_matches_transistors(mode, spec, tmp_path, external_tool):
+def test_verilog_model_matches_transistors(mode, spec, sizing, tmp_path, external_tool):
     iverilog = shutil.which("iverilog")
     external_tool(iverilog is not None and shutil.which("vvp"), "iverilog is missing")
     words = words_for(spec)
-    c = SHAPES[mode](spec, words)
+    c = SIZING[sizing](SHAPES[mode](spec, words))
+    assert sizing is None or c.distribution["nets"]
     # Q, and the phases too where the macro makes its own.
     watched = [f"Q<{b}>" for b in range(spec.bits)]
     if mode != "phases":
