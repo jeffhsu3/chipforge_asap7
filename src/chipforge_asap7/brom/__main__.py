@@ -22,6 +22,7 @@ from . import (
     decoder_circuit,
     macro_circuit,
     output_circuit,
+    output_register_circuit,
     selector_map,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -39,6 +40,25 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
+    parser.add_argument(
+        "--keeper-fins",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=0,
+        help="Feedback keeper fins; 0 disables",
+    )
+    parser.add_argument(
+        "--keeper-stack",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=2,
+        help="Series keeper PMOS count",
+    )
+    parser.add_argument(
+        "--registered-output",
+        action="store_true",
+        help="Rising-edge Q register; requires --clocked or --self-timed",
+    )
     sizing = parser.add_mutually_exclusive_group()
     sizing.add_argument(
         "--wire-rc-controls",
@@ -74,15 +94,31 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run unit-fin KLayout LVS on every emitted top",
     )
+    parser.add_argument(
+        "--timing-report",
+        type=Path,
+        help="Attach a matching completed timing-estimate JSON",
+    )
     args = parser.parse_args(argv)
     if not args.self_timed and (
         args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
     ):
         parser.error("replica options require --self-timed")
+    if args.registered_output and not (args.clocked or args.self_timed):
+        parser.error("--registered-output requires --clocked or --self-timed")
     words = json.loads(args.words.read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
-    spec = BromSpec(len(words), args.bits, args.ways, args.fins, args.vt)
+    spec = BromSpec(
+        len(words),
+        args.bits,
+        args.ways,
+        args.fins,
+        args.vt,
+        args.keeper_fins,
+        args.keeper_stack,
+        args.registered_output,
+    )
     macro = (
         self_timed_macro_circuit(
             spec,
@@ -103,8 +139,17 @@ def main(argv: list[str] | None = None) -> None:
         "macro": macro,
         "cgen": cgen_circuit(spec.fins, spec.vt),
         "decoder": decoder_circuit(spec),
-        "output": output_circuit(spec.fins, spec.vt),
+        "output": output_circuit(
+            spec.fins,
+            spec.vt,
+            keeper_fins=spec.keeper_fins,
+            keeper_stack=spec.keeper_stack,
+        ),
     }
+    if args.registered_output:
+        circuits["output_register"] = output_register_circuit(
+            spec.bits, spec.fins, spec.vt
+        )
     if args.clocked or args.self_timed:
         circuits["controller"] = controller_circuit(spec.fins, spec.vt)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -121,7 +166,19 @@ def main(argv: list[str] | None = None) -> None:
             if args.clocked
             else "external_phases"
         ),
+        "registered_output": bool(macro.output_register),
+        "output_register": macro.output_register,
         "control_distribution": macro.distribution,
+        "keeper": (
+            {
+                "fins": spec.keeper_fins,
+                "series_devices": spec.keeper_stack,
+                "replica_matched": bool(macro.replica),
+                "timing_qualified": False,
+            }
+            if spec.keeper_fins
+            else None
+        ),
         "replica_integrated": bool(macro.replica),
         "replica": (
             {
@@ -168,6 +225,12 @@ def main(argv: list[str] | None = None) -> None:
         ),
         "artifacts": {},
     }
+    if args.timing_report:
+        from .timing_estimate import attach_estimate
+
+        report["timing_estimate"] = attach_estimate(
+            args.timing_report, macro, spec, words
+        )
     report_path = args.out / "manifest.json"
     # Invalidate a prior successful report before starting any physical checks.
     report_path.write_text(json.dumps(report, indent=2) + "\n")

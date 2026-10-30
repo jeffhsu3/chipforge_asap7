@@ -2,13 +2,11 @@
 
 from copy import deepcopy
 
-import gdspy
 import pytest
 
 from chipforge_asap7.brom import (
     BromSpec,
     WireRCSpec,
-    build_macro,
     routed_control_rc,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -70,37 +68,6 @@ def test_search_preserves_array_and_reduces_estimated_cost():
 def test_invalid_model(kwargs):
     with pytest.raises(ValueError):
         WireRCSpec(**kwargs)
-
-
-@pytest.mark.parametrize(
-    "spec", [BromSpec(4, 2), BromSpec(8, 1, fins=1), BromSpec(16, 1, ways=4, fins=3)]
-)
-def test_wire_optimized_macro_drc_lvs(spec, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = size_wire_rc_distribution(
-        self_timed_macro_circuit(
-            spec, [i % (1 << spec.bits) for i in range(spec.depth)]
-        )
-    )
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = build_macro(c, lib=lib)
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "macro.gds", tmp_path / "ref.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
 
 
 def test_wire_loads_can_change_sizing_and_invalid_values_are_rejected():

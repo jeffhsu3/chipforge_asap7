@@ -125,3 +125,11 @@ The wider 8×16 two-fin self-timed CLI build also passes DRC/LVS and pin/route
 checks for the macro and standalone peripheral cells. Its physical artifacts
 are in `build/brom_wire_rc/compiled_8x16`; no RC transient qualification is
 claimed for that wider macro.
+
+## Registered output clock stress
+
+For registered macros the transient bench also models CLK and register phase
+nets. The earlier [timing-estimate results](brom_timing_estimates.md) identified
+phase overlap at a 10 ns period. [Both-control closure feedback](brom_clock_closure.md)
+now passes the selected 4×2 registered TT/SS runs. The unregistered passing
+schedule above does not qualify other registered shapes or extracted timing.

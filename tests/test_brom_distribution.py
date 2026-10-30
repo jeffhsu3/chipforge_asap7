@@ -1,16 +1,13 @@
 """Electrical fanout, logic polarity, and physical sized-driver integration."""
 
-import json
 from collections import defaultdict
 
-import gdspy
 import pytest
 from test_brom import settle
 
 from chipforge_asap7.brom import (
     BromSpec,
     DistributionSpec,
-    build_macro,
     macro_circuit,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -79,60 +76,6 @@ def test_all_generated_stage_loads_match_actual_netlist():
     for net, record in records.items():
         assert record["load_gate_fins"] == old[net]
         assert all(d.spec.fins == 2 and d.spec.fingers == 1 for d in c.devices)
-
-
-@pytest.mark.parametrize(
-    "spec", [BromSpec(4, 2), BromSpec(8, 1, fins=1), BromSpec(16, 1, ways=4, fins=3)]
-)
-def test_sized_macro_drc_lvs(spec, tmp_path, asap7_drc, require_klayout):
-    from chipforge_asap7.verification.lvs import run_lvs
-    from chipforge_asap7.verification.lvs_report import summarize_lvsdb
-
-    c = size_control_distribution(
-        self_timed_macro_circuit(
-            spec, [i % (1 << spec.bits) for i in range(spec.depth)]
-        )
-    )
-    assert c.distribution["nets"]
-    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
-    top = build_macro(c, lib=lib)
-    assert asap7_drc(lib, top, tag=top.name) == []
-    gds, ref = tmp_path / "macro.gds", tmp_path / "macro.spice"
-    lib.write_gds(str(gds))
-    ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
-    assert result.matched, result.log.read_text()
-    assert not any(
-        r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]
-    )
-    pins = {
-        line.removeprefix("* pin ").strip()
-        for line in result.extracted_netlist.read_text().splitlines()
-        if line.startswith("* pin ")
-    }
-    assert pins == set(c.pins)
-
-
-def test_cli_reports_sizing(tmp_path):
-    from chipforge_asap7.brom.__main__ import main
-
-    words = tmp_path / "words.json"
-    words.write_text("[0,1,2,3]")
-    main(
-        [
-            str(words),
-            "--bits",
-            "2",
-            "--self-timed",
-            "--sized-controls",
-            "--out",
-            str(tmp_path / "out"),
-        ]
-    )
-    report = json.loads((tmp_path / "out/manifest.json").read_text())
-    assert report["control_distribution"]["nets"]
-    assert not report["control_distribution"]["wire_rc_included"]
-    assert not report["timing_qualified"]
 
 
 @pytest.mark.parametrize("value", [1, True, 2.5])

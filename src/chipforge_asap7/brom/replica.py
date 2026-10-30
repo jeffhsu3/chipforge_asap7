@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .circuit import Circuit, ReplicaInstance, SelectorInstance
-from .compiler import BromSpec
+from .compiler import BromSpec, add_readout
 from .controller import clocked_macro_circuit
 
 
@@ -78,8 +78,13 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
             devices.add(c.devices[-1].name)
     for col in range(spec.columns):
         start = len(c.devices)
-        c.fet(True, f"RBL<{col}>", "PRECHN", "VDD")
-        c.inv(f"RBL<{col}>", f"RDOUT<{col}>")
+        add_readout(
+            c,
+            f"RBL<{col}>",
+            f"RDOUT<{col}>",
+            keeper_fins=spec.keeper_fins,
+            keeper_stack=spec.keeper_stack,
+        )
         c.group_since(f"replica_readout_{col}", start)
     data = f"RDOUT<{spec.columns - 1}>"
     if spec.ways == 4:

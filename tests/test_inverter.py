@@ -40,6 +40,24 @@ from chipforge_asap7.layout.rules import (
 RELEASED = InverterSpec(rows=((18, 18), (13, 13)), fingers=2)
 
 
+def test_pinned_bands_and_supply_contacts_preserve_electrical_size():
+    original = InverterSpec(rows=((3, 3),), fingers=4)
+    pinned = InverterSpec(
+        rows=((3, 3),),
+        fingers=4,
+        band_height=(324, 216),
+        rail_sources=True,
+        output_tie_offset=-54,
+    )
+    assert pinned.height == 540
+    assert pinned.rails == ((0, "VSS"), (540, "VDD"))
+    assert pinned.pull_down_fins == pinned.pull_up_fins == 12
+    assert pinned.netlist("same") == original.netlist("same")
+    assert pinned.cell_name != original.cell_name
+    with pytest.raises(ValueError, match="drain straps"):
+        InverterSpec(rows=((3, 3),), fingers=4, output_tie_offset=-200)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_library():
     """Give every test in this file its own gdspy default library.

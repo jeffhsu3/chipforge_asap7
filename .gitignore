@@ -116,3 +116,8 @@ Thumbs.db
 *.gds
 *.lyrdb
 *.oas
+
+# Local scratch and reference material
+/gen_*.py
+/ref/
+scripts/render_finfet_showcase.py

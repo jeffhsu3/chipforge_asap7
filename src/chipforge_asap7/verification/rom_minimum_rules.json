@@ -1,0 +1,77 @@
+{
+  "format": "chipforge_asap7.rom_minimum_rules.v1",
+  "repository": "https://github.com/jeffhsu3/gdscheck",
+  "revision": "0b383c3b07edd6247586aca812e392928dc3b872",
+  "process": "asap7",
+  "suite": "main",
+  "scope": "Ordinary ASAP7 rules, outside SRAMDRC; facts manually audited against the hashed decks.",
+  "facts": {
+    "gate_width_nm": {
+      "value": 20,
+      "rule": "GATE.W.1",
+      "deck": "decks/gate.yml"
+    },
+    "gate_space_nm": {
+      "value": 34,
+      "rule": "GATE.S.2",
+      "deck": "decks/gate.yml"
+    },
+    "fin_width_nm": {
+      "value": 7,
+      "rule": "FIN.W.1",
+      "deck": "decks/fin.yml"
+    },
+    "fin_pitch_nm": {
+      "value": 27,
+      "rule": "FIN.S.1",
+      "deck": "decks/fin.yml"
+    },
+    "active_fin_enclosure_nm": {
+      "value": 10,
+      "rule": "ACTIVE.FIN.EX.1",
+      "deck": "decks/active.yml"
+    },
+    "active_space_nm": {
+      "value": 27,
+      "rule": "ACTIVE.S.1",
+      "deck": "decks/active.yml"
+    }
+  },
+  "sha256": {
+    "decks/active.yml": "7aa777adae45374bb7d4a0fab2f0691310d344b14217c567cbb3171d48339c29",
+    "decks/fin.yml": "3227b823a2462e16fcfbc48f14f02e5b502458ef9647691cb361e8a3b4d5d473",
+    "decks/gate.yml": "b08e5e7f4433b901b0aba79ea7e873e73e2e7df1bf2505174cd26ea587698378",
+    "decks/gcut.yml": "df77e6a5db8bc59e3a016f6dc6ce1679296961f224dc55edae16bcb2c3432f36",
+    "decks/geometry.yml": "844d2e0116502b44bde2ec1346fb782c29ebee79d0f1ee4c0bdd0cd1f7555274",
+    "decks/lig.yml": "cddec148d1c955d4a25dbc9f4cc394126b90659ebb64e4e67756181a72749306",
+    "decks/lisd.yml": "4f14c852bc460970984db97cf9944961427179b126721e5d6d21e44f92976e94",
+    "decks/m1.yml": "b75711470383acbb77822ba35b0055b57f430b6f4bec0d4f149313a037d10fab",
+    "decks/m2.yml": "1b3ee56cdeb592d6926e437029a0a005f2a6fa4b4f0022585cd483ca5015b275",
+    "decks/m3.yml": "6bc76bce1b9ce50749069cb84f7bc11b5997e8a803f8438e717b8c838724a155",
+    "decks/m4.yml": "0056bded0888b3f2b0e4231c872ab97b9ae8d75185161c33ce5d44aaa8c9142b",
+    "decks/m5.yml": "45a1c565b1d0ca018bd66d01c179f1920a7ee91f87e4a5353f3dacf494f86a34",
+    "decks/m6.yml": "0b3174c18bb78e9c4e14b3bde79ce03163d8497e9723ca7329d6a7e962a50509",
+    "decks/m7.yml": "a181cb0b5cb27d8014bfb6574d21f5a414513990ef8e9dc02d8db295ecbc39e3",
+    "decks/m8.yml": "bc3f3f91d9c95b87e25c431bb34b320edea44c9814b1a31d7988cd38158e23c9",
+    "decks/m9.yml": "ad7b61fade71d73e88a9d22c0c9c39cce1ea000ffc9b02f077a042aa43e55099",
+    "decks/openroad.yml": "fa9ed7b8f141f0936bd333c6674b74819a401335ebb36924f25dca54615fd700",
+    "decks/sdt.yml": "d5faceb09362d02b20d51fe8dc1483f8d29eacdf17237e2b4584cb58159a4cdb",
+    "decks/select.yml": "e29d861f4c6b3acf8593e430657878817f1632e040640246394d0a863513e1b4",
+    "decks/v0.yml": "e09ffc2ce7a3e7c45e8eee5b22ad1df85bf60b91f4bed6e904361a966794e6f8",
+    "decks/v1.yml": "416bc298b37eab97821721dde728e4496af5274abc8e7e880775f1317d3b54b9",
+    "decks/v2.yml": "dfe1c4075b5c2922e856f1c7dd0ada3a906c083808cad3b581959811f465c9e5",
+    "decks/v3.yml": "06e56a1ce1fbdd69181f1a383ae23d8ca79645f48334bde050bf8124ccaf9ae2",
+    "decks/v4.yml": "a706f62e229fc7742518e8cd7536e4a3aac7f6fd20df40b06c70b5f808a5ec2d",
+    "decks/v5.yml": "ab9b423bd0c35a59a4ed9b269e73b0f990e31c1991af67de49b9fbedfcb0b1f4",
+    "decks/v6.yml": "127d0b102e136d51f466ad0f15aaadd2d78dfeff2c4f77042a2fad59772fe88b",
+    "decks/v7.yml": "0afc46231709859bf3f6a715afd8a813672f9ef6a0bfb182b05244fae64ac3b7",
+    "decks/v8.yml": "08bae5bece7e51cb7ecb8bbc6013b903be4290ce1b4d28657d406b6b45cab491",
+    "decks/v9.yml": "783ab0c82fd86002db50c181198415f4ccceea54024aad2693e36f8c5574b9cb",
+    "decks/well.yml": "51d4aa98b23465366545abbc035667b518ce777c97d9e38fa15524cef277a179",
+    "pdk.yml": "a6e4cf9d34d388e805cade299a4de23cd54ac434d976d988308e4c38f8c70824",
+    "suites/beol.yml": "c07749181fdf16c460dcd2ef6a7d30ce3410edd2ae395b92753b133022a799cd",
+    "suites/feol.yml": "7f4489a8a3eedb05ff681d742e28f1202a679661ddbac5d34ae7c146c2d66441",
+    "suites/main.yml": "df7164df357d20f74b23e4e44b1512f358c8af2de69a843dfa8c238ff215fe92",
+    "suites/openroad.yml": "52d054552ff571b4f07169e9b2eb61a0f3dfd9cd534490a5d23620ee8cdbc4ca"
+  }
+}

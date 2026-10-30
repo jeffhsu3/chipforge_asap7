@@ -26,8 +26,9 @@ each has a drain of its own, with a short horizontal M1 stub under the row's
 bitline.  A bit is programmed by one V1 on that stub, so a set bit puts its
 transistor on the bitline and a clear bit leaves the drain floating -- a
 single-mask edit, as in chipforge's ROM, but on the drain side.  The third
-gate, ``ISO``, isolates one tile's last drain from the next tile's first; both
-are the same bitline, so even its leakage is from a net to itself.
+gate, ``ISO``, is held at VSS and isolates one tile's last drain from the next
+tile's first. Those drains share a bitline only when both bits are programmed;
+off-state isolation leakage still needs electrical characterization.
 
 The diffusion is never broken, which is what lets it be this dense: a break
 between nets needs 92 nm (ACTIVE.S.2A).  Rows are ``fins + 1`` fin pitches
@@ -485,17 +486,21 @@ def build_rom_array(
     *,
     name: str | None = None,
     lib: Any = None,
+    bitline: str = "BL",
+    bitline_side: Literal["left", "right"] = "left",
+    first_word: int = 0,
 ) -> Any:
     """Tile `spec`, add its straps and close its edges; return the gdspy Cell.
 
     `programmed` holds ``(word, bit)`` pairs that get a V1.  Bit ``b``'s
-    bitline is ``BL<b>`` on M2, word ``w``'s wordline ``WL<w>`` on M3.  The
-    edges are what a lone tile cannot provide:
+    bitline is ``BL<b>`` on M2 (`bitline` names it), word ``w``'s wordline
+    ``WL<w>`` on M3, labelled ``WL<first_word + w>``.  The edges are what a
+    lone tile cannot provide:
 
     - a dummy gate at each end of every row, and an 8 nm ACTIVE overhang.
       That is 25 nm past the last gate on it (GATE.ACTIVE.EX.2) and 9 nm short
       of the dummy (GATE.ACTIVE.S.4);
-    - the bitlines carried out past the first drain's V1;
+    - the bitlines carried out past the edge on `bitline_side`;
     - select around the lot: NSELECT beside the rows, PSELECT around the
       tap row along the top.
     """
@@ -536,13 +541,20 @@ def build_rom_array(
         ):
             box(cell, "ACTIVE", x0, y0 + act_lo, x1, y0 + act_hi)
         y_bl = y0 + bitcell.contact_y
-        box(cell, "M2", -PAD - GATE_PITCH, y_bl - HALF, 0, y_bl + HALF)
-        _label(cell, f"BL<{bit}>", "M2", (-GATE_PITCH, y_bl))
+        if bitline_side == "left":
+            x0, x1, x_pin = -PAD - GATE_PITCH, 0, -GATE_PITCH
+        else:
+            x0, x1, x_pin = width, width + GATE_PITCH + PAD, width + GATE_PITCH
+            # Word 0's programming V1 sits 5 nm inside the left edge and
+            # still needs its M2 end-cap (V1.M2.EN.2).
+            box(cell, "M2", -PAD, y_bl - HALF, 0, y_bl + HALF)
+        box(cell, "M2", x0, y_bl - HALF, x1, y_bl + HALF)
+        _label(cell, f"{bitline}<{bit}>", "M2", (x_pin, y_bl))
 
     for word in range(spec.words):
         x = spec.wordline_x(word)
         box(cell, "M3", x - HALF, 0, x + HALF, height)
-        _label(cell, f"WL<{word}>", "M3", (x, height - HALF))
+        _label(cell, f"WL<{first_word + word}>", "M3", (x, height - HALF))
     for x_gate in (-GATE_PITCH // 2, width + GATE_PITCH // 2):
         box(cell, "GATE", x_gate - HALF_GATE, 0, x_gate + HALF_GATE, height)
     for k in range(height // FIN_PITCH):

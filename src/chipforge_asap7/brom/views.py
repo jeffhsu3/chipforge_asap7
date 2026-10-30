@@ -5,8 +5,8 @@ macro's flattened GDS and pin labels, the Verilog from the circuit's pins and
 the programmed words. Neither carries timing; Liberty waits on characterized,
 extracted timing.
 
-Bus pins use ``[]`` in both views (``A<3>`` becomes ``A[3]``) to match a gate
-netlist; GDS labels and CDL keep ``<>``.
+The macro's bus pins are already named ``A[3]``, as a gate netlist and DEF
+name them, so GDS labels, CDL, LEF and Verilog all agree.
 """
 
 from __future__ import annotations
@@ -22,16 +22,11 @@ from .periphery import bus_positions
 
 __all__ = ["macro_lef", "macro_verilog"]
 
-_BUS = re.compile(r"^(\w+)<(\d+)>$")
+_BUS = re.compile(r"^(\w+)\[(\d+)\]$")
 #: Layers the router must treat as fully blocked over the macro.
 COVERED = ("M1", "M2", "M3")
 #: Layers whose drawn shapes are emitted exactly, so pins on M4 stay reachable.
 EXACT = ("M4", "M5")
-
-
-def _lef_name(pin: str) -> str:
-    match = _BUS.match(pin)
-    return f"{match[1]}[{match[2]}]" if match else pin
 
 
 def _direction(pin: str) -> tuple[str, str]:
@@ -39,7 +34,7 @@ def _direction(pin: str) -> tuple[str, str]:
         return "INOUT", "POWER"
     if pin == "VSS":
         return "INOUT", "GROUND"
-    if pin.startswith("Q<"):
+    if pin.startswith("Q["):
         return "OUTPUT", "SIGNAL"
     return "INPUT", "SIGNAL"
 
@@ -89,14 +84,14 @@ def macro_lef(circuit: Any, top: Any) -> str:
         pin_shapes.update(shapes)
         direction, use = _direction(pin)
         pins += [
-            f"  PIN {_lef_name(pin)}",
+            f"  PIN {pin}",
             f"    DIRECTION {direction} ;",
             f"    USE {use} ;",
             "    PORT",
             "      LAYER M4 ;",
             *(rect(r) for r in shapes),
             "    END",
-            f"  END {_lef_name(pin)}",
+            f"  END {pin}",
         ]
     box = (x0, y0, x1, y1)
     obs = ["  OBS"]
@@ -142,7 +137,9 @@ def macro_verilog(circuit: Any, spec: BromSpec, words: Sequence[int]) -> str:
     latches open while PRECHN is low, bitlines are dynamic (precharged by
     PRECHN low, discharged while EVAL and PRECHN are both high, otherwise
     held), unused address codes discharge nothing, and Q latches are
-    transparent while SAMPLE is high. The clocked variants carry the
+    transparent while SAMPLE is high, followed by the rising-edge register
+    when the macro has one. A bitline keeper only holds a level the model
+    already holds, so it adds nothing here. The clocked variants carry the
     controller's equations; the self-timed one replaces its replica with
     ideal acknowledgments. Under ``SYNTHESIS`` the module is a black box.
     """
@@ -207,7 +204,7 @@ def macro_verilog(circuit: Any, spec: BromSpec, words: Sequence[int]) -> str:
         "  integer bit, way;",
         "  // Address latches are transparent during precharge.",
         "  always @(PRECHN or A) if (!PRECHN) addr = A;",
-        "  // Keeperless bitlines: precharge, discharge, or hold.",
+        "  // Dynamic bitlines: precharge, discharge, or hold.",
         "  always @(PRECHN or EVAL or addr)",
         f"    if (!PRECHN) bl_low = {cols}'b0;",
         f"    else if (EVAL && (addr >> {spec.column_bits}) < {rows})",
@@ -226,7 +223,19 @@ def macro_verilog(circuit: Any, spec: BromSpec, words: Sequence[int]) -> str:
         "  end",
         "  // Output latches are transparent while SAMPLE is high.",
         "  always @(SAMPLE or data) if (SAMPLE) q = data;",
-        "  assign Q = q;",
+    ]
+    if circuit.output_register is not None:
+        # The rising-edge bank: a master latch open while CLK is low, then a
+        # slave open while it is high, between the sampling latches and Q.
+        lines += [
+            f"  reg [{bits - 1}:0] master, registered;",
+            "  always @(CLK or q) if (!CLK) master = q;",
+            "  always @(CLK or master) if (CLK) registered = master;",
+            "  assign Q = registered;",
+        ]
+    else:
+        lines.append("  assign Q = q;")
+    lines += [
         "`endif",
         "endmodule",
         "",

@@ -117,3 +117,9 @@ simulator timeout.
 The selected run artifacts and consolidated report are under
 `build/brom_timing/final/`. They are generated outputs; this document preserves
 the measured headline results in the repository.
+
+## Registered and closed-loop timing estimates
+
+The [registered timing-estimate flow](brom_timing_estimates.md) adds standalone
+setup/hold and pulse-width sweeps, complete-schedule pass/fail transitions, routed clock
+RC stress, and compiler-manifest attachment with circuit/content checks.
