@@ -43,7 +43,7 @@ completed idle/precharge phase: PRECHN_FAR=0, READ_READY=0, SAMPLE_CLOSED=1 and
 CANDIDATE_BUSY=0, plus sufficient time for bitline restoration and address
 setup. CLK low must last long enough for read completion and the required
 sampling aperture. Release RESETN with CLK high and complete a precharge
-interval before lowering CLK. Do not stop CLK low indefinitely: the keeperless
+interval before lowering CLK. Do not stop CLK low indefinitely: the default keeperless
 bitlines have a bounded dynamic retention interval. The controller does not stretch an arbitrarily short clock
 pulse into a successful read or synchronize unrelated clock domains.
 
@@ -110,3 +110,6 @@ conditions. A complete transient and all checks must pass; truncated runs fail.
 Decks, waveforms, logs, signal maps and reports are retained in each run directory.
 The benchmark's generous 1.2 ns cycle and externally scheduled acknowledgments
 are test stimuli, not a measured maximum clock frequency or a physical replica.
+
+An optional [feedback keeper](brom_keeper.md) improves measured bitline
+retention, but does not qualify indefinite stopped-clock operation.

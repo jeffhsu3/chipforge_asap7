@@ -434,6 +434,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--depth", type=int, default=4)
     p.add_argument("--bits", type=int, default=2)
+    p.add_argument("--keeper-fins", type=int, choices=(0, 1, 2, 3), default=0)
+    p.add_argument("--keeper-stack", type=int, choices=(1, 2, 3, 4), default=2)
+    p.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     p.add_argument("--ways", type=int, choices=(1, 4), default=1)
     p.add_argument(
         "--klu", action="store_true", help="Use KLU (requires a KLU-enabled ngspice)"
@@ -455,7 +458,14 @@ def main():
     if args.model_card is None:
         p.error("model card required")
     r = characterize_replica(
-        BromSpec(args.depth, args.bits, args.ways),
+        BromSpec(
+            args.depth,
+            args.bits,
+            args.ways,
+            fins=args.fins,
+            keeper_fins=args.keeper_fins,
+            keeper_stack=args.keeper_stack,
+        ),
         out=args.out,
         model_card=args.model_card,
         osdi=args.osdi,

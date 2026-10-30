@@ -38,6 +38,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
+    parser.add_argument(
+        "--keeper-fins",
+        type=int,
+        choices=(0, 1, 2, 3),
+        default=0,
+        help="Feedback keeper fins; 0 disables",
+    )
+    parser.add_argument(
+        "--keeper-stack",
+        type=int,
+        choices=(1, 2, 3, 4),
+        default=2,
+        help="Series keeper PMOS count",
+    )
     sizing = parser.add_mutually_exclusive_group()
     sizing.add_argument(
         "--wire-rc-controls",
@@ -81,7 +95,15 @@ def main(argv: list[str] | None = None) -> None:
     words = json.loads(args.words.read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
-    spec = BromSpec(len(words), args.bits, args.ways, args.fins, args.vt)
+    spec = BromSpec(
+        len(words),
+        args.bits,
+        args.ways,
+        args.fins,
+        args.vt,
+        args.keeper_fins,
+        args.keeper_stack,
+    )
     macro = (
         self_timed_macro_circuit(
             spec,
@@ -102,7 +124,12 @@ def main(argv: list[str] | None = None) -> None:
         "macro": macro,
         "cgen": cgen_circuit(spec.fins, spec.vt),
         "decoder": decoder_circuit(spec),
-        "output": output_circuit(spec.fins, spec.vt),
+        "output": output_circuit(
+            spec.fins,
+            spec.vt,
+            keeper_fins=spec.keeper_fins,
+            keeper_stack=spec.keeper_stack,
+        ),
     }
     if args.clocked or args.self_timed:
         circuits["controller"] = controller_circuit(spec.fins, spec.vt)
@@ -121,6 +148,16 @@ def main(argv: list[str] | None = None) -> None:
             else "external_phases"
         ),
         "control_distribution": macro.distribution,
+        "keeper": (
+            {
+                "fins": spec.keeper_fins,
+                "series_devices": spec.keeper_stack,
+                "replica_matched": bool(macro.replica),
+                "timing_qualified": False,
+            }
+            if spec.keeper_fins
+            else None
+        ),
         "replica_integrated": bool(macro.replica),
         "replica": (
             {

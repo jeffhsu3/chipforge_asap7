@@ -47,7 +47,8 @@ The output leaf contains a PMOS precharger and a CMOS inverter. At 4:1,
 four physical columns feed each output through a static one-hot mux.
 An eight-transistor static transmission-gate latch holds each output while
 the next read precharges. Address latches are transparent during precharge
-and hold the sampled address throughout evaluation. There is no bitline keeper.
+and hold the sampled address throughout evaluation. The default is keeperless; an optional [feedback keeper](brom_keeper.md)
+can be enabled with `--keeper-fins 1`.
 
 Depth is a positive multiple of `4 * ways`; ways is 1 or 4. Non-power-of-two
 depths are allowed. Unused address codes select no block. With mux4, the

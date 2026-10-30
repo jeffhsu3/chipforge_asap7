@@ -20,6 +20,15 @@ BLOCK_SIZE = 4
 CANDIDATES = 16
 
 
+def _validate_keeper(fins, stack):
+    if type(fins) is not int or type(stack) is not int:
+        raise TypeError("keeper fins and stack must be integers")
+    if fins not in (0, 1, 2, 3):
+        raise ValueError("keeper_fins must be 0 (disabled), 1, 2 or 3")
+    if stack not in (1, 2, 3, 4):
+        raise ValueError("keeper_stack must be between 1 and 4")
+
+
 @dataclass(frozen=True)
 class BromSpec:
     depth: int = 16
@@ -27,11 +36,14 @@ class BromSpec:
     ways: int = 1
     fins: int = 2
     vt: str = "rvt"
+    keeper_fins: int = 0
+    keeper_stack: int = 2
 
     def __post_init__(self) -> None:
-        for field in ("depth", "bits", "ways", "fins"):
+        for field in ("depth", "bits", "ways", "fins", "keeper_fins", "keeper_stack"):
             if type(getattr(self, field)) is not int:
                 raise TypeError(f"{field} must be an integer")
+        _validate_keeper(self.keeper_fins, self.keeper_stack)
         if self.ways not in (1, 4):
             raise ValueError("ways must be 1 or 4")
         if self.depth < 4 * self.ways or self.depth % (4 * self.ways):
@@ -201,12 +213,30 @@ def _add_decoder(c: Circuit, spec: BromSpec, address: str = "A") -> None:
         c.and2(f"BLOCK<{block}>", "evaluate", f"SEL<{block}>")
 
 
-def output_circuit(fins: int = 2, vt: str = "rvt") -> Circuit:
-    c = Circuit(
-        f"brom_output_f{fins}_{vt}", ("BL", "PRECHN", "DOUT", "VDD", "VSS"), fins, vt
-    )
-    c.fet(True, "BL", "PRECHN", "VDD")
-    c.inv("BL", "DOUT")
+def add_readout(c, bitline, output, *, keeper_fins=0, keeper_stack=2):
+    """Precharge, inverter, and optional weak positive-feedback PMOS path.
+
+    All keeper gates use the inverted bitline. Series devices allow weaker
+    drive than the minimum single-fin transistor; every bulk stays at VDD.
+    """
+    c.fet(True, bitline, "PRECHN", "VDD")
+    c.inv(bitline, output)
+    source = "VDD"
+    for stage in range(keeper_stack if keeper_fins else 0):
+        drain = bitline if stage == keeper_stack - 1 else c.node()
+        c.fet(True, drain, output, source, fins=keeper_fins)
+        source = drain
+
+
+def output_circuit(
+    fins: int = 2, vt: str = "rvt", *, keeper_fins=0, keeper_stack=2
+) -> Circuit:
+    _validate_keeper(keeper_fins, keeper_stack)
+    name = f"brom_output_f{fins}_{vt}"
+    if keeper_fins:
+        name += f"_k{keeper_fins}s{keeper_stack}"
+    c = Circuit(name, ("BL", "PRECHN", "DOUT", "VDD", "VSS"), fins, vt)
+    add_readout(c, "BL", "DOUT", keeper_fins=keeper_fins, keeper_stack=keeper_stack)
     return c
 
 
@@ -219,6 +249,8 @@ def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
         spec.fins,
         spec.vt,
     )
+    if spec.keeper_fins:
+        c.name += f"_k{spec.keeper_fins}s{spec.keeper_stack}"
     address_open = c.node()
     c.inv("PRECHN", address_open)
     for i in range(spec.address_bits):
@@ -242,8 +274,13 @@ def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
     )
     for column in range(spec.columns):
         start = len(c.devices)
-        c.fet(True, f"BL<{column}>", "PRECHN", "VDD")
-        c.inv(f"BL<{column}>", f"DOUT<{column}>")
+        add_readout(
+            c,
+            f"BL<{column}>",
+            f"DOUT<{column}>",
+            keeper_fins=spec.keeper_fins,
+            keeper_stack=spec.keeper_stack,
+        )
         c.group_since(f"readout_{column}", start)
     sampleb = c.node()
     c.inv("SAMPLE", sampleb)

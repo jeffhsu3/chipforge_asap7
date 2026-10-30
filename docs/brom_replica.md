@@ -129,3 +129,7 @@ short pulses safe. Release RESETN with CLK high and complete precharge before
 reading. Keeperless dynamic bitlines also prevent an indefinitely stopped-low
 clock. See the [controller contract](brom_controller.md) for reset and completion
 semantics.
+
+Optional [bitline keepers](brom_keeper.md) are installed identically on every
+data and replica bitline. Enabling them requires renewed timing checks because
+they change discharge delay and readout loading.
