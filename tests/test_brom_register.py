@@ -122,7 +122,7 @@ def waveform():
     words = [0, 1, 0, 1]
     traces = {
         n: np.zeros_like(t)
-        for n in ("CLK", "REG_M", "REG_MB", "REG_S", "REG_SB", "SAMPLED<0>", "Q<0>")
+        for n in ("CLK", "REG_M", "REG_MB", "REG_S", "REG_SB", "SAMPLED<0>", "Q[0]")
     }
     traces["CLK"][:] = 1
     traces["REG_S"][:] = 1
@@ -135,7 +135,7 @@ def waveform():
         traces["REG_S"][base + 205 : base + 780] = 0
         traces["REG_SB"][base + 210 : base + 785] = 1
         traces["SAMPLED<0>"][base + 450 :] = word
-        traces["Q<0>"][base + 810 :] = word
+        traces["Q[0]"][base + 810 :] = word
     return t * 1e-12, traces, spec, words
 
 
@@ -147,12 +147,12 @@ def test_registered_checker_accepts_and_rejects_contract_violations():
     assert r["passed"], r["failures"]
     assert r["minimum_data_before_edge_ps"] > 0
     assert 50 < r["maximum_clk_to_valid_ps"] < 100
-    traces["Q<0>"][1400] = 1
+    traces["Q[0]"][1400] = 1
     assert not analyze_registered_output(t, traces, spec, words, 1)["passed"]
 
 
 @pytest.mark.parametrize(
-    "net,index,value", [("REG_S", 300, 1), ("SAMPLED<0>", 1750, 0), ("Q<0>", 1900, 0)]
+    "net,index,value", [("REG_S", 300, 1), ("SAMPLED<0>", 1750, 0), ("Q[0]", 1900, 0)]
 )
 def test_registered_checker_rejects_overlap_late_data_and_wrong_capture(
     net, index, value

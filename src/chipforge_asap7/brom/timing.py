@@ -109,7 +109,7 @@ def render_deck(spec, words, conditions, model_card, osdi, addresses=None):
     signals = ["PRECHN", "EVAL", "SAMPLE"]
     signals += [f"BL<{i}>" for i in range(spec.columns)]
     signals += [f"DOUT<{i}>" for i in range(spec.columns)]
-    signals += [f"Q<{i}>" for i in range(spec.bits)]
+    signals += [f"Q[{i}]" for i in range(spec.bits)]
     data = {}
     by_name = {d.name: d for d in c.devices}
     for group, members in c.placement_groups:
@@ -130,7 +130,7 @@ def render_deck(spec, words, conditions, model_card, osdi, addresses=None):
     cycle = 400 * scale
     stop = len(addresses) * cycle + 280 * scale
     events = {pin: [(0.0, 0)] for pin in ("PRECHN", "EVAL", "SAMPLE")}
-    events.update({f"A<{i}>": [(0.0, 0)] for i in range(spec.address_bits)})
+    events.update({f"A[{i}]": [(0.0, 0)] for i in range(spec.address_bits)})
     for index, address in enumerate([*addresses, 0]):
         base = index * cycle
         for name, points in {
@@ -142,9 +142,9 @@ def render_deck(spec, words, conditions, model_card, osdi, addresses=None):
                 if base + offset * scale < stop:
                     events[name].append((base + offset * scale, value))
         for bit in range(spec.address_bits):
-            events[f"A<{bit}>"].append((base + 20 * scale, (address >> bit) & 1))
+            events[f"A[{bit}]"].append((base + 20 * scale, (address >> bit) & 1))
             # Deliberately disturb the external address after the latch closes.
-            events[f"A<{bit}>"].append((base + 200 * scale, 1 - ((address >> bit) & 1)))
+            events[f"A[{bit}]"].append((base + 200 * scale, 1 - ((address >> bit) & 1)))
     lines = [
         "* BROM loaded BSIM-CMG timing; ideal wires, no layout RC",
         f".include {_spice_path(model_card)}",
@@ -179,14 +179,14 @@ def render_deck(spec, words, conditions, model_card, osdi, addresses=None):
                 f"N{d.name}_{multiplier} {' '.join(names[n] for n in d.nodes)} "
                 f"{d.spec.model} L={d.spec.gate_length}n NFIN={d.spec.fins} NF={d.spec.fingers}"
             )
-    for prefix, count, load in (
-        ("Q", spec.bits, conditions.output_load_ff),
-        ("BL", spec.columns, conditions.bitline_load_ff),
+    # Q is a macro pin, so its bits are bracketed; BL is internal.
+    for prefix, net, count, load in (
+        ("Q", "Q[{}]", spec.bits, conditions.output_load_ff),
+        ("BL", "BL<{}>", spec.columns, conditions.bitline_load_ff),
     ):
         if load:
             lines += [
-                f"C{prefix}{i} {names[f'{prefix}<{i}>']} 0 {load:g}f"
-                for i in range(count)
+                f"C{prefix}{i} {names[net.format(i)]} 0 {load:g}f" for i in range(count)
             ]
     vectors = [f"v({names[data.get(n, n)]})" for n in signals]
     lines += [
@@ -256,7 +256,7 @@ def analyze(time, traces, spec, words, conditions, addresses):
             capture.append(
                 settling_delay(
                     time,
-                    traces[f"Q<{bit}>"],
+                    traces[f"Q[{bit}]"],
                     sample_start,
                     base + 340 * scale,
                     high,
@@ -265,9 +265,9 @@ def analyze(time, traces, spec, words, conditions, addresses):
             )
             # Hold through the following precharge/evaluation, before SAMPLE opens.
             start, end = base + 340 * scale + slew, base + 680 * scale
-            if settling_delay(time, traces[f"Q<{bit}>"], start, end, high, vdd) != 0:
+            if settling_delay(time, traces[f"Q[{bit}]"], start, end, high, vdd) != 0:
                 failures.append(
-                    f"read {index} address {address}: Q<{bit}> hold failure"
+                    f"read {index} address {address}: Q[{bit}] hold failure"
                 )
         for metric, delays in (
             ("precharge_90_ps", pre),
@@ -419,7 +419,7 @@ def plot_waveform(out: Path) -> Path:
     )
     for ax, names in zip(
         axes,
-        [("PRECHN", "EVAL", "SAMPLE"), ("Selected BL", f"DATA<{bit}>"), (f"Q<{bit}>",)],
+        [("PRECHN", "EVAL", "SAMPLE"), ("Selected BL", f"DATA<{bit}>"), (f"Q[{bit}]",)],
         strict=True,
     ):
         for name in names:

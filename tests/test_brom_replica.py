@@ -24,11 +24,11 @@ def test_replica_loads_and_public_interface(ways, depth):
     spec = BromSpec(depth, 2, ways=ways)
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(depth)])
     assert set(c.pins) == {
-        *(f"A<{i}>" for i in range(spec.address_bits)),
+        *(f"A[{i}]" for i in range(spec.address_bits)),
         "CLK",
         "RESETN",
-        "Q<0>",
-        "Q<1>",
+        "Q[0]",
+        "Q[1]",
         "VDD",
         "VSS",
     }
@@ -165,7 +165,7 @@ def synthetic_replica_waveform():
         "CANDIDATE_BUSY",
         "DATA<0>",
         "BL<0>",
-        "Q<0>",
+        "Q[0]",
     ]
     names += [f"C<0,{k}>" for k in range(16)]
     traces = {n: np.zeros_like(t) for n in names}
@@ -186,7 +186,7 @@ def synthetic_replica_waveform():
         if word:
             traces["DATA<0>"][(t >= base + 350) & (t < base + 950)] = 1
             traces["BL<0>"][(t >= base + 330) & (t < base + 960)] = 0
-        traces["Q<0>"][t >= base + 500] = word
+        traces["Q[0]"][t >= base + 500] = word
     return t * 1e-12, traces, spec, words
 
 
@@ -205,7 +205,7 @@ def test_replica_checker_accepts_valid_sequence():
         ("SAMPLE", 250, 1),
         ("DATA<0>", 1449, 0),
         ("PRECHN", 500, 0),
-        ("Q<0>", 4700, 0),
+        ("Q[0]", 4700, 0),
         ("SAMPLEB", 950, 0),
         ("SAMPLE", 4500, 1),
     ],

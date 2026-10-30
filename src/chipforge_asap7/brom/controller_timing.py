@@ -37,8 +37,8 @@ def render_controller_bench(model_card, osdi, conditions):
         "READ_READY": 0,
         "SAMPLE_CLOSED": 1,
         "CANDIDATE_BUSY": 0,
-        "A<0>": 0,
-        "A<1>": 0,
+        "A[0]": 0,
+        "A[1]": 0,
     }
     events = {net: [] for net in initial}
     events["RESETN"].append((100, 1))
@@ -48,8 +48,8 @@ def render_controller_bench(model_card, osdi, conditions):
     for cycle, address in enumerate(addresses):
         base = cycle * 1200
         for bit in range(2):
-            events[f"A<{bit}>"].append((base + 40, address >> bit & 1))
-            events[f"A<{bit}>"].append((base + 740, 1 - (address >> bit & 1)))
+            events[f"A[{bit}]"].append((base + 40, address >> bit & 1))
+            events[f"A[{bit}]"].append((base + 740, 1 - (address >> bit & 1)))
         edges = {
             "CLK": [(200, 0), (850, 1)],
             "PRECHN_FAR": [(400, 1), (1180, 0)],
@@ -83,7 +83,7 @@ def render_controller_bench(model_card, osdi, conditions):
             f"N{d.name} {' '.join(nodes[n] for n in d.nodes)} {d.spec.model} L=20n NFIN=2 NF=1"
         )
     for bit in range(2):
-        lines.append(f"CQ{bit} {nodes[f'Q<{bit}>']} 0 {conditions.output_load_ff:g}f")
+        lines.append(f"CQ{bit} {nodes[f'Q[{bit}]']} 0 {conditions.output_load_ff:g}f")
     by_name = {d.name: d for d in c.devices}
     for group, members in c.placement_groups:
         if group.startswith(("address_", "output_latch_")):
@@ -91,7 +91,7 @@ def render_controller_bench(model_card, osdi, conditions):
                 lines.append(
                     f".nodeset V({nodes[by_name[members[index]].nodes[0]]})={voltage:g}"
                 )
-    signals = [*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q<0>", "Q<1>"]
+    signals = [*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q[0]", "Q[1]"]
     vectors = [f"v({nodes[n]})" for n in signals]
     lines += [
         ".control",
@@ -154,9 +154,9 @@ def check_controller_waveform(time, traces, vdd):
     for cycle, word in enumerate([0, 1, 2, 3, 3]):
         window = (t >= cycle * 1200 + 950) & (t <= (cycle + 1) * 1200 + 640)
         for bit in range(2):
-            good = high(f"Q<{bit}>") if word >> bit & 1 else low(f"Q<{bit}>")
+            good = high(f"Q[{bit}]") if word >> bit & 1 else low(f"Q[{bit}]")
             if not np.all(good[window]):
-                failures.append(f"read/hold failure: cycle {cycle}, Q<{bit}>")
+                failures.append(f"read/hold failure: cycle {cycle}, Q[{bit}]")
     reset_drain = (t >= 2 * 1200 + 900) & (t <= 3 * 1200 + 200)
     if not np.all(low("SAMPLE")[reset_drain]):
         failures.append("reset did not close sampling")

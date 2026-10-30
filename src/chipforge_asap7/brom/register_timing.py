@@ -57,11 +57,11 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
                 failures.append(
                     f"address {address}: sampled bit {bit} changed during capture hold aperture"
                 )
-            q = traces[f"Q<{bit}>"]
+            q = traces[f"Q[{bit}]"]
             valid = crossing(t, q, edge, end, (0.9 if high else 0.1) * vdd, high)
             if valid is None:
                 failures.append(
-                    f"address {address}: registered Q<{bit}> did not capture"
+                    f"address {address}: registered Q[{bit}] did not capture"
                 )
                 continue
             delay = valid - edge
@@ -71,7 +71,7 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
                 held >= 0.9 * vdd if high else held <= 0.1 * vdd
             ):
                 failures.append(
-                    f"address {address}: registered Q<{bit}> changed between rising edges"
+                    f"address {address}: registered Q[{bit}] changed between rising edges"
                 )
         reads.append(
             {

@@ -146,16 +146,16 @@ def test_macro_reads_and_holds_every_four_bit_pattern(ways):
     state = None
     held = None
     for address, expected in enumerate(words):
-        pins = {f"A<{i}>": address >> i & 1 for i in range(spec.address_bits)}
+        pins = {f"A[{i}]": address >> i & 1 for i in range(spec.address_bits)}
         state = settle(c, {**pins, "PRECHN": 0, "EVAL": 0, "SAMPLE": 0}, state)
         if held is not None:
-            assert sum(state[f"Q<{i}>"] << i for i in range(spec.bits)) == held
+            assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == held
         assert all(state[f"BL<{i}>"] == 1 for i in range(spec.columns))
         state = settle(c, {**pins, "PRECHN": 1, "EVAL": 1, "SAMPLE": 0}, state)
         # External address changes must not disturb the closed address latches.
         noise = {key: 1 - value for key, value in pins.items()}
         state = settle(c, {**noise, "PRECHN": 1, "EVAL": 1, "SAMPLE": 1}, state)
-        held = sum(state[f"Q<{i}>"] << i for i in range(spec.bits))
+        held = sum(state[f"Q[{i}]"] << i for i in range(spec.bits))
         assert held == expected
         state = settle(c, {**pins, "PRECHN": 1, "EVAL": 1, "SAMPLE": 0}, state)
         state = settle(c, {**pins, "PRECHN": 1, "EVAL": 0, "SAMPLE": 0}, state)
@@ -527,3 +527,33 @@ def test_folded_mux4_macro_area_regression():
     area_um2 = (bounds[1, 0] - bounds[0, 0]) * (bounds[1, 1] - bounds[0, 1]) / 1e6
     # The prior single-strip implementation occupied 8826.31 square microns.
     assert area_um2 < 3000
+
+
+def test_macro_pins_are_bracketed_in_the_gds_and_cdl():
+    c = macro_circuit(BromSpec(8, 2), [i % 4 for i in range(8)])
+    top = build_macro(c, lib=gdspy.GdsLibrary(unit=1e-9, precision=1e-10))
+    assert {label.text for label in top.labels} == set(c.pins)
+    assert {"A[0]", "A[2]", "Q[1]"} <= set(c.pins)
+    assert not any("<" in pin for pin in c.pins)
+    assert c.netlist().startswith(f".subckt {c.name} A[0] A[1] A[2] PRECHN")
+
+
+def test_device_cells_are_named_by_their_geometry():
+    from chipforge_asap7.brom.periphery import geometry_digest
+    from chipforge_asap7.layout import box
+
+    def device_cells():
+        lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+        build_macro(macro_circuit(BromSpec(8, 2), [i % 4 for i in range(8)]), lib=lib)
+        return {n: cell for n, cell in lib.cells.items() if "mos_fin" in n}
+
+    cells = device_cells()
+    assert len(cells) == 2
+    for name, cell in cells.items():
+        assert name == f"{name.rsplit('_', 1)[0]}_{geometry_digest(cell)}"
+    # Rebuilding names the same shapes the same way; one more shape renames it.
+    assert device_cells().keys() == cells.keys()
+    cell = next(iter(cells.values())).copy("changed", deep_copy=True)
+    before = geometry_digest(cell)
+    box(cell, "M1", 0, 0, 18, 18)
+    assert geometry_digest(cell) != before

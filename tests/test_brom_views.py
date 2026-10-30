@@ -65,12 +65,11 @@ def test_lef_pins_reach_the_left_edge_under_their_labels(mode):
     size = re.search(r"SIZE (\S+) BY (\S+) ;", text)
     assert (float(size[1]), float(size[2])) == ((x1 - x0) / 1000, (y1 - y0) / 1000)
     pins = lef_pins(text)
-    expected = {re.sub(r"<(\d+)>", r"[\1]", p) for p in c.pins}
-    assert set(pins) == expected
+    assert set(pins) == set(c.pins)
     buses = bus_positions(macro_periphery(c))
     bank_y = macro_plan(c).bank_y
     for pin in c.pins:
-        direction, rects = pins[re.sub(r"<(\d+)>", r"[\1]", pin)]
+        direction, rects = pins[pin]
         assert direction == (
             "OUTPUT"
             if pin.startswith("Q")
@@ -139,7 +138,7 @@ def drive(c, mode, spec, steps, seed, watched):
     rng = random.Random(seed)
     # Latch controls switch as ideal complements; sizing may move their loads
     # onto a buffered copy of the net, whose complement is then ideal too.
-    ideal = () if mode == "phases" else ("PRECHN", "SAMPLE")
+    ideal = () if mode == "phases" else ("PRECHN", "SAMPLE", "REG_M", "REG_S")
     for record in (c.distribution or {}).get("nets", ()):
         if record["net"] in ("PRECHN", "SAMPLE"):
             ideal += (record["receiver_net"],)
@@ -153,7 +152,7 @@ def drive(c, mode, spec, steps, seed, watched):
 
     for _ in range(steps):
         address = rng.randrange(1 << spec.address_bits)
-        vector = {f"A<{i}>": address >> i & 1 for i in range(spec.address_bits)}
+        vector = {f"A[{i}]": address >> i & 1 for i in range(spec.address_bits)}
         if mode == "phases":
             prechn, evaluate, sample = (rng.randrange(2) for _ in range(3))
             if state.get("PRECHN") and state.get("EVAL") and not prechn:
@@ -201,6 +200,11 @@ def drive(c, mode, spec, steps, seed, watched):
         ("phases", BromSpec(64, 4), "sized"),
         ("clocked", BromSpec(32, 4, ways=4), "wire_rc"),
         ("self_timed", BromSpec(16, 2), "sized"),
+        # The rising-edge output register sits between the sampling latches
+        # and Q; a keeper is left out, since the switch model cannot settle
+        # its deliberate fight with the selectors.
+        ("clocked", BromSpec(12, 3, registered_output=True), None),
+        ("self_timed", BromSpec(8, 2, registered_output=True), "sized"),
     ],
 )
 def test_verilog_model_matches_transistors(mode, spec, sizing, tmp_path, external_tool):
@@ -210,16 +214,14 @@ def test_verilog_model_matches_transistors(mode, spec, sizing, tmp_path, externa
     c = SIZING[sizing](SHAPES[mode](spec, words))
     assert sizing is None or c.distribution["nets"]
     # Q, and the phases too where the macro makes its own.
-    watched = [f"Q<{b}>" for b in range(spec.bits)]
+    watched = [f"Q[{b}]" for b in range(spec.bits)]
     if mode != "phases":
         watched += ["PRECHN", "EVAL", "SAMPLE"]
     seed = spec.depth * 7 + len(mode)
     vectors, expected = drive(c, mode, spec, 300, seed, watched)
-    probes = [
-        f"Q[{net[2:-1]}]" if net.startswith("Q<") else f"dut.{net}" for net in watched
-    ]
+    probes = [net if net.startswith("Q[") else f"dut.{net}" for net in watched]
 
-    scalars = sorted({k for v in vectors for k in v if not k.startswith("A<")})
+    scalars = sorted({k for v in vectors for k in v if not k.startswith("A[")})
     bench = [
         "module tb;",
         f"  reg [{spec.address_bits - 1}:0] A;",
@@ -231,7 +233,7 @@ def test_verilog_model_matches_transistors(mode, spec, sizing, tmp_path, externa
         "  initial begin",
     ]
     for vector in vectors:
-        address = sum(vector[f"A<{i}>"] << i for i in range(spec.address_bits))
+        address = sum(vector[f"A[{i}]"] << i for i in range(spec.address_bits))
         bench.append(
             f"    A = {address};"
             + "".join(f" {n} = {vector[n]};" for n in scalars)

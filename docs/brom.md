@@ -48,18 +48,29 @@ same text comes from `macro_lef(circuit, top)` and
   It follows the transistors rather than an idealized read: address latches
   open while PRECHN is low, bitlines are dynamic and keeperless (they stay
   discharged until the next precharge), unused address codes read zero, and
-  Q latches are transparent while SAMPLE is high. The clocked macro carries
+  Q latches are transparent while SAMPLE is high, with the rising-edge
+  output register after them when the macro has one. A bitline keeper only
+  holds a level the model already holds, so it adds nothing to the model
+  (and is the one option the switch-level comparison below cannot cover,
+  since it cannot settle the keeper's deliberate fight with a selector). The clocked macro carries
   the controller's equations with the four acknowledgments as ports; the
   self-timed one ties them to their meanings with zero delay. Under
   `SYNTHESIS` the module body drops out, leaving a black box.
 
-Both views name bus bits `A[3]`, as a gate netlist does; the GDS labels and
-CDL keep `A<3>`. Neither view carries timing: there is no Liberty file yet,
+The macro's bus pins are named `A[3]` and `Q[3]` everywhere (GDS labels,
+CDL, LEF, Verilog), as a gate netlist and DEF name them, so chip-level LVS
+needs no pin map; nets inside the macro keep `<>`. Neither view carries timing: there is no Liberty file yet,
 since it needs characterized, extracted timing (`timing_qualified` is still
 false). Tests check the LEF pins against the GDS labels and read it with
 KLayout, and run the Verilog under Icarus against the transistor switch-level
 model on random reads, comparing Q and, where the macro generates them,
 PRECHN, EVAL and SAMPLE at every step.
+
+Every cell a macro carries is named by its contents, so macros merged into one
+chip GDS cannot clash: the macro and selector array by a hash of their
+programming, and each peripheral transistor cell (`brom_<device>_<hash>`) by
+a hash of its drawn shapes, so a device drawn differently by another compiler
+version gets a different name rather than silently replacing this one.
 
 ## Circuit and programming
 
@@ -90,7 +101,7 @@ offset, and the remaining bits select the block. Physical column
 
 ## Read interface
 
-The macro exposes `A<i>`, `PRECHN`, `EVAL`, `SAMPLE`, `Q<i>`, VDD and VSS.
+The macro exposes `A[i]`, `PRECHN`, `EVAL`, `SAMPLE`, `Q[i]`, VDD and VSS.
 PRECHN is active low; EVAL and SAMPLE are active high.
 
 1. Keep SAMPLE low. Deassert EVAL and let all candidates fall before

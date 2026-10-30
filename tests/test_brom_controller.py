@@ -74,7 +74,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
     for address, word in enumerate(words):
         pins = {
             **inputs(),
-            **{f"A<{i}>": address >> i & 1 for i in range(spec.address_bits)},
+            **{f"A[{i}]": address >> i & 1 for i in range(spec.address_bits)},
         }
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins["CLK"] = 0
@@ -83,7 +83,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins.update(READ_READY=1, SAMPLE_CLOSED=0)
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
-        assert sum(state[f"Q<{i}>"] << i for i in range(spec.bits)) == word
+        assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == word
         pins["CLK"] = 1
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         assert phases(state) == (1, 1, 0)
@@ -91,7 +91,7 @@ def test_clocked_macro_reads_and_holds(ways, depth):
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
         pins["CANDIDATE_BUSY"] = 0
         state = settle(c, pins, state, ideal_controls=("PRECHN", "SAMPLE"))
-        assert sum(state[f"Q<{i}>"] << i for i in range(spec.bits)) == word
+        assert sum(state[f"Q[{i}]"] << i for i in range(spec.bits)) == word
 
 
 @pytest.mark.parametrize(
@@ -151,7 +151,7 @@ def controller_waveform():
     t = np.arange(6201, dtype=float)
     traces = {
         net: np.zeros_like(t)
-        for net in (*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q<0>", "Q<1>")
+        for net in (*CONTROLLER_INPUTS, *CONTROLLER_OUTPUTS, "Q[0]", "Q[1]")
     }
     traces["SAMPLE_CLOSED"][:] = 1
     for cycle in range(5):
@@ -170,7 +170,7 @@ def controller_waveform():
             traces[net][(t >= base + lo) & (t < base + hi)] = 1
         if cycle < 4:
             for bit in range(2):
-                traces[f"Q<{bit}>"][t >= base + 800] = cycle >> bit & 1
+                traces[f"Q[{bit}]"][t >= base + 800] = cycle >> bit & 1
     return t * 1e-12, traces
 
 
@@ -188,7 +188,7 @@ def test_analog_checker_accepts_ordered_waveform():
         ("EVAL", 960, 0),
         ("SAMPLE", 200, 1),
         ("READ_READY", 800, 0),
-        ("Q<0>", 5800, 0),
+        ("Q[0]", 5800, 0),
     ],
 )
 def test_analog_checker_rejects_phase_or_data_fault(net, at, value):

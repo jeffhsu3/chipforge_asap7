@@ -46,11 +46,11 @@ def add_registered_output(c, bits):
     """Keep the replica-controlled sampling latches ahead of the edge register."""
     if c.output_register is not None or "CLK" not in c.pins:
         raise ValueError("registered output requires an unregistered clocked macro")
-    rename = {f"Q<{i}>": f"SAMPLED<{i}>" for i in range(bits)}
+    rename = {f"Q[{i}]": f"SAMPLED<{i}>" for i in range(bits)}
     c.devices = [
         replace(d, nodes=tuple(rename.get(n, n) for n in d.nodes)) for d in c.devices
     ]
-    add_register_bank(c, [(f"SAMPLED<{i}>", f"Q<{i}>") for i in range(bits)])
+    add_register_bank(c, [(f"SAMPLED<{i}>", f"Q[{i}]") for i in range(bits)])
     c.name += "_posedge"
 
 

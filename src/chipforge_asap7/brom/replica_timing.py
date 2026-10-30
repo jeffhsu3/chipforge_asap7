@@ -67,7 +67,7 @@ def render_replica_bench(
     signals += [f"C<{b},{k}>" for b in range(spec.blocks) for k in range(16)]
     signals += [f"BL<{i}>" for i in range(spec.columns)]
     signals += [f"DATA<{i}>" for i in range(spec.bits)] + [
-        f"Q<{i}>" for i in range(spec.bits)
+        f"Q[{i}]" for i in range(spec.bits)
     ]
     if spec.registered_output:
         signals += [f"SAMPLED<{i}>" for i in range(spec.bits)]
@@ -79,7 +79,7 @@ def render_replica_bench(
     initial = {
         "CLK": 1,
         "RESETN": 0,
-        **{f"A<{i}>": 0 for i in range(spec.address_bits)},
+        **{f"A[{i}]": 0 for i in range(spec.address_bits)},
     }
     changes = {net: [] for net in initial}
     changes["RESETN"] = [(100, 1), (spec.depth * 1000 + 260, 0)]
@@ -87,14 +87,14 @@ def render_replica_bench(
         base = cycle * 1000
         changes["CLK"] += [(base + 200, 0), (base + 750, 1)]
         for bit in range(spec.address_bits):
-            changes[f"A<{bit}>"] += [
+            changes[f"A[{bit}]"] += [
                 (base + 40, address >> bit & 1),
                 (base + 600, 1 - (address >> bit & 1)),
             ]
             if spec.registered_output:
                 # Exercise next-address launch during the output capture/hold
                 # aperture; the existing address latch must isolate this edge.
-                changes[f"A<{bit}>"] += [(base + 760, address >> bit & 1)]
+                changes[f"A[{bit}]"] += [(base + 760, address >> bit & 1)]
     changes = {
         net: [(t * conditions.phase_scale, v) for t, v in edges]
         for net, edges in changes.items()
@@ -152,7 +152,7 @@ def render_replica_bench(
     if conditions.output_load_ff:
         for bit in range(spec.bits):
             lines.append(
-                f"CQ{bit} {nodes[f'Q<{bit}>']} 0 {conditions.output_load_ff:g}f"
+                f"CQ{bit} {nodes[f'Q[{bit}]']} 0 {conditions.output_load_ff:g}f"
             )
     if conditions.bitline_load_ff:
         # Intentionally load real bitlines only: useful as an adversarial test
@@ -208,7 +208,7 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
         from dataclasses import replace
 
         core = dict(traces)
-        core.update({f"Q<{i}>": traces[f"SAMPLED<{i}>"] for i in range(spec.bits)})
+        core.update({f"Q[{i}]": traces[f"SAMPLED<{i}>"] for i in range(spec.bits)})
         result = analyze_replica(
             time,
             core,
@@ -300,10 +300,10 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
                 if address + 1 < len(starts) and starts[address + 1] is not None
                 else t[-1]
             )
-            q = traces[f"Q<{bit}>"][(t >= closure) & (t < hold_end)]
+            q = traces[f"Q[{bit}]"][(t >= closure) & (t < hold_end)]
             good = q >= 0.9 * vdd if high else q <= 0.1 * vdd
             if not len(q) or not np.all(good):
-                failures.append(f"address {address}: Q<{bit}> read/hold failure")
+                failures.append(f"address {address}: Q[{bit}] read/hold failure")
         records.append(
             {
                 "address": address,

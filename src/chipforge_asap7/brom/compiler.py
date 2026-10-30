@@ -77,11 +77,11 @@ class BromSpec:
     @property
     def pins(self) -> tuple[str, ...]:
         return (
-            *(f"A<{i}>" for i in range(self.address_bits)),
+            *(f"A[{i}]" for i in range(self.address_bits)),
             "PRECHN",
             "EVAL",
             "SAMPLE",
-            *(f"Q<{i}>" for i in range(self.bits)),
+            *(f"Q[{i}]" for i in range(self.bits)),
             "VDD",
             "VSS",
         )
@@ -262,7 +262,7 @@ def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
     c.inv("PRECHN", address_open)
     for i in range(spec.address_bits):
         start = len(c.devices)
-        c.latch(f"A<{i}>", f"ADDR<{i}>", address_open, "PRECHN")
+        c.latch(f"A[{i}]", f"ADDR<{i}>", address_open, "PRECHN")
         c.group_since(f"address_{i}", start)
     _add_decoder(c, spec, "ADDR")
     array_devices = set()
@@ -306,6 +306,6 @@ def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
                 c.or2(data, term, out)
                 data = out
         start = len(c.devices)
-        c.latch(data, f"Q<{bit}>", "SAMPLE", sampleb)
+        c.latch(data, f"Q[{bit}]", "SAMPLE", sampleb)
         c.group_since(f"output_latch_{bit}", start)
     return c

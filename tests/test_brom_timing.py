@@ -46,7 +46,7 @@ def test_deck_contains_full_macro_and_physical_loads(tmp_path):
     )
     assert deck.count("NFIN=3") == len(c.devices)
     assert addresses == [*range(8), *reversed(range(8))]
-    assert "C" + "Q0 " + nodes["Q<0>"] + " 0 2f" in deck
+    assert "C" + "Q0 " + nodes["Q[0]"] + " 0 2f" in deck
     assert "CBL0 " + nodes["BL<0>"] + " 0 3f" in deck
     assert "DATA<0>" in signals
 
@@ -54,7 +54,7 @@ def test_deck_contains_full_macro_and_physical_loads(tmp_path):
 def test_failed_read_has_no_successful_delay_summary():
     spec = BromSpec(4, 1)
     t = np.linspace(0, 700e-12, 1001)
-    traces = {f"{name}<0>": np.zeros_like(t) for name in ("BL", "DATA", "Q")}
+    traces = {name: np.zeros_like(t) for name in ("BL<0>", "DATA<0>", "Q[0]")}
     result = analyze(t, traces, spec, [1, 0, 0, 0], TimingConditions(), [0])
     assert not result["passed"]
     assert result["worst_ps"] == {}

@@ -78,9 +78,9 @@ def clocked_macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
     c = macro_circuit(replace(spec, registered_output=False), words)
     c.name = c.name.replace("brom_compact_", "brom_clocked_")
     c.pins = (
-        *(f"A<{i}>" for i in range(spec.address_bits)),
+        *(f"A[{i}]" for i in range(spec.address_bits)),
         *CONTROLLER_INPUTS,
-        *(f"Q<{i}>" for i in range(spec.bits)),
+        *(f"Q[{i}]" for i in range(spec.bits)),
         "VDD",
         "VSS",
     )
