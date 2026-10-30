@@ -37,7 +37,7 @@ def measure_cycle_paths(time, traces, spec, words, vdd, *, phase_scale=1):
             delays = [
                 settling_delay(
                     t,
-                    traces[f"{prefix}<{bit}>"],
+                    traces[f"Q[{bit}]" if prefix == "Q" else f"{prefix}<{bit}>"],
                     fall,
                     rise,
                     bool(word >> bit & 1),
