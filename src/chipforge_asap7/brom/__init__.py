@@ -9,15 +9,19 @@ from .compiler import (
     selector_map,
 )
 from .controller import clocked_macro_circuit, controller_circuit
+from .distribution import DistributionSpec, size_control_distribution
 from .layout import build_circuit, build_macro
 from .periphery import build_periphery
 from .replica import ReplicaSpec, self_timed_macro_circuit
 from .selector import SelectorPlan, build_selector_array, default_selector_plan
+from .wire_rc import WireRCSpec, routed_control_rc, size_wire_rc_distribution
 
 __all__ = [
     "BromSpec",
+    "DistributionSpec",
     "ReplicaSpec",
     "SelectorPlan",
+    "WireRCSpec",
     "build_circuit",
     "build_macro",
     "build_periphery",
@@ -29,6 +33,9 @@ __all__ = [
     "default_selector_plan",
     "macro_circuit",
     "output_circuit",
+    "routed_control_rc",
     "selector_map",
     "self_timed_macro_circuit",
+    "size_control_distribution",
+    "size_wire_rc_distribution",
 ]
