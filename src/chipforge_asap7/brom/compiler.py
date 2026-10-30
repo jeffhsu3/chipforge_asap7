@@ -38,11 +38,14 @@ class BromSpec:
     vt: str = "rvt"
     keeper_fins: int = 0
     keeper_stack: int = 2
+    registered_output: bool = False
 
     def __post_init__(self) -> None:
         for field in ("depth", "bits", "ways", "fins", "keeper_fins", "keeper_stack"):
             if type(getattr(self, field)) is not int:
                 raise TypeError(f"{field} must be an integer")
+        if type(self.registered_output) is not bool:
+            raise TypeError("registered_output must be a bool")
         _validate_keeper(self.keeper_fins, self.keeper_stack)
         if self.ways not in (1, 4):
             raise ValueError("ways must be 1 or 4")
@@ -241,6 +244,10 @@ def output_circuit(
 
 
 def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
+    if spec.registered_output:
+        raise ValueError(
+            "registered output requires clocked_macro_circuit or self_timed_macro_circuit"
+        )
     mapping = selector_map(spec, words)
     digest = sha256(repr(mapping).encode()).hexdigest()[:12]
     c = Circuit(

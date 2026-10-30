@@ -22,6 +22,7 @@ from . import (
     decoder_circuit,
     macro_circuit,
     output_circuit,
+    output_register_circuit,
     selector_map,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -51,6 +52,11 @@ def main(argv: list[str] | None = None) -> None:
         choices=(1, 2, 3, 4),
         default=2,
         help="Series keeper PMOS count",
+    )
+    parser.add_argument(
+        "--registered-output",
+        action="store_true",
+        help="Rising-edge Q register; requires --clocked or --self-timed",
     )
     sizing = parser.add_mutually_exclusive_group()
     sizing.add_argument(
@@ -92,6 +98,8 @@ def main(argv: list[str] | None = None) -> None:
         args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
     ):
         parser.error("replica options require --self-timed")
+    if args.registered_output and not (args.clocked or args.self_timed):
+        parser.error("--registered-output requires --clocked or --self-timed")
     words = json.loads(args.words.read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
@@ -103,6 +111,7 @@ def main(argv: list[str] | None = None) -> None:
         args.vt,
         args.keeper_fins,
         args.keeper_stack,
+        args.registered_output,
     )
     macro = (
         self_timed_macro_circuit(
@@ -131,6 +140,10 @@ def main(argv: list[str] | None = None) -> None:
             keeper_stack=spec.keeper_stack,
         ),
     }
+    if args.registered_output:
+        circuits["output_register"] = output_register_circuit(
+            spec.bits, spec.fins, spec.vt
+        )
     if args.clocked or args.self_timed:
         circuits["controller"] = controller_circuit(spec.fins, spec.vt)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -147,6 +160,8 @@ def main(argv: list[str] | None = None) -> None:
             if args.clocked
             else "external_phases"
         ),
+        "registered_output": bool(macro.output_register),
+        "output_register": macro.output_register,
         "control_distribution": macro.distribution,
         "keeper": (
             {

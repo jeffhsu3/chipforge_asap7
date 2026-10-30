@@ -75,7 +75,9 @@ SAMPLE is a level-sensitive latch enable, not an edge-triggered clock.
 An optional [clocked controller](brom_controller.md) now generates these phases
 from CLK, RESETN and four external completion acknowledgments (`--clocked`).
 The experimental [selector replica](brom_replica.md) supplies internal feedback
-with `--self-timed`. Extracted interconnect timing is not yet qualified. GT2N's
+with `--self-timed`. Either controller mode supports an optional
+[rising-edge output register](brom_registered_output.md) with `--registered-output`.
+Extracted interconnect timing is not yet qualified. GT2N's
 clock delays, replica sizing and read-cycle numbers are not applicable to these
 ASAP7 devices and wires.
 

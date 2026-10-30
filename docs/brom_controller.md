@@ -20,9 +20,11 @@ externally sequenced phase interface remains available.
 `--self-timed`; extracted feedback timing and load-sized control distribution
 remain unqualified. For `--clocked`, the manifest
 records `controller: external_completion_handshake`, `replica_integrated: false`
-and `timing_qualified: false`. Q still uses level-sensitive output latches:
-it can update during CLK low once READ_READY arrives. An edge-triggered output
-register is a separate remaining block. Do not tie the feedback inputs to constants to
+and `timing_qualified: false`. By default Q uses level-sensitive output latches:
+it can update during CLK low once READ_READY arrives. Optional
+[`--registered-output`](brom_registered_output.md) publishes the sampled word
+on the next rising CLK edge. The sequence below describes the default latches;
+in registered mode their output is internal `SAMPLED<i>`. Do not tie the feedback inputs to constants to
 simulate completion.
 
 ## Clock and feedback contract

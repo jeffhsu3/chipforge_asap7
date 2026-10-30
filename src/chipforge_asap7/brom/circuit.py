@@ -48,6 +48,7 @@ class Circuit:
         self.placement_groups: list[tuple[str, tuple[str, ...]]] = []
         self.array_width: int | None = None
         self.distribution: dict | None = None
+        self.output_register: dict | None = None
 
     def group_since(self, name: str, start: int) -> None:
         """Keep a functional group together during peripheral placement."""

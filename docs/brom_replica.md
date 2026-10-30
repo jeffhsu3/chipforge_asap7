@@ -133,3 +133,8 @@ semantics.
 Optional [bitline keepers](brom_keeper.md) are installed identically on every
 data and replica bitline. Enabling them requires renewed timing checks because
 they change discharge delay and readout loading.
+
+Optional [rising-edge registered outputs](brom_registered_output.md) retain the
+replica-controlled sampling latches internally and publish their result on the
+next rising CLK edge. Enable with `--self-timed --registered-output`; the replica
+transient bench accepts `--registered-output` to check both stages.
