@@ -338,3 +338,46 @@ def test_schedule_report_exposes_sparse_pattern_coverage_and_spacing():
     coverage = summarize_sweep([full])["image_coverage"]
     assert coverage["all_16_selector_patterns"]
     assert not coverage["worst_case_qualified"]
+
+
+def test_sweep_keeps_any_recorded_error_but_raises_unrecorded_ones(
+    tmp_path, monkeypatch
+):
+    import chipforge_asap7.brom.timing_estimate as module
+
+    card, osdi = tmp_path / "card.pm", tmp_path / "model.osdi"
+    card.write_text("model")
+    osdi.write_text("osdi")
+    out = tmp_path / "sweep"
+    # A stale error report from an earlier sweep must not be reused.
+    (out / "case_001").mkdir(parents=True)
+    (out / "case_001" / "report.json").write_text(json.dumps({"status": "error"}))
+
+    def characterize(spec, **kwargs):
+        scale = kwargs["conditions"].phase_scale
+        if scale == 0.7:
+            # A failure characterize_replica recorded, of any exception type.
+            r = report(scale)
+            r.update(status="error", passed=False, error="missing clock edge")
+            kwargs["out"].mkdir(parents=True, exist_ok=True)
+            (kwargs["out"] / "report.json").write_text(json.dumps(r))
+            raise ValueError("missing clock edge")
+        raise TypeError("bug before any report was written")
+
+    monkeypatch.setattr(module, "characterize_replica", characterize)
+    kwargs = {"out": out, "model_card": card, "osdi": osdi}
+    spec = BromSpec(4, 1, registered_output=True)
+    with pytest.raises(TypeError, match="bug"):
+        module.sweep_timing(spec, scales=[0.7, 1], **kwargs)
+    monkeypatch.setattr(
+        module,
+        "characterize_replica",
+        lambda spec, **kw: (
+            characterize(spec, **kw)
+            if kw["conditions"].phase_scale == 0.7
+            else report(kw["conditions"].phase_scale)
+        ),
+    )
+    r = module.sweep_timing(spec, scales=[0.7, 1], **kwargs)
+    assert [s["status"] for s in r["samples"]] == ["error", "passed"]
+    assert r["samples"][0]["error"] == "missing clock edge"

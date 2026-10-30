@@ -135,6 +135,15 @@ def main(argv: list[str] | None = None) -> None:
         size_wire_rc_distribution(macro)
     elif args.sized_controls:
         size_control_distribution(macro)
+    estimate = None
+    if args.timing_report:
+        from .timing_estimate import attach_estimate
+
+        # Check the report before writing anything, and fail as a usage error.
+        try:
+            estimate = attach_estimate(args.timing_report, macro, spec, words)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--timing-report {args.timing_report}: {exc}")
     circuits = {
         "macro": macro,
         "cgen": cgen_circuit(spec.fins, spec.vt),
@@ -225,12 +234,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         "artifacts": {},
     }
-    if args.timing_report:
-        from .timing_estimate import attach_estimate
-
-        report["timing_estimate"] = attach_estimate(
-            args.timing_report, macro, spec, words
-        )
+    if estimate is not None:
+        report["timing_estimate"] = estimate
     report_path = args.out / "manifest.json"
     # Invalidate a prior successful report before starting any physical checks.
     report_path.write_text(json.dumps(report, indent=2) + "\n")

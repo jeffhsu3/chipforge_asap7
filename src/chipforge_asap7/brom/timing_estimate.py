@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import math
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -169,6 +168,8 @@ def sweep_timing(
     reports = []
     for index, scale in enumerate(scales):
         run = out / f"case_{index:03d}"
+        # A report left by an earlier sweep must not stand in for this run.
+        (run / "report.json").unlink(missing_ok=True)
         try:
             r = characterize_replica(
                 spec,
@@ -181,8 +182,14 @@ def sweep_timing(
                 startup_ramp_ps=startup_ramp_ps,
                 klu=klu,
             )
-        except (RuntimeError, subprocess.TimeoutExpired):
-            r = json.loads((run / "report.json").read_text())
+        except Exception:
+            # characterize_replica records any failure it meets while running
+            # a case (solver, timeout, analysis) as an error sample; keep it
+            # and go on. A failure that never reached the report is a bug.
+            recorded = run / "report.json"
+            r = json.loads(recorded.read_text()) if recorded.exists() else {}
+            if r.get("status") != "error":
+                raise
         # Hash inputs even when ngspice cannot find an operating point.
         r.update(
             model_sha256=hashlib.sha256(Path(model_card).read_bytes()).hexdigest(),
