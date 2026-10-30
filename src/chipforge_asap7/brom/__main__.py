@@ -24,6 +24,8 @@ from . import (
     output_circuit,
     selector_map,
     self_timed_macro_circuit,
+    size_control_distribution,
+    size_wire_rc_distribution,
 )
 from .layout import macro_periphery, macro_plan
 from .periphery import periphery_plan
@@ -36,6 +38,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
+    sizing = parser.add_mutually_exclusive_group()
+    sizing.add_argument(
+        "--wire-rc-controls",
+        action="store_true",
+        help="Optimize control sizing/placement with routed-length RC estimates",
+    )
+    sizing.add_argument(
+        "--sized-controls",
+        action="store_true",
+        help="Insert gate-load-sized tapered control buffers (experimental)",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--self-timed",
@@ -81,6 +94,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.self_timed
         else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
     )
+    if args.wire_rc_controls:
+        size_wire_rc_distribution(macro)
+    elif args.sized_controls:
+        size_control_distribution(macro)
     circuits = {
         "macro": macro,
         "cgen": cgen_circuit(spec.fins, spec.vt),
@@ -103,6 +120,7 @@ def main(argv: list[str] | None = None) -> None:
             if args.clocked
             else "external_phases"
         ),
+        "control_distribution": macro.distribution,
         "replica_integrated": bool(macro.replica),
         "replica": (
             {

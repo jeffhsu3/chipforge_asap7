@@ -78,6 +78,12 @@ with `--self-timed`. Extracted interconnect timing is not yet qualified. GT2N's
 clock delays, replica sizing and read-cycle numbers are not applicable to these
 ASAP7 devices and wires.
 
+Optional [sized control distribution](brom_distribution.md) adds tapered
+drivers based on connected gate loads with `--sized-controls`. Wire-RC timing
+and receiver-specific feedback remain unqualified. The alternative
+[wire-RC-aware search](brom_wire_rc.md), `--wire-rc-controls`, includes routed
+length estimates and moves buffer groups toward their drivers and loads.
+
 ## Physical implementation and migration
 
 The macro now exclusively uses the compact periodic selector array from the

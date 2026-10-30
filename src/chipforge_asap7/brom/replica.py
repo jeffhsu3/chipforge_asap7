@@ -112,8 +112,8 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
         target = "CANDIDATE_BUSY" if i == 3 else c.node()
         gate("or2", pending, signal, target)
         pending = target
-    # Place these observers last in the peripheral bank, after all phase loads.
-    # They tap the ends of the bank's shared phase spines. Wire delay is not
+    # Place observers last before any optional distribution pass. Added
+    # buffers can extend the bank beyond these taps. Wire delay is not
     # qualified merely by adding them; PEX must establish the receiving margins.
     delay("PRECHN", "PRECHN_FAR", 2)
     sample_low, closed = c.node(), c.node()

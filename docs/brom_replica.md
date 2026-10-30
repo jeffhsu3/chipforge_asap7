@@ -111,6 +111,10 @@ also passes DRC/LVS for the macro and all four standalone peripheral artifacts.
 The BROM/controller/replica/timing/minimum-proof/packaging suite passed 130 tests;
 the additional precharge-deadline regression passed with the checker tests.
 
+The optional [sized control distribution](brom_distribution.md) pass applies
+to both the real array and replica with `--sized-controls`. The results above
+are for the original drivers; the sized circuit requires separate timing checks.
+
 ## Remaining qualification
 
 This implementation is experimental. Device-level timing on selected shapes
