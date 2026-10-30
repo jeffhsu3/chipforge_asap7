@@ -8,9 +8,11 @@ Physical completion margins require qualified control distribution.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 from .circuit import Circuit
 from .compiler import BromSpec, macro_circuit
+from .output_register import add_registered_output
 
 CONTROLLER_INPUTS = (
     "CLK",
@@ -73,7 +75,7 @@ def clocked_macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
     The feedback pins are real ports, not tied-off stand-ins for a replica.
     The original externally sequenced macro remains available separately.
     """
-    c = macro_circuit(spec, words)
+    c = macro_circuit(replace(spec, registered_output=False), words)
     c.name = c.name.replace("brom_compact_", "brom_clocked_")
     c.pins = (
         *(f"A<{i}>" for i in range(spec.address_bits)),
@@ -83,4 +85,6 @@ def clocked_macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
         "VSS",
     )
     add_controller(c)
+    if spec.registered_output:
+        add_registered_output(c, spec.bits)
     return c

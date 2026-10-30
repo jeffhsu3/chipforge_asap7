@@ -88,7 +88,7 @@ against a unit-fin LVS reference in the tests. The full write-up of each is in
 | [`SenseAmpRowSpec`](docs/column_io.md#sense-amplifier-on-the-io-row) | Current-latched sense amplifier on the IO row |
 | [`IoColumnSpec`](docs/column_io.md#the-column-io-block) | One port's column IO: mux group, sense amp, latch, write driver |
 | [`RomBitcellSpec`](docs/rom.md) | Via-programmed NOR-ROM tile with a poly wordline, 81 x 81 nm per bit at two fins |
-| [`RomDecoderSpec`](docs/rom.md#wordline-decoder) | The ROM's wordline decoder: NAND and driver per word, interleaved over rows above the array |
+| [`RomDecoderSpec`](docs/rom.md#wordline-decoder) | The ROM's wordline decoder and predecoders: address pins to an AND gate per word, interleaved over rows above the array, with the predecoders and bitline ends in a center lane between two half arrays |
 | [`BromSpec`](docs/brom.md) | Four-word BROM compact-array compiler with CGEN, block decoder, precharge/readout, mux and output latches; routed GDS, transistor CDL, LEF abstract and Verilog model |
 
 ## Simulation and verification
@@ -105,6 +105,9 @@ with:
   from released standard cells, hard IP and an SRAM array.
 - [Layout reduction](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/verification.md#layout-reduction): delete and shrink what LVS,
   DRC and extraction do not need.
+- Minimum-area proofs for the [NOR-ROM topology](docs/rom.md#minimum-area-proof-for-this-topology)
+  and [retained 6T SRAM template](docs/sram_6t_minimum.md), with SMT queries,
+  measured GDS witnesses, connectivity extraction and pinned gdscheck validation.
 
 ## Development
 

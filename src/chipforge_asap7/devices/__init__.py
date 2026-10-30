@@ -7,7 +7,6 @@ from .bitline_mux import (
     build_bitline_mux,
     build_bitline_mux_group,
 )
-from .io_column_270 import SidewaysIoColumnSpec, build_sideways_io_column, sideways_block_netlist
 from .bitline_mux_270 import (
     SidewaysMuxSpec,
     build_sideways_mux,
@@ -35,6 +34,11 @@ from .io_column import (
     build_io_column,
     io_column_pins,
 )
+from .io_column_270 import (
+    SidewaysIoColumnSpec,
+    build_sideways_io_column,
+    sideways_block_netlist,
+)
 from .nand import NAND_PINS, NandSpec, build_nand, build_nand_row
 from .output_latch import OUTPUT_LATCH_PINS, OutputLatchSpec, build_output_latch
 from .output_latch_270 import (
@@ -53,6 +57,16 @@ from .rom_bitcell import (
     build_rom_tap,
 )
 from .rom_decoder import RomDecoderSpec, build_rom, build_rom_decoder
+from .rom_search import (
+    RomCandidate,
+    RomMetrics,
+    RomPackingResult,
+    RomShapeSearch,
+    optimize_rom_packing,
+    rom_metrics,
+    search_rom_shapes,
+)
+from .rom_sizing import RomDecoderSizing, size_rom_decoder
 from .row import RowBand, RowStack
 from .row_support import (
     ROW_SUPPORT_KINDS,
@@ -72,9 +86,18 @@ from .sizing import (
     size_decoder,
     split_fins_into_rows,
 )
-from .tristate import TRISTATE_PINS, TristateSpec, build_tristate, render_tristate_lvs_schematic
+from .tristate import (
+    TRISTATE_PINS,
+    TristateSpec,
+    build_tristate,
+    render_tristate_lvs_schematic,
+)
 from .write_driver import WRITE_DRIVER_PINS, WriteDriverSpec, build_write_driver
-from .write_driver_270 import WriteDriver270Spec, build_write_driver_270, render_write_driver_270_lvs_schematic
+from .write_driver_270 import (
+    WriteDriver270Spec,
+    build_write_driver_270,
+    render_write_driver_270_lvs_schematic,
+)
 
 __all__ = [
     "BITLINE_MUX_PINS",
@@ -82,16 +105,14 @@ __all__ = [
     "INVERTER_PINS",
     "MIN_INPUT_REACH",
     "NAND_PINS",
-    "OUTPUT_LATCH_PINS",
     "OUTPUT_LATCH_270_PINS",
+    "OUTPUT_LATCH_PINS",
     "ROM_TILE_WORDS",
     "ROW_SUPPORT_KINDS",
     "SENSE_AMP_PINS",
     "TRISTATE_PINS",
     "WRITE_DRIVER_PINS",
     "BitlineMuxSpec",
-    "SidewaysMuxSpec",
-    "SidewaysIoColumnSpec",
     "DecoderSizing",
     "DriverSliceSpec",
     "FinFETSpec",
@@ -99,30 +120,32 @@ __all__ = [
     "IoColumnSpec",
     "LogicalEffortModel",
     "NandSpec",
-    "OutputLatchSpec",
     "OutputLatch270Spec",
+    "OutputLatchSpec",
     "RomArraySpec",
     "RomBitcellSpec",
+    "RomCandidate",
+    "RomDecoderSizing",
     "RomDecoderSpec",
+    "RomMetrics",
+    "RomPackingResult",
+    "RomShapeSearch",
     "RowBand",
     "RowStack",
     "RowSupportSpec",
     "SenseAmpRowSpec",
     "SenseAmpTransistor",
+    "SidewaysIoColumnSpec",
+    "SidewaysMuxSpec",
     "Stage",
     "TristateSpec",
-    "WriteDriverSpec",
     "WriteDriver270Spec",
+    "WriteDriverSpec",
     "bitline_mux_group_pins",
-    "sideways_mux_group_pins",
-    "sideways_block_netlist",
     "block_netlist",
     "block_series_nodes",
     "build_bitline_mux",
     "build_bitline_mux_group",
-    "build_sideways_mux",
-    "build_sideways_io_column",
-    "build_sideways_mux_group",
     "build_device_band",
     "build_driver_slice",
     "build_driver_slice_support",
@@ -142,16 +165,25 @@ __all__ = [
     "build_rom_tap",
     "build_row_support",
     "build_sense_amp_row",
+    "build_sideways_io_column",
+    "build_sideways_mux",
+    "build_sideways_mux_group",
     "build_tristate",
     "build_write_driver",
     "build_write_driver_270",
     "io_column_pins",
     "nmos_fin",
+    "optimize_rom_packing",
     "pmos_fin",
     "render_output_latch_270_lvs_schematic",
     "render_tristate_lvs_schematic",
     "render_write_driver_270_lvs_schematic",
+    "rom_metrics",
+    "search_rom_shapes",
     "sense_amp_transistors",
+    "sideways_block_netlist",
+    "sideways_mux_group_pins",
     "size_decoder",
+    "size_rom_decoder",
     "split_fins_into_rows",
 ]

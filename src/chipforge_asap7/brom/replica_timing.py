@@ -69,6 +69,9 @@ def render_replica_bench(
     signals += [f"DATA<{i}>" for i in range(spec.bits)] + [
         f"Q<{i}>" for i in range(spec.bits)
     ]
+    if spec.registered_output:
+        signals += [f"SAMPLED<{i}>" for i in range(spec.bits)]
+        signals += ["REG_M", "REG_MB", "REG_S", "REG_SB"]
     signals += [
         f"RBL<{spec.columns - 1}>",
         f"RC<{spec.blocks + replica.extra_blocks - 1},15>",
@@ -88,6 +91,10 @@ def render_replica_bench(
                 (base + 40, address >> bit & 1),
                 (base + 600, 1 - (address >> bit & 1)),
             ]
+            if spec.registered_output:
+                # Exercise next-address launch during the output capture/hold
+                # aperture; the existing address latch must isolate this edge.
+                changes[f"A<{bit}>"] += [(base + 760, address >> bit & 1)]
     changes = {
         net: [(t * conditions.phase_scale, v) for t, v in edges]
         for net, edges in changes.items()
@@ -197,6 +204,30 @@ def crossing(time, values, start, end, threshold, rising):
 
 
 def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
+    if spec.registered_output:
+        from dataclasses import replace
+
+        core = dict(traces)
+        core.update({f"Q<{i}>": traces[f"SAMPLED<{i}>"] for i in range(spec.bits)})
+        result = analyze_replica(
+            time,
+            core,
+            replace(spec, registered_output=False),
+            words,
+            vdd,
+            phase_scale=phase_scale,
+        )
+        from .register_timing import analyze_registered_output
+
+        reg = analyze_registered_output(
+            time, traces, spec, words, vdd, phase_scale=phase_scale
+        )
+        result["registered_output"] = reg
+        result["failures"].extend(reg["failures"])
+        result["passed"] = not result["failures"]
+        if not result["passed"]:
+            result["minimum_margins_ps"] = {}
+        return result
     failures, records = [], []
     t = time * 1e12 / phase_scale
     candidates = np.maximum.reduce(
@@ -434,6 +465,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--depth", type=int, default=4)
     p.add_argument("--bits", type=int, default=2)
+    p.add_argument("--registered-output", action="store_true")
+    p.add_argument("--keeper-fins", type=int, choices=(0, 1, 2, 3), default=0)
+    p.add_argument("--keeper-stack", type=int, choices=(1, 2, 3, 4), default=2)
+    p.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     p.add_argument("--ways", type=int, choices=(1, 4), default=1)
     p.add_argument(
         "--klu", action="store_true", help="Use KLU (requires a KLU-enabled ngspice)"
@@ -455,7 +490,15 @@ def main():
     if args.model_card is None:
         p.error("model card required")
     r = characterize_replica(
-        BromSpec(args.depth, args.bits, args.ways),
+        BromSpec(
+            args.depth,
+            args.bits,
+            args.ways,
+            fins=args.fins,
+            keeper_fins=args.keeper_fins,
+            keeper_stack=args.keeper_stack,
+            registered_output=args.registered_output,
+        ),
         out=args.out,
         model_card=args.model_card,
         osdi=args.osdi,

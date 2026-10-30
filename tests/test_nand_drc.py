@@ -55,6 +55,13 @@ def test_isolated_nand2_only_trips_the_missing_body_tap(asap7_drc):
         NandSpec(rows=((6, 4),), fingers=2, abut=False, vt="lvt"),
         NandSpec(rows=((6, 4),), fingers=3, abut=False),
         NandSpec(rows=((2, 2),), fingers=2, abut=False, band_height=135),
+        NandSpec(
+            rows=((6, 3),),
+            fingers=4,
+            abut=False,
+            band_height=(324, 216),
+            rail_sources=True,
+        ),
     ]
     assert all(spec.drc_verifiable for spec in specs)
     library = _library()
@@ -62,7 +69,7 @@ def test_isolated_nand2_only_trips_the_missing_body_tap(asap7_drc):
     cursor = 0
     for spec in specs:
         top.add(gdspy.CellReference(build_nand(spec, lib=library), origin=(cursor, 0)))
-        cursor += spec.width + 1000
+        cursor += spec.width + 1026  # 19 CPP: every cell stays on the gate grid
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
 
 

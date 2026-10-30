@@ -79,7 +79,8 @@ The output leaf contains a PMOS precharger and a CMOS inverter. At 4:1,
 four physical columns feed each output through a static one-hot mux.
 An eight-transistor static transmission-gate latch holds each output while
 the next read precharges. Address latches are transparent during precharge
-and hold the sampled address throughout evaluation. There is no bitline keeper.
+and hold the sampled address throughout evaluation. The default is keeperless; an optional [feedback keeper](brom_keeper.md)
+can be enabled with `--keeper-fins 1`.
 
 Depth is a positive multiple of `4 * ways`; ways is 1 or 4. Non-power-of-two
 depths are allowed. Unused address codes select no block. With mux4, the
@@ -106,7 +107,9 @@ SAMPLE is a level-sensitive latch enable, not an edge-triggered clock.
 An optional [clocked controller](brom_controller.md) now generates these phases
 from CLK, RESETN and four external completion acknowledgments (`--clocked`).
 The experimental [selector replica](brom_replica.md) supplies internal feedback
-with `--self-timed`. Extracted interconnect timing is not yet qualified. GT2N's
+with `--self-timed`. Either controller mode supports an optional
+[rising-edge output register](brom_registered_output.md) with `--registered-output`.
+Extracted interconnect timing is not yet qualified. GT2N's
 clock delays, replica sizing and read-cycle numbers are not applicable to these
 ASAP7 devices and wires.
 

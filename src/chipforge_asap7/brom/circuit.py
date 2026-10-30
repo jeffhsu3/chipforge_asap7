@@ -6,7 +6,7 @@ are ASAP7 fin counts, never GT2N sheet widths or scaled GT2N geometry.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..devices.finfet import FinFETSpec
 from .selector import SelectorPlan
@@ -48,6 +48,7 @@ class Circuit:
         self.placement_groups: list[tuple[str, tuple[str, ...]]] = []
         self.array_width: int | None = None
         self.distribution: dict | None = None
+        self.output_register: dict | None = None
 
     def group_since(self, name: str, start: int) -> None:
         """Keep a functional group together during peripheral placement."""
@@ -59,11 +60,15 @@ class Circuit:
         self._serial += 1
         return f"n{self._serial}"
 
-    def fet(self, pmos: bool, d: str, g: str, s: str) -> None:
+    def fet(
+        self, pmos: bool, d: str, g: str, s: str, *, fins: int | None = None
+    ) -> None:
         self.devices.append(
             Device(
                 f"M{len(self.devices)}",
-                self.p if pmos else self.n,
+                (self.p if pmos else self.n)
+                if fins is None
+                else replace(self.p if pmos else self.n, fins=fins),
                 (d, g, s, "VDD" if pmos else "VSS"),
             )
         )

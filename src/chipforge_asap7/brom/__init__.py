@@ -11,6 +11,7 @@ from .compiler import (
 from .controller import clocked_macro_circuit, controller_circuit
 from .distribution import DistributionSpec, size_control_distribution
 from .layout import build_circuit, build_macro
+from .output_register import output_register_circuit
 from .periphery import build_periphery
 from .replica import ReplicaSpec, self_timed_macro_circuit
 from .selector import SelectorPlan, build_selector_array, default_selector_plan
@@ -33,6 +34,7 @@ __all__ = [
     "default_selector_plan",
     "macro_circuit",
     "output_circuit",
+    "output_register_circuit",
     "routed_control_rc",
     "selector_map",
     "self_timed_macro_circuit",
