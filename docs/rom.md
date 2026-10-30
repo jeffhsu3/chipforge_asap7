@@ -68,6 +68,90 @@ x:   0    27    54    81   108   135   162
 | 2 | 81 x 81 | 6561 |
 | 3 | 81 x 108 | 8748 |
 
+## Minimum-area proof for this topology
+
+`chipforge_asap7.verification.rom_minimum` proves the minimum periodic core
+area **at a fixed fin count, for the existing topology**. It does not claim
+optimality over other NOR-ROM architectures or the minimum area of a complete
+macro. The two-fin default is not the smallest supported geometry: one fin
+uses one-third less core area, subject to the required read current and timing.
+
+The proof fixes a rectangular repeating tile with two word transistors sharing
+a grounded source, two separately V1-programmed drains, and a grounded isolation
+gate between tiles. Diffusion is continuous along X; different bit rows have
+separate ACTIVE strips. Ordinary ASAP7 rules apply, without an SRAMDRC marker.
+
+The lower bound uses these necessary rules from gdscheck:
+
+| Rule | Constraint used |
+| --- | --- |
+| `GATE.W.1`, `GATE.S.2` | 20 nm gate width plus 34 nm edge spacing |
+| `FIN.W.1`, `FIN.S.1` | 7 nm fin width; distinct parallel fins at least 27 nm apart |
+| `ACTIVE.FIN.EX.1` | ACTIVE encloses the outer fins by 10 nm at both ends |
+| `ACTIVE.S.1` | Adjacent bit rows have at least 27 nm of ACTIVE separation |
+
+Let the three gate centers be `a`, `b`, `i`, and the repeating tile width be
+`W`. The three spacing inequalities, **including the next tile**, are
+`b-a >= 54`, `i-b >= 54`, and `a+W-i >= 54`. Adding them gives `W >= 162` nm.
+For `f` fins, the ACTIVE height is at least `(f-1)*27 + 7 + 2*10 = 27*f` nm;
+the inter-row separation then gives `H >= 27*(f+1)` nm. With two bits per
+tile, the core area per bit satisfies `A_bit = W*H/2 >= 2187*(f+1)` nm².
+
+The SMT-LIB model uses real coordinates and minimum fin spacing, relaxing
+grid membership and omitting contact and routing constraints. Every permitted
+tile must satisfy these necessary inequalities; allowing more layouts makes
+an UNSAT result a valid lower bound. Neither derived dimension bound is
+inserted into the base model. Z3 checks that `W < 162`, `H < 27*(f+1)`, and
+their disjunction are each UNSAT. The dimension bounds and positive dimensions
+give the area bound by multiplication, without nonlinear SMT arithmetic.
+
+A separate SAT query fixes all coordinates to the generator's **drawn
+polygons**. The runner requires this witness to attain both bounds, writes a
+four-word array containing all 16 programming patterns on separate bitlines,
+runs the full pinned gdscheck `main` suite, and extracts the GDS. Extraction
+checks the transistor inventory and fin counts, grounded sources and isolation
+gates, programmed connections to the correct bitline, and independently floating
+unprogrammed drains. An ideal-switch connectivity model also exhausts all
+16 programming patterns and 16 wordline states of two periodic tiles.
+
+The negative controls matter: removing the gate wraparound, ACTIVE separation,
+fin enclosure or fin-spacing constraint lets a smaller model become SAT.
+Removing isolation from the switch model produces a programming counterexample:
+with only word 0 programmed and only word 3 selected, the merged drains
+across the periodic boundary incorrectly discharge the bitline. An extracted
+GDS with a deliberately missing programming via must also fail. These controls
+guard against proving a contradictory model or assuming the desired minimum
+as an input constraint.
+
+To reproduce, install Z3's executable on `PATH` and use a gdscheck checkout
+whose ASAP7 sources match revision
+`0b383c3b07edd6247586aca812e392928dc3b872`. The Python runner needs `gdspy` and
+`gdstk`; the following supplies `gdstk` for the invocation:
+
+```bash
+uv run --with gdstk python -m chipforge_asap7.verification.rom_minimum \
+  --gdscheck-root ../gdscheck --fins 1 2 3 --out build/rom_minimum
+```
+
+`--z3` and `--gdscheck` select explicit executables. The checked-in
+`verification/rom_minimum_rules.json` records the audited rule facts, source
+revision and SHA-256 hashes of all 35 ASAP7 PDK files. The runner rejects changed
+rule sources and passes their explicit `pdk.yml` to gdscheck, so an embedded or
+environment-selected PDK cannot silently replace the pinned rules.
+
+Each `fN/` output directory contains the SMT queries, Z3 proof terms and witness
+model, the GDS and DRC report, and `report.json`. The report records assumptions,
+limits, rule hashes, implementation hashes, executable versions and hashes,
+extraction results, and the attained bound. A failed rerun replaces the success
+status; missing tools and inconclusive solver results never count as proof.
+
+The trusted boundary includes the rule transcription, topology-to-constraint
+mapping, Z3, and the geometry/connectivity tools. Saved Z3 proof terms are not
+independently checked by another proof checker. The finite GDS witness does not
+certify every array size or programmed image. Leakage, timing, PVT, noise margins,
+strap intervals, taps, array edges and periphery remain outside the minimum-area
+claim.
+
 ## Strap row
 
 The poly wordline is strapped to M3 by a 108 nm strap row. The array starts

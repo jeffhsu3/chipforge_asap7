@@ -105,6 +105,9 @@ with:
   from released standard cells, hard IP and an SRAM array.
 - [Layout reduction](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/verification.md#layout-reduction): delete and shrink what LVS,
   DRC and extraction do not need.
+- Minimum-area proofs for the [NOR-ROM topology](docs/rom.md#minimum-area-proof-for-this-topology)
+  and [retained 6T SRAM template](docs/sram_6t_minimum.md), with SMT queries,
+  measured GDS witnesses, connectivity extraction and pinned gdscheck validation.
 
 ## Development
 
