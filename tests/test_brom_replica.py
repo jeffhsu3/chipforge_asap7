@@ -220,7 +220,8 @@ def test_replica_checker_rejects_races_and_bad_reads(net, index, value):
     assert result["minimum_margins_ps"] == {}
 
 
-def test_bench_never_drives_feedback_inputs(tmp_path):
+@pytest.mark.parametrize("sized_controls", [False, True])
+def test_bench_never_drives_feedback_inputs(tmp_path, sized_controls):
     from chipforge_asap7.brom.replica_timing import render_replica_bench
     from chipforge_asap7.brom.timing import TimingConditions
 
@@ -232,6 +233,7 @@ def test_bench_never_drives_feedback_inputs(tmp_path):
         TimingConditions(),
         tmp_path / "model.pm",
         tmp_path / "model.osdi",
+        sized_controls=sized_controls,
     )
     sources = [line for line in deck.splitlines() if line.startswith("Vstim")]
     assert len(sources) == spec.address_bits + 2

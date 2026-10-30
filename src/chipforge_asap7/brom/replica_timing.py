@@ -17,14 +17,31 @@ from ..devices.spice import (
     translate_asap7_model,
 )
 from .compiler import BromSpec
+from .distribution import size_control_distribution
 from .replica import ReplicaSpec, self_timed_macro_circuit
 from .timing import TimingConditions, _run_ngspice, pattern_words, settling_delay
+from .wire_rc import size_wire_rc_distribution
 
 
 def render_replica_bench(
-    spec, words, replica, conditions, model_card, osdi, *, klu=False
+    spec,
+    words,
+    replica,
+    conditions,
+    model_card,
+    osdi,
+    *,
+    klu=False,
+    sized_controls=False,
+    wire_rc_controls=False,
 ):
     c = self_timed_macro_circuit(spec, words, replica=replica)
+    if sized_controls and wire_rc_controls:
+        raise ValueError("choose gate sizing or wire-RC sizing, not both")
+    if wire_rc_controls:
+        size_wire_rc_distribution(c)
+    elif sized_controls:
+        size_control_distribution(c)
     by_name = {d.name: d for d in c.devices}
     groups = dict(c.placement_groups)
     sampleb = by_name[groups["output_latch_0"][1]].nodes[1]
@@ -71,8 +88,14 @@ def render_replica_bench(
                 (base + 40, address >> bit & 1),
                 (base + 600, 1 - (address >> bit & 1)),
             ]
+    changes = {
+        net: [(t * conditions.phase_scale, v) for t, v in edges]
+        for net, edges in changes.items()
+    }
+    # Cancel 60 ps after the final falling clock edge regardless of period.
+    changes["RESETN"][-1] = ((spec.depth * 1000 + 200) * conditions.phase_scale + 60, 0)
     lines = [
-        "* BROM replica closed loop; ideal wires, real generated transistors",
+        "* BROM replica closed loop; real generated transistors; wire model recorded in report",
         f".include {_spice_path(model_card)}",
         f".temp {conditions.temperature_c:g}",
         (
@@ -93,10 +116,32 @@ def render_replica_bench(
                 ]
             old = v
         lines.append(f"Vstim{i} {nodes[net]} 0 PWL({' '.join(pts)})")
+    rc_nets = {}
+    if wire_rc_controls:
+        for record in c.distribution["nets"]:
+            for net in [
+                record["stages"][0]["input"],
+                *(stage["output"] for stage in record["stages"]),
+            ]:
+                rc_nets[net] = c.distribution["routed_rc"][net]
     for d in c.devices:
+        terminals = [nodes[n] for n in d.nodes]
+        if d.nodes[0] in rc_nets:
+            terminals[0] = "rcdrv_" + terminals[0]
         lines.append(
-            f"N{d.name} {' '.join(nodes[n] for n in d.nodes)} {d.spec.model} L=20n NFIN={d.spec.fins} NF=1"
+            f"N{d.name} {' '.join(terminals)} {d.spec.model} L=20n NFIN={d.spec.fins} NF=1"
         )
+    # All sink gates remain on the original net; only inverter output drains
+    # move to the source side. This Rpath pi model is an intentionally pessimistic
+    # stress approximation, not the actual distributed extracted network.
+    for i, (net, rc) in enumerate(sorted(rc_nets.items())):
+        sink, source = nodes[net], "rcdrv_" + nodes[net]
+        lines += [
+            f"* estimated control wire: {net}",
+            f"Rwire{i} {source} {sink} {rc['max_driver_sink_path_ohm']:.12g}",
+            f"Cwire{i}a {source} 0 {rc['wire_cap_ff'] / 2:.12g}f",
+            f"Cwire{i}b {sink} 0 {rc['wire_cap_ff'] / 2:.12g}f",
+        ]
     if conditions.output_load_ff:
         for bit in range(spec.bits):
             lines.append(
@@ -116,7 +161,7 @@ def render_replica_bench(
                     f".nodeset V({nodes[by_name[members[index]].nodes[0]]})={voltage:g}"
                 )
     vectors = [f"v({nodes[aliases.get(net, net)]})" for net in signals]
-    stop = (spec.depth + 1) * 1000 + 200
+    stop = ((spec.depth + 1) * 1000 + 200) * conditions.phase_scale
     lines += [
         ".control",
         "set num_threads=1",
@@ -151,9 +196,9 @@ def crossing(time, values, start, end, threshold, rising):
     )
 
 
-def analyze_replica(time, traces, spec, words, vdd):
+def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
     failures, records = [], []
-    t = time * 1e12
+    t = time * 1e12 / phase_scale
     candidates = np.maximum.reduce(
         [traces[f"C<{b},{k}>"] for b in range(spec.blocks) for k in range(16)]
     )
@@ -257,6 +302,16 @@ def analyze_replica(time, traces, spec, words, vdd):
                 "candidate_off_margin_ps",
             )
         }
+    for record in records:
+        for key in (
+            "sample_ps",
+            "read_margin_ps",
+            "closure_margin_ps",
+            "candidate_off_margin_ps",
+        ):
+            if record[key] is not None:
+                record[key] *= phase_scale
+    margins = {key: value * phase_scale for key, value in margins.items()}
     return {
         "passed": not failures,
         "failures": failures,
@@ -266,12 +321,20 @@ def analyze_replica(time, traces, spec, words, vdd):
 
 
 def characterize_replica(
-    spec, *, out, model_card, osdi, conditions=None, replica=None, words=None, klu=False
+    spec,
+    *,
+    out,
+    model_card,
+    osdi,
+    conditions=None,
+    replica=None,
+    words=None,
+    klu=False,
+    sized_controls=False,
+    wire_rc_controls=False,
 ):
     conditions = conditions or TimingConditions(step_ps=0.5)
     replica = replica or ReplicaSpec()
-    if conditions.phase_scale != 1:
-        raise ValueError("replica bench uses a fixed 1 ns clock schedule")
     words = pattern_words(spec) if words is None else words
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -279,7 +342,13 @@ def characterize_replica(
         "status": "running",
         "passed": False,
         "timing_qualified": False,
-        "scope": "internally generated acknowledgments, ideal wires",
+        "scope": (
+            "selected control nets: routed-length Rpath pi stress model"
+            if wire_rc_controls
+            else "internally generated acknowledgments, ideal wires"
+        ),
+        "wire_rc_controls": wire_rc_controls,
+        "sized_controls": sized_controls,
         "linear_solver": "KLU" if klu else "SPARSE",
         "spec": asdict(spec),
         "replica": asdict(replica),
@@ -297,8 +366,28 @@ def characterize_replica(
                 for kind in ("n", "p")
             )
         )
+        if wire_rc_controls:
+            physical = size_wire_rc_distribution(
+                self_timed_macro_circuit(spec, words, replica=replica)
+            )
+            distribution_path = out / "distribution.json"
+            distribution_path.write_text(
+                json.dumps(physical.distribution, indent=2) + "\n"
+            )
+            report["distribution_sha256"] = hashlib.sha256(
+                distribution_path.read_bytes()
+            ).hexdigest()
+            report["extracted"] = False
         deck, signals = render_replica_bench(
-            spec, words, replica, conditions, model, osdi, klu=klu
+            spec,
+            words,
+            replica,
+            conditions,
+            model,
+            osdi,
+            klu=klu,
+            sized_controls=sized_controls,
+            wire_rc_controls=wire_rc_controls,
         )
         spice = out / "replica.sp"
         spice.write_text(deck)
@@ -308,7 +397,11 @@ def characterize_replica(
             values.ndim != 2
             or values.shape[1] != len(signals) + 1
             or not np.isfinite(values).all()
-            or values[-1, 0] < ((spec.depth + 1) * 1000 + 200) * 1e-12 * (1 - 1e-6)
+            or values[-1, 0]
+            < ((spec.depth + 1) * 1000 + 200)
+            * 1e-12
+            * conditions.phase_scale
+            * (1 - 1e-6)
             or np.any(np.diff(values[:, 0]) <= 0)
         ):
             raise RuntimeError("incomplete/invalid replica transient")
@@ -320,6 +413,7 @@ def characterize_replica(
                 spec,
                 words,
                 conditions.vdd,
+                phase_scale=conditions.phase_scale,
             )
         )
         report.update(
@@ -344,6 +438,9 @@ def main():
     p.add_argument(
         "--klu", action="store_true", help="Use KLU (requires a KLU-enabled ngspice)"
     )
+    sizing = p.add_mutually_exclusive_group()
+    sizing.add_argument("--sized-controls", action="store_true")
+    sizing.add_argument("--wire-rc-controls", action="store_true")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--osdi", type=Path, required=True)
     p.add_argument("--model-card", type=Path, default=find_default_model_card())
@@ -351,6 +448,7 @@ def main():
     p.add_argument("--temperature-c", type=float, default=25)
     p.add_argument("--guard-pairs", type=int, default=4)
     p.add_argument("--extra-blocks", type=int, default=1)
+    p.add_argument("--phase-scale", type=float, default=1)
     p.add_argument("--step-ps", type=float, default=0.5)
     p.add_argument("--bitline-load-ff", type=float, default=0)
     args = p.parse_args()
@@ -363,10 +461,13 @@ def main():
         osdi=args.osdi,
         replica=ReplicaSpec(args.guard_pairs, args.extra_blocks),
         klu=args.klu,
+        sized_controls=args.sized_controls,
+        wire_rc_controls=args.wire_rc_controls,
         conditions=TimingConditions(
             vdd=args.vdd,
             temperature_c=args.temperature_c,
             step_ps=args.step_ps,
+            phase_scale=args.phase_scale,
             bitline_load_ff=args.bitline_load_ff,
         ),
     )
