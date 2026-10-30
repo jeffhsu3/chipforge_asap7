@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from .compiler import BromSpec
 from .distribution import size_control_distribution
 from .replica import ReplicaSpec, self_timed_macro_circuit
 from .timing import TimingConditions, _run_ngspice, pattern_words, settling_delay
-from .wire_rc import size_wire_rc_distribution
+from .wire_rc import routed_control_rc, size_wire_rc_distribution
 
 
 def render_replica_bench(
@@ -34,7 +35,13 @@ def render_replica_bench(
     klu=False,
     sized_controls=False,
     wire_rc_controls=False,
+    startup_ramp_ps=0,
 ):
+    if (
+        not math.isfinite(startup_ramp_ps)
+        or not 0 <= startup_ramp_ps < 40 * conditions.phase_scale
+    ):
+        raise ValueError("startup ramp must finish before the first address stimulus")
     c = self_timed_macro_circuit(spec, words, replica=replica)
     if sized_controls and wire_rc_controls:
         raise ValueError("choose gate sizing or wire-RC sizing, not both")
@@ -110,19 +117,12 @@ def render_replica_bench(
             + ("klu " if klu else "")
             + "method=gear reltol=1e-3 abstol=1e-12 vntol=1e-6 rshunt=1e15"
         ),
-        f"Vsupply vdd 0 {conditions.vdd:g}",
+        (
+            f"Vsupply vdd 0 PWL(0 0 {startup_ramp_ps:g}p {conditions.vdd:g})"
+            if startup_ramp_ps
+            else f"Vsupply vdd 0 {conditions.vdd:g}"
+        ),
     ]
-    for i, (net, edges) in enumerate(changes.items()):
-        old = initial[net]
-        pts = [f"0 {old * conditions.vdd:g}"]
-        for t, v in sorted(edges):
-            if v != old:
-                pts += [
-                    f"{t}p {old * conditions.vdd:g}",
-                    f"{t + conditions.slew_ps:g}p {v * conditions.vdd:g}",
-                ]
-            old = v
-        lines.append(f"Vstim{i} {nodes[net]} 0 PWL({' '.join(pts)})")
     rc_nets = {}
     if wire_rc_controls:
         for record in c.distribution["nets"]:
@@ -131,6 +131,27 @@ def render_replica_bench(
                 *(stage["output"] for stage in record["stages"]),
             ]:
                 rc_nets[net] = c.distribution["routed_rc"][net]
+        if spec.registered_output:
+            # These are gate-only clock nets; never split latch storage/data.
+            routes = routed_control_rc(c)
+            for net in ("CLK", "REG_CLKB", "REG_M", "REG_MB", "REG_S", "REG_SB"):
+                rc_nets[net] = routes[net]
+    for i, (net, edges) in enumerate(changes.items()):
+        old = initial[net]
+        pts = (
+            ["0 0", f"{startup_ramp_ps:g}p {old * conditions.vdd:g}"]
+            if startup_ramp_ps
+            else [f"0 {old * conditions.vdd:g}"]
+        )
+        for t, v in sorted(edges):
+            if v != old:
+                pts += [
+                    f"{t}p {old * conditions.vdd:g}",
+                    f"{t + conditions.slew_ps:g}p {v * conditions.vdd:g}",
+                ]
+            old = v
+        source = "rcdrv_" + nodes[net] if net in rc_nets else nodes[net]
+        lines.append(f"Vstim{i} {source} 0 PWL({' '.join(pts)})")
     for d in c.devices:
         terminals = [nodes[n] for n in d.nodes]
         if d.nodes[0] in rc_nets:
@@ -167,7 +188,24 @@ def render_replica_bench(
                 lines.append(
                     f".nodeset V({nodes[by_name[members[index]].nodes[0]]})={voltage:g}"
                 )
+    if spec.registered_output:
+        # Legal startup hints for the interlocked clock loop (CLK initially high).
+        # NODESET aids the DC solve without forcing transient state.
+        for net, high in (
+            ("REG_CLKB", False),
+            ("REG_M", False),
+            ("REG_MB", True),
+            ("REG_S", True),
+            ("REG_SB", False),
+        ):
+            lines.append(f".nodeset V({nodes[net]})={conditions.vdd if high else 0:g}")
     vectors = [f"v({nodes[aliases.get(net, net)]})" for net in signals]
+    if "CLK" in rc_nets:
+        # Measure latency from the macro pin, and retain the receiving clock.
+        signals.append("CLK_RECEIVER")
+        vectors.append(f"v({nodes['CLK']})")
+        vectors[signals.index("CLK")] = f"v(rcdrv_{nodes['CLK']})"
+
     stop = ((spec.depth + 1) * 1000 + 200) * conditions.phase_scale
     lines += [
         ".control",
@@ -363,6 +401,7 @@ def characterize_replica(
     klu=False,
     sized_controls=False,
     wire_rc_controls=False,
+    startup_ramp_ps=0,
 ):
     conditions = conditions or TimingConditions(step_ps=0.5)
     replica = replica or ReplicaSpec()
@@ -381,6 +420,7 @@ def characterize_replica(
         "wire_rc_controls": wire_rc_controls,
         "sized_controls": sized_controls,
         "linear_solver": "KLU" if klu else "SPARSE",
+        "startup_ramp_ps": startup_ramp_ps,
         "spec": asdict(spec),
         "replica": asdict(replica),
         "conditions": asdict(conditions),
@@ -397,10 +437,11 @@ def characterize_replica(
                 for kind in ("n", "p")
             )
         )
+        physical = self_timed_macro_circuit(spec, words, replica=replica)
+        if sized_controls:
+            size_control_distribution(physical)
         if wire_rc_controls:
-            physical = size_wire_rc_distribution(
-                self_timed_macro_circuit(spec, words, replica=replica)
-            )
+            physical = size_wire_rc_distribution(physical)
             distribution_path = out / "distribution.json"
             distribution_path.write_text(
                 json.dumps(physical.distribution, indent=2) + "\n"
@@ -409,6 +450,16 @@ def characterize_replica(
                 distribution_path.read_bytes()
             ).hexdigest()
             report["extracted"] = False
+            report["register_clock_rc_included"] = spec.registered_output
+            if spec.registered_output:
+                routes = routed_control_rc(physical)
+                report["register_clock_rc"] = {
+                    net: routes[net]
+                    for net in ("CLK", "REG_CLKB", "REG_M", "REG_MB", "REG_S", "REG_SB")
+                }
+        report["circuit_sha256"] = hashlib.sha256(
+            physical.netlist().encode()
+        ).hexdigest()
         deck, signals = render_replica_bench(
             spec,
             words,
@@ -419,6 +470,7 @@ def characterize_replica(
             klu=klu,
             sized_controls=sized_controls,
             wire_rc_controls=wire_rc_controls,
+            startup_ramp_ps=startup_ramp_ps,
         )
         spice = out / "replica.sp"
         spice.write_text(deck)
@@ -447,6 +499,17 @@ def characterize_replica(
                 phase_scale=conditions.phase_scale,
             )
         )
+        if report["passed"]:
+            from .cycle_timing import measure_cycle_paths
+
+            report["cycle_paths"] = measure_cycle_paths(
+                values[:, 0],
+                dict(zip(signals, values[:, 1:].T, strict=True)),
+                spec,
+                words,
+                conditions.vdd,
+                phase_scale=conditions.phase_scale,
+            )
         report.update(
             status="passed" if report["passed"] else "failed",
             model_sha256=hashlib.sha256(Path(model_card).read_bytes()).hexdigest(),
@@ -486,6 +549,9 @@ def main():
     p.add_argument("--phase-scale", type=float, default=1)
     p.add_argument("--step-ps", type=float, default=0.5)
     p.add_argument("--bitline-load-ff", type=float, default=0)
+    p.add_argument("--output-load-ff", type=float, default=1)
+    p.add_argument("--slew-ps", type=float, default=5)
+    p.add_argument("--startup-ramp-ps", type=float, default=0)
     args = p.parse_args()
     if args.model_card is None:
         p.error("model card required")
@@ -506,12 +572,15 @@ def main():
         klu=args.klu,
         sized_controls=args.sized_controls,
         wire_rc_controls=args.wire_rc_controls,
+        startup_ramp_ps=args.startup_ramp_ps,
         conditions=TimingConditions(
             vdd=args.vdd,
             temperature_c=args.temperature_c,
             step_ps=args.step_ps,
             phase_scale=args.phase_scale,
             bitline_load_ff=args.bitline_load_ff,
+            output_load_ff=args.output_load_ff,
+            slew_ps=args.slew_ps,
         ),
     )
     print(json.dumps(r, indent=2))

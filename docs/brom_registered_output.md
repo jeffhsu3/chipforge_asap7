@@ -70,3 +70,11 @@ signoff or measured setup/hold constraints. Metadata explicitly records
 width/depth/load coverage, and sized-control combinations still need
 qualification. The measured data lead is available slack in this bench, not
 a required setup time or a guaranteed maximum operating frequency.
+
+## Follow-up timing estimates
+
+[Timing estimates](brom_timing_estimates.md) now cover sampled setup/hold and
+pulse-width bounds, full-cycle period sweeps and routed register-clock stress.
+A follow-up FF full-ROM run passes with an explicit 25 ps supply/input startup
+ramp. The routed clock stress fails the phase nonoverlap check, so RC timing
+remains unqualified.

@@ -13,7 +13,15 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
     active = t > 150 * phase_scale
     master_open = (traces["REG_M"] > 0.2 * vdd) | (traces["REG_MB"] < 0.8 * vdd)
     slave_open = (traces["REG_S"] > 0.2 * vdd) | (traces["REG_SB"] < 0.8 * vdd)
-    if np.any(active & master_open & slave_open):
+    overlap = active & master_open & slave_open
+    edges = np.diff(np.r_[False, overlap, False].astype(int))
+    intervals = [
+        {"start_ps": float(t[a]), "observed_duration_ps": float(t[b - 1] - t[a])}
+        for a, b in zip(
+            np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True
+        )
+    ]
+    if np.any(overlap):
         failures.append("output register master/slave input gates overlap")
     for address, word in enumerate(words):
         start = (address * 1000 + 750) * phase_scale
@@ -92,5 +100,6 @@ def analyze_registered_output(time, traces, spec, words, vdd, *, phase_scale=1):
         "maximum_clk_to_valid_ps": max(r["clk_to_valid_ps"] for r in reads)
         if reads and not failures
         else None,
+        "phase_overlap_intervals": intervals,
         "setup_hold_qualified": False,
     }

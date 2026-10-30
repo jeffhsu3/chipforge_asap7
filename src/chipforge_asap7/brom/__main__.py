@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run unit-fin KLayout LVS on every emitted top",
     )
+    parser.add_argument(
+        "--timing-report",
+        type=Path,
+        help="Attach a matching completed timing-estimate JSON",
+    )
     args = parser.parse_args(argv)
     if not args.self_timed and (
         args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
@@ -219,6 +224,12 @@ def main(argv: list[str] | None = None) -> None:
         ),
         "artifacts": {},
     }
+    if args.timing_report:
+        from .timing_estimate import attach_estimate
+
+        report["timing_estimate"] = attach_estimate(
+            args.timing_report, macro, spec, words
+        )
     report_path = args.out / "manifest.json"
     # Invalidate a prior successful report before starting any physical checks.
     report_path.write_text(json.dumps(report, indent=2) + "\n")
