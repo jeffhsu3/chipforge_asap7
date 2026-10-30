@@ -62,8 +62,10 @@ from .finfet import (
     ACTIVE_ENC,
     DEVICE_GATE_CUT_HEIGHT,
     GATE_LIG_HEIGHT,
+    LI_RAIL_HEIGHT,
     MAX_VERIFIABLE_FINS,
     POLY_OVERHANG,
+    SD_BAR_WIDTH,
     SELECT_X_ENC,
     VT_LAYERS,
     build_device_band,
@@ -145,6 +147,14 @@ class InverterSpec:
             and no more: on a (4, 6)+(3, 3) cell, one bare landing instead of
             two tall straps takes a tenth off the switched wire capacitance
             and a seventh off the input-to-output coupling, at no resistance.
+        band_height: optional n/p band heights, as in `RowStack`. This keeps
+            differently sized gates on common rails without changing fins.
+        rail_sources: contact sources on the power rails through extended
+            LISD. Neighbours with different fin heights then share one V0
+            location instead of placing two too-close vias at their seam.
+        output_tie_offset: M2 drain-join offset from each row's seam, in nm.
+            Used for folded cells (more than two fingers) when the parent
+            needs the seam's M2 track for an adjacent cell's input.
 
     Both input knobs came out of `chipforge_asap7.verification.reduce`, which
     found the shapes; they change no device, so the netlist and the LVS
@@ -157,11 +167,14 @@ class InverterSpec:
     abut: bool = True
     input_rows: tuple[int, ...] | None = None
     input_reach: tuple[int, int] | None = None
+    band_height: int | tuple[int, int] | None = None
+    rail_sources: bool = False
+    output_tie_offset: int = 0
 
     def __post_init__(self) -> None:
         # RowStack owns row validation and normalisation, so an inverter and
         # the tap or filler placed beside it cannot disagree about the stack.
-        object.__setattr__(self, "rows", RowStack(rows=self.rows, vt=self.vt).rows)
+        object.__setattr__(self, "rows", self.stack.rows)
         if isinstance(self.fingers, bool) or not isinstance(self.fingers, int):
             raise TypeError(f"fingers must be an integer, got {self.fingers!r}")
         if self.fingers < 2 or self.fingers % 2:
@@ -169,6 +182,16 @@ class InverterSpec:
                 "fingers must be a positive even number so both outer S/D "
                 f"columns are sources; got {self.fingers}"
             )
+        if isinstance(self.output_tie_offset, bool) or not isinstance(
+            self.output_tie_offset, int
+        ):
+            raise TypeError("output_tie_offset must be an integer")
+        if self.fingers > 2:
+            for row in range(len(self.rows)):
+                lower, upper = self.row_bands(row)
+                y = self.seam_y(row) + self.output_tie_offset
+                if not lower.contact_y + 5 <= y <= upper.contact_y - 5:
+                    raise ValueError("output tie must land inside the drain straps")
         if self.input_rows is not None:
             rows = tuple(self.input_rows)
             if (
@@ -213,7 +236,7 @@ class InverterSpec:
     @property
     def stack(self) -> RowStack:
         """The row geometry this inverter shares with its row-support cells."""
-        return RowStack(rows=self.rows, vt=self.vt)
+        return RowStack(rows=self.rows, vt=self.vt, band_height=self.band_height)
 
     @property
     def code(self) -> str:
@@ -225,6 +248,10 @@ class InverterSpec:
         """Default cell name, e.g. ``"inv_fin_18n18p_13n13p_2f"``."""
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         style_tag = "" if self.abut else "_iso"
+        if self.rail_sources:
+            style_tag += "_rs"
+        if self.output_tie_offset:
+            style_tag += f"_ty{self.output_tie_offset}"
         input_tag = ""
         if self.input_rows is not None:
             input_tag += "_in" + "".join(str(row) for row in self.input_rows)
@@ -580,6 +607,15 @@ def build_inverter(
     # its own band faces.
     for y_rail, _net in spec.rails:
         box(cell, "M1", 0, y_rail - half_m1, spec.width, y_rail + half_m1)
+        if spec.rail_sources:
+            box(
+                cell,
+                "LIG",
+                0,
+                y_rail - LI_RAIL_HEIGHT / 2,
+                spec.width,
+                y_rail + LI_RAIL_HEIGHT / 2,
+            )
     for band in bands:
         y_via = band.contact_y
         above = y_via > band.rail_y
@@ -589,6 +625,18 @@ def build_inverter(
         # sitting at x=0 of an abutting cell that step is a real M1.W.1.
         rail_far = band.rail_y + (-half_m1 if above else half_m1)
         for x_source in spec.source_xs:
+            if spec.rail_sources:
+                lo, hi = band.active_span
+                box(
+                    cell,
+                    "LISD",
+                    x_source - SD_BAR_WIDTH / 2,
+                    min(lo, band.rail_y),
+                    x_source + SD_BAR_WIDTH / 2,
+                    max(hi, band.rail_y),
+                )
+                _square(cell, "V0", x_source, band.rail_y, CONTACT_SIZE)
+                continue
             _square(cell, "V0", x_source, y_via, CONTACT_SIZE)
             box(cell, "M1", x_source - half_m1, rail_far, x_source + half_m1, end)
 
@@ -614,7 +662,7 @@ def build_inverter(
         # Folding past two fingers gives a row more than one drain column;
         # tie them together on M2, clear of both via rows.
         if len(spec.drain_xs) > 1:
-            y_tie = spec.seam_y(row)
+            y_tie = spec.seam_y(row) + spec.output_tie_offset
             centers = [sum(spec.output_strap_x(x)) / 2 for x in spec.drain_xs]
             m2_pad = half_ct + M2_V1_ENCLOSURE
             box(

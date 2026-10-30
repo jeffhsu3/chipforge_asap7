@@ -43,7 +43,7 @@ def _library(cells) -> tuple:
     cursor = 0
     for make, width in cells:
         top.add(gdspy.CellReference(make(library), origin=(cursor, 0)))
-        cursor += width + 1000
+        cursor += width + 1080  # 20 * 54 nm CPP grid
     return library, top
 
 
@@ -60,6 +60,14 @@ def test_isolated_inverters_only_trip_the_missing_body_tap(asap7_drc):
         InverterSpec(rows=((2, 3),), fingers=4, abut=False, vt="lvt"),
         InverterSpec(rows=((12, 12), (8, 8)), abut=False),
         InverterSpec(rows=((3, 5), (5, 3), (2, 2)), abut=False, vt="sram"),
+        InverterSpec(
+            rows=((3, 3),),
+            fingers=4,
+            abut=False,
+            band_height=(324, 216),
+            rail_sources=True,
+            output_tie_offset=-54,
+        ),
         InverterSpec(
             rows=((MAX_VERIFIABLE_FINS, MAX_VERIFIABLE_FINS),), fingers=4, abut=False
         ),

@@ -69,7 +69,7 @@ def _matrix(specs, tag):
                 build_row_support(spec, lib=library), origin=(cursor, 0)
             )
         )
-        cursor += spec.width + 800
+        cursor += spec.width + 810  # 15 * 54 nm CPP grid
     return library, top
 
 

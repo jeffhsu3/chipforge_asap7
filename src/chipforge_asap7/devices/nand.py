@@ -116,13 +116,16 @@ class NandSpec:
             self-contained island with a dummy gate on each side.
         band_height: pin both bands to one height (see `RowStack`), e.g. 135
             for the 270 nm standard-cell row.
+        rail_sources: contact every source on its power rail through LISD,
+            allowing neighbours with different fin heights to share contacts.
     """
 
     rows: tuple[tuple[int, int], ...] = ((14, 7),)
     fingers: int = 2
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     abut: bool = True
-    band_height: int | None = None
+    band_height: int | tuple[int, int] | None = None
+    rail_sources: bool = False
 
     def __post_init__(self) -> None:
         stack = RowStack(rows=self.rows, vt=self.vt, band_height=self.band_height)
@@ -168,6 +171,8 @@ class NandSpec:
         """e.g. ``"nand2_fin_14n7p_2f"`` for the released post-decode tile."""
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         style_tag = "" if self.abut else "_iso"
+        if self.rail_sources:
+            style_tag += "_rs"
         return f"nand2_fin_{self.code}_{self.fingers}f{vt_tag}{style_tag}"
 
     @property
@@ -441,13 +446,20 @@ def build_nand(
         box(cell, "LIG", 0, y_rail - _HALF_RAIL, spec.width, y_rail + _HALF_RAIL)
         box(cell, "M1", 0, y_rail - _HALF_M1, spec.width, y_rail + _HALF_M1)
     for band in (n_band, p_band):
-        act_lo, _ = band.active_span
+        act_lo, act_hi = band.active_span
         y_via = band.contact_y
         rail_far = band.rail_y + (-_HALF_M1 if band.rail_below else _HALF_M1)
         for x in spec.columns(band.flavor, "S"):
             at_edge = spec.abut and x in (spec.sd_xs[0], spec.sd_xs[-1])
-            if band.flavor == "p" and not at_edge:
-                box(cell, "LISD", x - _HALF_SD, act_lo, x + _HALF_SD, band.rail_y)
+            if spec.rail_sources or (band.flavor == "p" and not at_edge):
+                box(
+                    cell,
+                    "LISD",
+                    x - _HALF_SD,
+                    min(act_lo, band.rail_y),
+                    x + _HALF_SD,
+                    max(act_hi, band.rail_y),
+                )
                 _square(cell, "V0", x, band.rail_y, CONTACT_SIZE)
             else:
                 _square(cell, "V0", x, y_via, CONTACT_SIZE)
