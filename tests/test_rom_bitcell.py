@@ -157,6 +157,22 @@ def test_array_rejects_sites_outside_it():
         build_rom_array(RomArraySpec(2, 1), [(2, 0)])
 
 
+def test_array_can_bring_its_bitlines_out_on_the_right():
+    """The center lane's left half: bitline pins past its right edge, named by
+    the caller, and wordline labels offset by `first_word`."""
+    _library()
+    spec = RomArraySpec(4, 2)
+    cell = build_rom_array(
+        spec, name="half", bitline="BLL", bitline_side="right", first_word=8
+    )
+    labels = {label.text: label.position for label in cell.get_labels()}
+    for bit in range(2):
+        x, _ = labels[f"BLL<{bit}>"]
+        assert x > spec.width
+    assert {f"WL<{w}>" for w in range(8, 12)} <= labels.keys()
+    assert "BL<0>" not in labels and "WL<0>" not in labels
+
+
 @pytest.mark.parametrize("fins", [0, True, 1.5])
 def test_spec_rejects_bad_fins(fins):
     with pytest.raises((TypeError, ValueError)):
