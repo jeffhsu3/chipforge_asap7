@@ -22,7 +22,7 @@ from ..devices.spice import (
 from .compiler import BromSpec, macro_circuit
 
 
-def _run_ngspice(deck: Path, executable: str, expected_outputs):
+def _run_ngspice(deck: Path, executable: str, expected_outputs, *, timeout_s=600):
     """Bound simulation runtime and retain a live log, including failed runs."""
     for output in expected_outputs:
         output.unlink(missing_ok=True)
@@ -33,7 +33,7 @@ def _run_ngspice(deck: Path, executable: str, expected_outputs):
             cwd=deck.parent,
             stdout=stream,
             stderr=subprocess.STDOUT,
-            timeout=600,
+            timeout=timeout_s,
             env={**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"},
             check=False,
         )

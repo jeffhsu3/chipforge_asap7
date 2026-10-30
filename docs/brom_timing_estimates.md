@@ -176,13 +176,19 @@ and SS RC reads, with minimum gaps of 32.5 ps and 48.7 ps. TT also passes for
 both `[2,0,0,0]` and `[0,1,2,3]` ROM images. The checker retains its 20%/80%
 thresholds and additionally rejects interpolated negative gaps between samples.
 
-The register phases pass at FF with a 21.1 ps minimum gap, but that full RC
+Before the local SAMPLE receiver fix, the register phases passed at FF with
+a 21.1 ps minimum gap, but that full RC
 macro fails the controller SAMPLE-closure check. A wider 4×4 TT case likewise
 passes register non-overlap but fails controller closure; the same controller
-failure occurs on the pre-fix 4×4 circuit. These are explicit remaining limits,
-so neither a universal RC-safe period nor extracted timing signoff is claimed.
+failure occurs on the pre-fix 4×4 circuit. The subsequent
+[local SAMPLE receiver fix](brom_sample_closure.md) passes selected FF 4×2 and
+TT 4×4 full-macro checks at 10 ns. Neither a universal RC-safe period nor
+extracted timing signoff is claimed.
 
 Generated evidence, including failed attempts, is under `build/brom_estimates`.
-The next physical timing step is to qualify controller SAMPLE closure and
-correlate the lumped model against extraction, then broaden the shape,
+Full-macro reports in that directory predate the local SAMPLE receiver change
+and do not attach to its circuit hash; regenerate them before reuse. Current
+selected-case reports are under `build/brom_sample_closure`. The next physical
+timing step is to correlate receiving-gate and closure-return skew against
+extraction, then broaden the shape,
 content, load/slew, PVT and duty-cycle coverage.

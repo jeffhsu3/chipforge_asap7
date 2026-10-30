@@ -100,6 +100,7 @@ def macro_periphery(circuit: Circuit) -> Circuit:
         circuit.n.vt,
     )
     bank.array_width = plan.array_width
+    bank.compact_periphery = circuit.compact_periphery
     bank.placement_groups = list(circuit.placement_groups)
     array_devices = set(circuit.array.device_names)
     if circuit.replica is not None:

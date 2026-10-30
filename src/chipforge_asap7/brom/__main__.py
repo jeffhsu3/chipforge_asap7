@@ -18,6 +18,7 @@ from . import (
     build_periphery,
     cgen_circuit,
     clocked_macro_circuit,
+    compact_periphery,
     controller_circuit,
     decoder_circuit,
     macro_circuit,
@@ -58,6 +59,11 @@ def main(argv: list[str] | None = None) -> None:
         "--registered-output",
         action="store_true",
         help="Rising-edge Q register; requires --clocked or --self-timed",
+    )
+    parser.add_argument(
+        "--compact-periphery",
+        action="store_true",
+        help="CP-SAT peripheral routing compaction (requires optimize extra)",
     )
     sizing = parser.add_mutually_exclusive_group()
     sizing.add_argument(
@@ -131,6 +137,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.self_timed
         else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
     )
+    if args.compact_periphery:
+        compact_periphery(macro)
     if args.wire_rc_controls:
         size_wire_rc_distribution(macro)
     elif args.sized_controls:
@@ -152,6 +160,9 @@ def main(argv: list[str] | None = None) -> None:
         )
     if args.clocked or args.self_timed:
         circuits["controller"] = controller_circuit(spec.fins, spec.vt)
+    if args.compact_periphery:
+        for circuit in circuits.values():
+            compact_periphery(circuit)
     args.out.mkdir(parents=True, exist_ok=True)
     bank_plan = periphery_plan(macro_periphery(macro))
     report = {
@@ -169,6 +180,7 @@ def main(argv: list[str] | None = None) -> None:
         "registered_output": bool(macro.output_register),
         "output_register": macro.output_register,
         "control_distribution": macro.distribution,
+        "sample_distribution": macro.sample_distribution,
         "keeper": (
             {
                 "fins": spec.keeper_fins,
@@ -200,7 +212,10 @@ def main(argv: list[str] | None = None) -> None:
             macro_plan(macro).array_width,
             macro_plan(macro).array_height,
         ],
-        "periphery_layout": "folded_local_rows",
+        "periphery_layout": "cp_sat_channels"
+        if args.compact_periphery
+        else "folded_local_rows",
+        "periphery_optimization": bank_plan.optimization,
         "periphery_plan": {
             "row_count": len(bank_plan.rows),
             "device_pitch_nm": bank_plan.device_pitch,
@@ -248,7 +263,11 @@ def main(argv: list[str] | None = None) -> None:
         reference = args.out / f"{role}.lvs.spice"
         reference.write_text(circuit.lvs_reference())
         bounds = top.get_bounding_box()
+        unit_plan = periphery_plan(
+            macro_periphery(circuit) if role == "macro" else circuit
+        )
         record = {
+            "periphery_optimization": unit_plan.optimization,
             "cell": circuit.name,
             "transistors": len(circuit.devices),
             "gds": gds.name,

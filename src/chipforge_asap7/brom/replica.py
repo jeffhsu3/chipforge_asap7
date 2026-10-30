@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from .circuit import Circuit, ReplicaInstance, SelectorInstance
 from .compiler import BromSpec, add_readout
 from .controller import clocked_macro_circuit
+from .sample_distribution import add_sample_receivers
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,9 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
     members = next(m for name, m in c.placement_groups if name == "output_latch_0")
     by_name = {d.name: d for d in c.devices}
     sampleb = by_name[members[1]].nodes[1]
-    gate("latch", data, "RQ", "SAMPLE", sampleb)
+    start = len(c.devices)
+    c.latch(data, "RQ", "SAMPLE", sampleb)
+    c.group_since("replica_sample_latch", start)
     delay(data, "RVALID", replica.guard_pairs)
     gate("and2", "EVAL", "RVALID", "READ_READY")
     # Fast assertion, guarded release. The direct EVAL term covers startup
@@ -117,14 +120,19 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
         target = "CANDIDATE_BUSY" if i == 3 else c.node()
         gate("or2", pending, signal, target)
         pending = target
-    # Place observers last before any optional distribution pass. Added
-    # buffers can extend the bank beyond these taps. Wire delay is not
-    # qualified merely by adding them; PEX must establish the receiving margins.
+    # PRECHN retains a bank-end observer. Sampling uses local gate receivers
+    # and a closure return from every data/replica latch; their placement is
+    # established before the optional distribution pass. PEX is still required.
     delay("PRECHN", "PRECHN_FAR", 2)
-    sample_low, closed = c.node(), c.node()
-    gate("inv", "SAMPLE", sample_low)
-    gate("and2", sample_low, sampleb, closed)
+    closed = add_sample_receivers(
+        c, [*(f"output_latch_{i}" for i in range(spec.bits)), "replica_sample_latch"]
+    )
+    before = len(c.devices)
     delay(closed, "SAMPLE_CLOSED", 2)
+    # Every inverter output on the acknowledgment return is a routed control.
+    c.sample_distribution["wire_nets"] += sorted(
+        {d.nodes[0] for d in c.devices[before:]}
+    )
     c.replica = ReplicaInstance(
         SelectorInstance(c.array.plan, mapping, frozenset(devices)),
         aliases,

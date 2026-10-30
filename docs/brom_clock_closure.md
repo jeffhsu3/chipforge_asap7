@@ -82,10 +82,12 @@ The pi model still uses a common receiving node for each net. It does not
 resolve skew between individual latch gates and acknowledgment gates. Passing
 these selected runs does not qualify arbitrary width, duty cycle, load, PVT or
 extracted interconnect. Setup/hold and physical timing qualification flags remain
-false. Receiver-specific extraction and the existing controller's SAMPLE-closure
-margin still require independent qualification.
+false. Receiver-specific extraction still requires qualification. The historical
+controller failures below motivated the subsequent
+[local SAMPLE receiver fix](brom_sample_closure.md), which passes the selected
+FF 4×2 and TT 4×4 cases with the updated circuit.
 
-A 4×4 TT stress case has 143.1 ps of register non-overlap but fails the
+Before the local SAMPLE receiver fix, a 4×4 TT stress case had 143.1 ps of register non-overlap but failed the
 controller's SAMPLE-closure check. Repeating that case with the pre-fix
 `98bc6d1` circuit also fails the same controller check. It is an independent
 qualification limit, not evidence that the new register phases overlap.
@@ -99,6 +101,7 @@ corrected stimuli; failed and earlier runs remain archived.
 Current standalone TT/SS sweeps pass after regeneration (TT/1 fF/5 ps uses
 KLU). The precise-stimulus FF standalone sweep still aborts numerically near a
 late input edge, including the finer 0.25 ps retry, and publishes no constraints.
-This is distinct from the FF full-macro RC result above: its register phases
-pass, while its controller closure does not. Failed sweeps are kept explicitly
+This is distinct from the historical FF full-macro RC result above: its register
+phases passed while its controller closure failed. The local SAMPLE receiver
+fix has separate full-macro evidence. Failed sweeps are kept explicitly
 rather than replaced with old-topology constraints.

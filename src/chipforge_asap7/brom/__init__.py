@@ -1,5 +1,6 @@
 """ASAP7 blocked-ROM compiler with a compact periodic selector array."""
 
+from .compact import compact_periphery
 from .compiler import (
     BromSpec,
     cgen_circuit,
@@ -28,6 +29,7 @@ __all__ = [
     "build_selector_array",
     "cgen_circuit",
     "clocked_macro_circuit",
+    "compact_periphery",
     "controller_circuit",
     "decoder_circuit",
     "default_selector_plan",

@@ -88,10 +88,20 @@ class PeripheralPlan:
     pins: dict[str, int]
     width: int
     height: int
+    optimization: dict | None = None
 
 
 def _ceil(value: int, pitch: int) -> int:
     return ((value + pitch - 1) // pitch) * pitch
+
+
+def bus_span(xs, pin, compact=False):
+    """Drawn M4 extent; aligned tips satisfy S.2/S.3/S.4/S.5 at 48 nm pitch."""
+    left, right = (0 if pin else min(xs) - 24), max(xs) + 24
+    if compact:
+        left = (left // 48) * 48
+        right = _ceil(right, 48)
+    return left, right
 
 
 def periphery_plan(circuit: Circuit) -> PeripheralPlan:
@@ -133,20 +143,83 @@ def periphery_plan(circuit: Circuit) -> PeripheralPlan:
         placed.update(members)
     if current:
         packed.append(tuple(current))
-    rows, owners = [], {}
+    owners = {}
+    for index, devices in enumerate(packed):
+        for net in sorted({n for d in devices for n in d.nodes}):
+            owners.setdefault(net, []).append(index)
+    shared = sorted(n for n, rs in owners.items() if len(rs) > 1)
+    occupied = max(map(len, packed)) if circuit.compact_periphery else capacity
+    first_spine = _ceil(108 + occupied * pitch + 192, 48) + 12
+    track_pitch = 48 if circuit.compact_periphery else 96
+    spine_pitch = 48 if circuit.compact_periphery else 96
+    spines = {net: first_spine + spine_pitch * i for i, net in enumerate(shared)}
+    rows, certificates = [], []
     y = 0
     for index, devices in enumerate(packed):
         nets = sorted({n for d in devices for n in d.nodes})
         first = _ceil(y + max(d.spec.height for d in devices) + 192, 48) + 12
-        buses = {net: first + 96 * i for i, net in enumerate(nets)}
+        tracks = tuple(range(len(nets)))
+        if circuit.compact_periphery:
+            from .compact import assign_tracks
+
+            accesses = {n: [] for n in nets}
+            for i, d in enumerate(devices):
+                cursor = 108 + i * pitch
+                columns = (
+                    cursor + d.spec.width + 144,
+                    cursor + d.spec.width + 216,
+                    cursor + d.spec.width + 72,
+                    cursor - 72,
+                )
+                for net, x in zip(d.nodes, columns, strict=True):
+                    accesses[net].append(x)
+            intervals = []
+            for net in nets:
+                xs = accesses[net]
+                if net in spines:
+                    xs.append(spines[net])
+                pin = net in circuit.pins and owners[net][0] == index
+                left, right = bus_span(xs, pin, True)
+                # M4.S.2: 40 nm tip spacing (aligned endpoints round to 48).
+                intervals.append((left, right + 40))
+            tracks, clique = assign_tracks(tuple(intervals), end_space=40)
+            certificates.append(
+                {
+                    "status": "OPTIMAL",
+                    "tracks": max(tracks) + 1,
+                    "lower_bound": max(tracks) + 1,
+                    "clique_lower_bound": len(clique),
+                    "clique": [nets[i] for i in clique],
+                    "intervals_nm": dict(zip(nets, intervals, strict=True)),
+                    "assignment": dict(zip(nets, tracks, strict=True)),
+                }
+            )
+        buses = {net: first + track_pitch * tracks[i] for i, net in enumerate(nets)}
         ceiling = max(buses.values()) + 36
         rows.append(PeripheralRow(devices, y, buses, ceiling))
-        for net in nets:
-            owners.setdefault(net, []).append(index)
         y = _ceil(ceiling + 162, 432)
-    shared = sorted(n for n, rs in owners.items() if len(rs) > 1)
-    first_spine = _ceil(108 + capacity * pitch + 192, 48) + 12
-    spines = {net: first_spine + 96 * i for i, net in enumerate(shared)}
+    if circuit.compact_periphery:
+        # M5 uses a 48 nm center grid. Runs whose ends just meet need a
+        # spare track for 40 nm corner clearance; ordinary parallel runs do
+        # not. Moving spines outward preserves the row conflict graph: all
+        # spine-connected routes already overlap beyond every device access.
+        prior_span = None
+        x = first_spine
+        for net in shared:
+            ys = [rows[i].buses[net] for i in owners[net]]
+            span = (min(ys) - 24, max(ys) + 24)
+            if prior_span is not None:
+                overlap = min(span[1], prior_span[1]) - max(span[0], prior_span[0])
+                x += 96 if -40 < overlap < 44 else 48
+            spines[net] = x
+            prior_span = span
+        for certificate in certificates:
+            for net, (left, right) in certificate["intervals_nm"].items():
+                if net in spines:
+                    certificate["intervals_nm"][net] = (
+                        left,
+                        _ceil(spines[net] + 24, 48) + 40,
+                    )
     pins = {}
     for net in sorted(circuit.pins):
         if net in owners:
@@ -156,7 +229,20 @@ def periphery_plan(circuit: Circuit) -> PeripheralPlan:
             y += 96
     width = _ceil(max(spines.values(), default=first_spine) + 108, 432)
     height = _ceil(max(y, max(pins.values(), default=y)) + 108, 432)
-    return PeripheralPlan(tuple(rows), pitch, capacity, spines, pins, width, height)
+    optimization = None
+    if circuit.compact_periphery:
+        optimization = {
+            "method": "cp_sat_interval_channels_v1",
+            "scope": "minimum tracks for fixed devices, row packing and spines",
+            "track_pitch_nm": track_pitch,
+            "spine_grid_nm": spine_pitch,
+            "spine_spacing": "48 nm; 96 nm for facing tips or short overlaps",
+            "rows": certificates,
+            "timing_qualified": False,
+        }
+    return PeripheralPlan(
+        tuple(rows), pitch, capacity, spines, pins, width, height, optimization
+    )
 
 
 def bus_positions(circuit: Circuit) -> dict[str, int]:
@@ -210,8 +296,10 @@ def build_periphery(
                 xs.append(x)
                 box(top, "V4", x - 12, y - 12, x + 12, y + 12)
                 spine_ys[net].append(y)
-            left = 0 if plan.pins.get(net) == y else min(xs) - 24
-            box(top, "M4", left, y - 12, max(xs) + 24, y + 12)
+            left, right = bus_span(
+                xs, plan.pins.get(net) == y, circuit.compact_periphery
+            )
+            box(top, "M4", left, y - 12, right, y + 12)
     for net, y in plan.pins.items():
         if not any(row.buses.get(net) == y for row in plan.rows):
             box(top, "M4", 0, y - 12, 48, y + 12)

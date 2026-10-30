@@ -14,7 +14,7 @@ from ..devices.sizing import LogicalEffortModel
 from ..verification.stack import STACK_CONDUCTORS
 from .distribution import size_control_distribution
 from .layout import macro_periphery, macro_plan, selector_placements
-from .periphery import periphery_plan
+from .periphery import bus_span, periphery_plan
 
 
 @dataclass(frozen=True)
@@ -108,8 +108,10 @@ def routed_control_rc(c, model=None):
                 xs[net].append(plan.spine_x[net])
                 spine_ys[net].append(y)
                 via(net, "M4")
-            left = 0 if plan.pins.get(net) == y else min(xs[net]) - 24
-            segment(net, "M4", max(xs[net]) + 24 - left)
+            left, right = bus_span(
+                xs[net], plan.pins.get(net) == y, c.compact_periphery
+            )
+            segment(net, "M4", right - left)
     for net, ys in spine_ys.items():
         segment(net, "M5", max(ys) - min(ys) + 48)
     macro = macro_plan(c)

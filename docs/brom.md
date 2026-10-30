@@ -30,6 +30,11 @@ Either failed check makes the command fail. Checks omitted from the command
 are recorded as `not_run`, and an old successful manifest is invalidated
 before a new build starts.
 
+Add `--compact-periphery` with the `optimize` extra installed to use
+[CP-SAT peripheral routing compaction](brom_periphery_compaction.md). The option
+applies to the macro and its standalone peripheral units and composes with
+`--wire-rc-controls`. Compact layouts require their own timing characterization.
+
 ## Integration views
 
 `asap7-brom` writes `macro.lef` and `macro.v` beside the macro's GDS; the

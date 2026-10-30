@@ -49,6 +49,8 @@ class Circuit:
         self.array_width: int | None = None
         self.distribution: dict | None = None
         self.output_register: dict | None = None
+        self.sample_distribution: dict | None = None
+        self.compact_periphery = False
 
     def group_since(self, name: str, start: int) -> None:
         """Keep a functional group together during peripheral placement."""

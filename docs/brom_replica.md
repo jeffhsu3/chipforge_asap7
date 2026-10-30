@@ -34,9 +34,11 @@ CANDIDATE_BUSY includes pending intermediate control stages and a guarded
 candidate return path so cancellation cannot omit an in-flight transition.
 
 PRECHN_FAR is derived through buffers placed at the end of the folded bank.
-SAMPLE_CLOSED observes SAMPLE and the actual complementary latch control,
-then buffers the result. These bank-end observers are not proof that every
-remote receiver has completed: extracted RC must establish that relationship.
+Each data latch and the dummy replica latch now has a local SAMPLE receiver.
+SAMPLE_CLOSED combines closure indications from every receiver through an AND
+tree and the existing return buffers. The receiver also checks its first stage
+for an in-flight command. See [SAMPLE closure](brom_sample_closure.md) for the
+failed global-control topology, measurements and remaining extraction limits.
 
 The replica core sits above and to the right of the data core, with separate
 candidate and bitline escapes to the shared peripheral bank. Both arrays are

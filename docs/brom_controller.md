@@ -60,6 +60,12 @@ The sequence is:
 5. EVAL falls. PRECHN remains high until CANDIDATE_BUSY falls, then precharge
    resumes and the address latches reopen.
 
+In self-timed macros, SAMPLE is a command to local receivers. Each data latch
+and the replica latch has separate enable/complement controls; SAMPLE_CLOSED
+waits for all receiver closure indications. The Boolean controller equations
+are unchanged. See [SAMPLE closure](brom_sample_closure.md) for the circuit and
+receiving-gate timing checks.
+
 RESETN cancels a request through the same shutdown sequence; it does not clear
 Q, force precharge on top of an active read, or bypass stuck feedback. If reset
 arrives after sampling has already occurred, Q may hold that newly sampled word.

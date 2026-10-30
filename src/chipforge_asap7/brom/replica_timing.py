@@ -36,6 +36,7 @@ def render_replica_bench(
     sized_controls=False,
     wire_rc_controls=False,
     startup_ramp_ps=0,
+    compact_layout=False,
 ):
     if (
         not math.isfinite(startup_ramp_ps)
@@ -43,6 +44,10 @@ def render_replica_bench(
     ):
         raise ValueError("startup ramp must finish before the first address stimulus")
     c = self_timed_macro_circuit(spec, words, replica=replica)
+    if compact_layout:
+        from .compact import compact_periphery
+
+        compact_periphery(c)
     if sized_controls and wire_rc_controls:
         raise ValueError("choose gate sizing or wire-RC sizing, not both")
     if wire_rc_controls:
@@ -71,6 +76,16 @@ def render_replica_bench(
         "CANDIDATE_BUSY",
         "RVALID",
     ]
+    if c.sample_distribution:
+        for i, bank in enumerate(c.sample_distribution["banks"]):
+            for label, key in (
+                ("SAMPLE_RX", "enable"),
+                ("SAMPLEB_RX", "complement"),
+                ("SAMPLE_CLOSED_RX", "closed"),
+            ):
+                alias = f"{label}<{i}>"
+                aliases[alias] = bank[key]
+                signals.append(alias)
     signals += [f"C<{b},{k}>" for b in range(spec.blocks) for k in range(16)]
     signals += [f"BL<{i}>" for i in range(spec.columns)]
     signals += [f"DATA<{i}>" for i in range(spec.bits)] + [
@@ -136,6 +151,10 @@ def render_replica_bench(
             routes = routed_control_rc(c)
             for net in c.output_register["clock_nets"]:
                 rc_nets[net] = routes[net]
+        if c.sample_distribution:
+            routes = routed_control_rc(c)
+            for net in c.sample_distribution["wire_nets"]:
+                rc_nets[net] = routes[net]
     for i, (net, edges) in enumerate(changes.items()):
         old = initial[net]
         pts = (
@@ -199,6 +218,20 @@ def render_replica_bench(
             ("REG_SB", False),
         ):
             lines.append(f".nodeset V({nodes[net]})={conditions.vdd if high else 0:g}")
+    if c.sample_distribution:
+        from .dc_initialization import idle_logic_state
+
+        guesses = idle_logic_state(c, spec.address_bits)
+        # At a ramped supply's DC point every source is zero. Otherwise seed
+        # a consistent powered idle state, including RC driver/sink copies.
+        voltage = 0 if startup_ramp_ps else conditions.vdd
+        lines = [line for line in lines if not line.startswith(".nodeset")]
+        for net, value in guesses.items():
+            if net in ("VDD", "VSS"):
+                continue
+            lines.append(f".nodeset V({nodes[net]})={value * voltage:g}")
+            if net in rc_nets:
+                lines.append(f".nodeset V(rcdrv_{nodes[net]})={value * voltage:g}")
     vectors = [f"v({nodes[aliases.get(net, net)]})" for net in signals]
     if "CLK" in rc_nets:
         # Measure latency from the macro pin, and retain the receiving clock.
@@ -242,6 +275,16 @@ def crossing(time, values, start, end, threshold, rising):
 
 
 def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
+    if "SAMPLE_RX<0>" in traces:
+        # Conservative envelope of all actual receiving TG controls, including
+        # the dummy replica latch. Never substitute the unloaded command net.
+        traces = dict(traces)
+        traces["SAMPLE"] = np.maximum.reduce(
+            [traces[f"SAMPLE_RX<{i}>"] for i in range(spec.bits + 1)]
+        )
+        traces["SAMPLEB"] = np.minimum.reduce(
+            [traces[f"SAMPLEB_RX<{i}>"] for i in range(spec.bits + 1)]
+        )
     if spec.registered_output:
         from dataclasses import replace
 
@@ -313,6 +356,15 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
             failures.append(f"address {address}: incomplete return to precharge")
             continue
         closure = max(s_off, sb_on)
+        ack = (
+            crossing(t, traces["SAMPLE_CLOSED"], base + 750, end, 0.9 * vdd, True)
+            if "SAMPLE_CLOSED" in traces
+            else None
+        )
+        if "SAMPLE_CLOSED" in traces and (ack is None or ack < closure):
+            failures.append(
+                f"address {address}: SAMPLE_CLOSED precedes receiving latch closure"
+            )
         candidate_delay = settling_delay(t, candidates, base + 750, p_on, False, vdd)
         close_margin = e_off - closure
         if close_margin < 0:
@@ -350,6 +402,7 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
                 if len(read_margins) == spec.bits
                 else None,
                 "closure_margin_ps": close_margin,
+                "sample_closed_margin_ps": None if ack is None else ack - closure,
                 "candidate_off_margin_ps": None
                 if candidate_delay is None
                 else p_on - (base + 750 + candidate_delay),
@@ -371,12 +424,21 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
                 "candidate_off_margin_ps",
             )
         }
+    if (
+        not failures
+        and records
+        and all(r["sample_closed_margin_ps"] is not None for r in records)
+    ):
+        margins["sample_closed_margin_ps"] = min(
+            r["sample_closed_margin_ps"] for r in records
+        )
     for record in records:
         for key in (
             "sample_ps",
             "read_margin_ps",
             "closure_margin_ps",
             "candidate_off_margin_ps",
+            "sample_closed_margin_ps",
         ):
             if record[key] is not None:
                 record[key] *= phase_scale
@@ -402,7 +464,11 @@ def characterize_replica(
     sized_controls=False,
     wire_rc_controls=False,
     startup_ramp_ps=0,
+    compact_layout=False,
+    timeout_s=600,
 ):
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("timeout must be finite and positive")
     conditions = conditions or TimingConditions(step_ps=0.5)
     replica = replica or ReplicaSpec()
     words = pattern_words(spec) if words is None else words
@@ -410,6 +476,8 @@ def characterize_replica(
     out.mkdir(parents=True, exist_ok=True)
     report = {
         "status": "running",
+        "timeout_s": timeout_s,
+        "dc_initialization": "logic-derived idle NODESET guesses; no transient forcing",
         "passed": False,
         "timing_qualified": False,
         "scope": (
@@ -417,6 +485,7 @@ def characterize_replica(
             if wire_rc_controls
             else "internally generated acknowledgments, ideal wires"
         ),
+        "compact_periphery": compact_layout,
         "wire_rc_controls": wire_rc_controls,
         "sized_controls": sized_controls,
         "linear_solver": "KLU" if klu else "SPARSE",
@@ -438,6 +507,10 @@ def characterize_replica(
             )
         )
         physical = self_timed_macro_circuit(spec, words, replica=replica)
+        if compact_layout:
+            from .compact import compact_periphery
+
+            compact_periphery(physical)
         if sized_controls:
             size_control_distribution(physical)
         if wire_rc_controls:
@@ -450,6 +523,13 @@ def characterize_replica(
                 distribution_path.read_bytes()
             ).hexdigest()
             report["extracted"] = False
+            report["sample_distribution"] = physical.sample_distribution
+            if physical.sample_distribution:
+                routes = routed_control_rc(physical)
+                report["sample_control_rc"] = {
+                    net: routes[net]
+                    for net in physical.sample_distribution["wire_nets"]
+                }
             report["register_clock_rc_included"] = spec.registered_output
             if spec.registered_output:
                 routes = routed_control_rc(physical)
@@ -470,10 +550,11 @@ def characterize_replica(
             sized_controls=sized_controls,
             wire_rc_controls=wire_rc_controls,
             startup_ramp_ps=startup_ramp_ps,
+            compact_layout=compact_layout,
         )
         spice = out / "replica.sp"
         spice.write_text(deck)
-        _run_ngspice(spice, "ngspice", [out / "waveform.dat"])
+        _run_ngspice(spice, "ngspice", [out / "waveform.dat"], timeout_s=timeout_s)
         values = np.loadtxt(out / "waveform.dat", skiprows=1)
         if (
             values.ndim != 2
@@ -535,6 +616,7 @@ def main():
     p.add_argument(
         "--klu", action="store_true", help="Use KLU (requires a KLU-enabled ngspice)"
     )
+    p.add_argument("--compact-periphery", action="store_true")
     sizing = p.add_mutually_exclusive_group()
     sizing.add_argument("--sized-controls", action="store_true")
     sizing.add_argument("--wire-rc-controls", action="store_true")
@@ -551,6 +633,7 @@ def main():
     p.add_argument("--output-load-ff", type=float, default=1)
     p.add_argument("--slew-ps", type=float, default=5)
     p.add_argument("--startup-ramp-ps", type=float, default=0)
+    p.add_argument("--timeout-s", type=float, default=600)
     args = p.parse_args()
     if args.model_card is None:
         p.error("model card required")
@@ -572,6 +655,8 @@ def main():
         sized_controls=args.sized_controls,
         wire_rc_controls=args.wire_rc_controls,
         startup_ramp_ps=args.startup_ramp_ps,
+        timeout_s=args.timeout_s,
+        compact_layout=args.compact_periphery,
         conditions=TimingConditions(
             vdd=args.vdd,
             temperature_c=args.temperature_c,

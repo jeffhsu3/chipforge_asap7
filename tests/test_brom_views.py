@@ -142,6 +142,8 @@ def drive(c, mode, spec, steps, seed, watched):
     for record in (c.distribution or {}).get("nets", ()):
         if record["net"] in ("PRECHN", "SAMPLE"):
             ideal += (record["receiver_net"],)
+    if c.sample_distribution:
+        ideal += tuple(bank["enable"] for bank in c.sample_distribution["banks"])
     state, vectors, expected = {}, [], []
 
     def step(vector):
