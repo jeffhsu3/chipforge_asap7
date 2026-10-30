@@ -147,6 +147,10 @@ pex = [
 plot = [
     { name = "matplotlib" },
 ]
+timing = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -161,9 +165,10 @@ requires-dist = [
     { name = "gdspy", marker = "extra == 'gds'", specifier = ">=1.6.13" },
     { name = "klayout-pex", marker = "python_full_version >= '3.12' and extra == 'pex'", specifier = ">=0.3.12,<0.4" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.7" },
+    { name = "numpy", marker = "extra == 'timing'", specifier = ">=1.24" },
     { name = "tyro", marker = "extra == 'gds'", specifier = ">=1.0" },
 ]
-provides-extras = ["gds", "pex", "plot"]
+provides-extras = ["gds", "pex", "plot", "timing"]
 
 [package.metadata.requires-dev]
 dev = [
