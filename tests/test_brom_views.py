@@ -23,8 +23,6 @@ from chipforge_asap7.brom import (
     size_control_distribution,
     size_wire_rc_distribution,
 )
-from chipforge_asap7.brom.layout import macro_periphery, macro_plan
-from chipforge_asap7.brom.periphery import bus_positions
 from chipforge_asap7.brom.views import macro_lef, macro_verilog
 
 SHAPES = {
@@ -54,7 +52,7 @@ def lef_pins(text):
     return pins
 
 
-def test_lef_pins_reach_the_left_edge_under_their_labels():
+def test_lef_pins_reach_the_bottom_edge_under_their_labels():
     # The clocked macro has the most pins: address, Q, CLK, RESETN and the
     # four acknowledgments.
     spec = BromSpec(12, 3)
@@ -66,8 +64,9 @@ def test_lef_pins_reach_the_left_edge_under_their_labels():
     assert (float(size[1]), float(size[2])) == ((x1 - x0) / 1000, (y1 - y0) / 1000)
     pins = lef_pins(text)
     assert set(pins) == set(c.pins)
-    buses = bus_positions(macro_periphery(c))
-    bank_y = macro_plan(c).bank_y
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
+    ports = dense_macro_layout(c)[1]["ports"]
     for pin in c.pins:
         direction, rects = pins[pin]
         assert direction == (
@@ -77,9 +76,11 @@ def test_lef_pins_reach_the_left_edge_under_their_labels():
             if pin[1:] == "SS" or pin == "VDD"
             else "INPUT"
         )
-        lx, ly = 24 - x0, bank_y + buses[pin] - y0
+        metal, lx, ly = ports[pin][0], ports[pin][1] - x0, ports[pin][2] - y0
+        assert metal == "M5"
         assert any(r[0] <= lx <= r[2] and r[1] <= ly <= r[3] for r in rects)
-        assert any(r[0] == 0 for r in rects), f"{pin} does not reach the edge"
+        # Each pin is an M5 column reaching the bottom edge under its cell.
+        assert any(r[1] == 0 for r in rects), f"{pin} does not reach the bottom"
     # No pin shape is also reported as an obstruction.
     obs = text[text.index("  OBS") :]
     for _, rects in pins.values():
@@ -103,7 +104,7 @@ def test_klayout_reads_the_lef(tmp_path):
     (x0, y0), (x1, y1) = top.get_bounding_box()
     assert (cell.bbox().width(), cell.bbox().height()) == (x1 - x0, y1 - y0)
     layers = {layout.get_info(i).name for i in layout.layer_indexes()}
-    assert {"M4.PIN", "M1.OBS", "M4.OBS", "M5.OBS"} <= layers
+    assert {"M5.PIN", "M1.OBS", "M4.OBS", "M5.OBS"} <= layers
 
 
 def test_verilog_rejects_other_words():
@@ -142,6 +143,8 @@ def drive(c, mode, spec, steps, seed, watched):
     for record in (c.distribution or {}).get("nets", ()):
         if record["net"] in ("PRECHN", "SAMPLE"):
             ideal += (record["receiver_net"],)
+    if c.sample_distribution:
+        ideal += tuple(bank["enable"] for bank in c.sample_distribution["banks"])
     state, vectors, expected = {}, [], []
 
     def step(vector):
@@ -194,7 +197,9 @@ def drive(c, mode, spec, steps, seed, watched):
         ("phases", BromSpec(32, 2, ways=4), None),
         # Sizing adds noninverting buffer chains; the model must not change.
         ("phases", BromSpec(64, 4), "sized"),
-        ("clocked", BromSpec(32, 4, ways=4), "wire_rc"),
+        pytest.param(
+            "clocked", BromSpec(32, 4, ways=4), "wire_rc", marks=pytest.mark.slow
+        ),
         # The rising-edge output register sits between the sampling latches
         # and Q. A keeper is left out: the switch model cannot settle its
         # deliberate fight with the selectors.

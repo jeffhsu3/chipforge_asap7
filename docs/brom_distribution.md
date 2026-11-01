@@ -1,5 +1,9 @@
 # Sized BROM control distribution
 
+> Existing numerical results below predate the dense CMOS layout. Regenerate
+> timing reports for the current circuit and physical fingerprints; these
+> historical margins do not qualify the new layout.
+
 `--sized-controls` inserts load-sized, noninverting tapered buffer chains after
 macro construction, including any controller and replica. It works with the
 external-phase, `--clocked` and `--self-timed` interfaces. The option is

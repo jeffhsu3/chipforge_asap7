@@ -113,7 +113,7 @@ with:
 
 ```bash
 uv sync --all-extras   # dev group + the gds extra
-uv run pytest
+uv run pytest           # add --runslow for the sizing searches and the 1024x16 shape
 uv run ruff check src tests && uv run ruff format src tests
 uv build               # wheel + sdist into dist/
 ```

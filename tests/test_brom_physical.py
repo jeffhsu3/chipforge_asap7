@@ -67,7 +67,13 @@ CELLS = {
 }
 
 
-@pytest.mark.parametrize("name", CELLS)
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(name, marks=pytest.mark.slow) if "wirerc" in name else name
+        for name in CELLS
+    ],
+)
 def test_drc_and_lvs(name, tmp_path, asap7_drc, require_klayout):
     from chipforge_asap7.verification.lvs import run_lvs
     from chipforge_asap7.verification.lvs_report import summarize_lvsdb
@@ -78,12 +84,14 @@ def test_drc_and_lvs(name, tmp_path, asap7_drc, require_klayout):
     lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     top = (build_macro if c.array is not None else build_periphery)(c, lib=lib)
     if c.replica is not None:
-        assert len(top.references) == 3  # data array, replica array, periphery
+        assert len(top.references) >= 4  # dense bank, central lanes and selector halves
     assert asap7_drc(lib, top, tag=top.name) == []
     gds, ref = tmp_path / "dut.gds", tmp_path / "dut.spice"
     lib.write_gds(str(gds))
     ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
+    result = run_lvs(
+        gds, ref, tmp_path / "lvs", cell_name=top.name, merge_fin_diffusion=True
+    )
     assert result.matched, result.log.read_text()
     assert not any(
         r["renamed_pins"] for r in summarize_lvsdb(result.report)["circuits"]

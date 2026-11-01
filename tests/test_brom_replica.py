@@ -12,7 +12,6 @@ from chipforge_asap7.brom import (
 from chipforge_asap7.brom.layout import (
     macro_periphery,
     macro_plan,
-    selector_placements,
     verify_macro_routes,
 )
 
@@ -43,10 +42,8 @@ def test_replica_loads_and_public_interface(ways, depth):
     assert {d.name for d in macro_periphery(c).devices}.isdisjoint(
         replica.selector.device_names | c.array.device_names
     )
-    placements = list(selector_placements(c))
-    assert len(placements) == 2
-    assert placements[1][2] > spec.columns * 108 + 108
-    assert placements[1][3] > spec.blocks * 432 + 108
+    plan = macro_plan(c)
+    assert plan["arrays"] and plan["array_y_nm"] > 0
 
 
 @pytest.mark.parametrize(
@@ -67,10 +64,14 @@ def test_disconnected_replica_bitline_is_rejected():
     from chipforge_asap7.layout.layers import LAYERS
 
     c = self_timed_macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
-    top = build_macro(c)
-    plan = macro_plan(c)
-    i = next(i for i, p in enumerate(plan.ports) if p.net == "RBL<0>")
-    x, y = plan.trunk_x[i], plan.route_y[i]
+    # The bank is a subcell; flatten so its vias can be removed here.
+    top = build_macro(c).flatten()
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
+    _, plan = dense_macro_layout(c)
+    _, _, (x, y), _ = next(
+        r for r in plan["routes"] if r[0] == "RBL<0>" and r[1] == "V4"
+    )
     count = []
 
     def remove(points, layer, datatype):
@@ -86,7 +87,7 @@ def test_disconnected_replica_bitline_is_rejected():
 
     top.remove_polygons(remove)
     assert len(count) == 1
-    with pytest.raises(ValueError, match="disconnected macro route"):
+    with pytest.raises(ValueError, match="disconnected dense route"):
         verify_macro_routes(c, top)
 
 
@@ -121,6 +122,7 @@ def synthetic_replica_waveform():
         "Q[0]",
     ]
     names += [f"C<0,{k}>" for k in range(16)]
+    names += [f"LC<0,{k}>" for k in range(16)]
     traces = {n: np.zeros_like(t) for n in names}
     traces["SAMPLEB"][:] = 1
     traces["BL<0>"][:] = 1
@@ -133,6 +135,7 @@ def synthetic_replica_waveform():
             ("SAMPLE", 450, 790),
             ("CANDIDATE_BUSY", 290, 900),
             ("C<0,15>", 300, 850),
+            ("LC<0,15>", 300, 850),
         ]:
             traces[net][(t >= base + lo) & (t < base + hi)] = 1
         traces["SAMPLEB"][(t >= base + 460) & (t < base + 810)] = 0
@@ -161,6 +164,8 @@ def test_replica_checker_accepts_valid_sequence():
         ("Q[0]", 4700, 0),
         ("SAMPLEB", 950, 0),
         ("SAMPLE", 4500, 1),
+        ("C<0,15>", 950, 1),
+        ("LC<0,15>", 950, 1),
     ],
 )
 def test_replica_checker_rejects_races_and_bad_reads(net, index, value):
@@ -191,6 +196,7 @@ def test_bench_never_drives_feedback_inputs(tmp_path, sized_controls):
     sources = [line for line in deck.splitlines() if line.startswith("Vstim")]
     assert len(sources) == spec.address_bits + 2
     assert "READ_READY" in signals and "CANDIDATE_BUSY" in signals
+    assert "C<0,0>" in signals and "LC<0,0>" in signals
     assert not any(line.startswith("B") for line in deck.splitlines())
 
 

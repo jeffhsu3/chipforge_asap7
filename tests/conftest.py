@@ -58,6 +58,26 @@ def _restore_gdspy_current_library():
         gdspy.current_library = saved
 
 
+def pytest_addoption(parser) -> None:
+    parser.addoption(
+        "--runslow",
+        action="store_true",
+        default=False,
+        help="run tests marked slow: wire-RC sizing searches, the 1024x16 "
+        "shape and the longest switch-level simulation",
+    )
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    """Skip ``slow`` tests unless ``--runslow``; they take most of a full run."""
+    if config.getoption("--runslow"):
+        return
+    skip = pytest.mark.skip(reason="slow; run with --runslow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture
 def external_tool() -> Callable[[bool, str], None]:
     """Skip on a missing external tool, or fail under `ASAP7_REQUIRE_TOOLS=1`."""
