@@ -87,6 +87,8 @@ def render_replica_bench(
                 aliases[alias] = bank[key]
                 signals.append(alias)
     signals += [f"C<{b},{k}>" for b in range(spec.blocks) for k in range(16)]
+    if getattr(c, "dense_left_columns", 0):
+        signals += [f"LC<{b},{k}>" for b in range(spec.blocks) for k in range(16)]
     signals += [f"BL<{i}>" for i in range(spec.columns)]
     signals += [f"DATA<{i}>" for i in range(spec.bits)] + [
         f"Q[{i}]" for i in range(spec.bits)
@@ -313,6 +315,12 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
     t = time * 1e12 / phase_scale
     candidates = np.maximum.reduce(
         [traces[f"C<{b},{k}>"] for b in range(spec.blocks) for k in range(16)]
+        + [
+            traces[f"LC<{b},{k}>"]
+            for b in range(spec.blocks)
+            for k in range(16)
+            if spec.bits > 1 or f"LC<{b},{k}>" in traces
+        ]
     )
     active = t > 150
     if np.any(active & (traces["PRECHN"] < 0.8 * vdd) & (candidates > 0.2 * vdd)):

@@ -269,10 +269,6 @@ def build_dense_macro(c, spec=None):
             dx = lane0.array_x + 108 * col + 81
             x = origin - dx if mirror else origin + dx
             anchors[f"BL<{lo + col}>"] = (x - 24, x + 24, None)
-    if c.replica:
-        for col in range(spec.columns):
-            x = replica_origin + 108 * col + 81
-            anchors[f"RBL<{col}>"] = (x - 24, x + 24, None)
     for block in range(spec.blocks):
         sx = ceil_grid(center, 48) + 12 + 48 * block
         anchors[f"SEL<{block}>"] = (sx, sx, None)
@@ -292,6 +288,15 @@ def build_dense_macro(c, spec=None):
         lo = (min(ends) - 24) // 48 * 48 + 24 if len(ends) > 1 else 12
         anchors[f"G<{k}>"] = (lo, ceil_grid(max(ends) + 24, 48) - 24, layer)
 
+    def anchor_windows(bank_width):
+        windows = dict(anchors)
+        if c.replica and bank_width <= bank_footprint:
+            ox = replica_x(bank_width)
+            for col in range(spec.columns):
+                x = ox + 108 * col + 81
+                windows[f"RBL<{col}>"] = (x - 24, x + 24, None)
+        return windows
+
     bank = build_dense_bank(
         bank_c,
         width=bank_footprint,
@@ -299,7 +304,7 @@ def build_dense_macro(c, spec=None):
         header_spans=header_spans,
         external=c.pins,
         cost=array_base,
-        anchors=anchors,
+        anchors=anchor_windows,
         bottom=c.pins,
         blocked=blocked,
     )

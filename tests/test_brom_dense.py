@@ -218,3 +218,18 @@ def test_registered_bank_rows_abut_and_share_power_rails():
         assert component("M1", 24, y) == component(*plan["ports"][net])
     lo, hi = top.get_bounding_box()
     assert (hi[0] - lo[0]) * (hi[1] - lo[1]) / 1e6 < 90
+
+
+def test_widened_fallback_bank_with_replica_routes_cleanly(monkeypatch):
+    import chipforge_asap7.brom.dense_bank as db
+
+    monkeypatch.setattr(db, "_anchored", lambda *args, **kwargs: None)
+    orig_pack = db._pack
+    monkeypatch.setattr(
+        db, "_pack", lambda units, width, fill: orig_pack(units, width + 4320, 1.0)
+    )
+    c = self_timed_macro_circuit(
+        BromSpec(4, 4, registered_output=True), [10, 12, 0, 0]
+    )
+    top, plan = dense_macro_layout(c)
+    verify_dense_routes(top, plan["checkpoints"])

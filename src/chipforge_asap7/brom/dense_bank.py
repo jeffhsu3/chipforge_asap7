@@ -144,7 +144,7 @@ def _anchored(
     """
     usable = width - 324
     anchors = spans(width) or {}
-    windows = windows or {}
+    windows = (windows(width) if callable(windows) else windows) or {}
     total = sum(u.plan.width for u in units)
     first = max(1, -(-total // usable))
     best = None
@@ -211,7 +211,7 @@ def build_dense_bank(
     gdspy = require_gdspy()
     units = dense_units(circuit, exclude=exclude) if units is None else units
     spans = header_spans if callable(header_spans) else lambda _: header_spans
-    windows = anchors or {}
+    windows = anchors if callable(anchors) else lambda _: (anchors or {})
     bottom = set(bottom) & set(circuit.pins)
     result = None
     if header_spans is not None and pin_width:
@@ -237,6 +237,7 @@ def build_dense_bank(
                     (x + u.plan.width for row in packed for u, x in row), default=0
                 )
                 row_width = ceil_grid(occupied, 108)
+                bank_width = ceil_grid(max(pin_width, row_width + 324), 432)
                 points = _accesses(packed, row_width)
                 plan = _route_plan(
                     points,
@@ -244,8 +245,8 @@ def build_dense_bank(
                     row_width,
                     len(packed),
                     pin_width,
-                    spans(pin_width) or {},
-                    windows,
+                    spans(bank_width) or {},
+                    windows(bank_width) or {},
                     bottom,
                     blocked,
                     external,

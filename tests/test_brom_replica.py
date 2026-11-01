@@ -122,6 +122,7 @@ def synthetic_replica_waveform():
         "Q[0]",
     ]
     names += [f"C<0,{k}>" for k in range(16)]
+    names += [f"LC<0,{k}>" for k in range(16)]
     traces = {n: np.zeros_like(t) for n in names}
     traces["SAMPLEB"][:] = 1
     traces["BL<0>"][:] = 1
@@ -134,6 +135,7 @@ def synthetic_replica_waveform():
             ("SAMPLE", 450, 790),
             ("CANDIDATE_BUSY", 290, 900),
             ("C<0,15>", 300, 850),
+            ("LC<0,15>", 300, 850),
         ]:
             traces[net][(t >= base + lo) & (t < base + hi)] = 1
         traces["SAMPLEB"][(t >= base + 460) & (t < base + 810)] = 0
@@ -162,6 +164,8 @@ def test_replica_checker_accepts_valid_sequence():
         ("Q[0]", 4700, 0),
         ("SAMPLEB", 950, 0),
         ("SAMPLE", 4500, 1),
+        ("C<0,15>", 950, 1),
+        ("LC<0,15>", 950, 1),
     ],
 )
 def test_replica_checker_rejects_races_and_bad_reads(net, index, value):
@@ -192,6 +196,7 @@ def test_bench_never_drives_feedback_inputs(tmp_path, sized_controls):
     sources = [line for line in deck.splitlines() if line.startswith("Vstim")]
     assert len(sources) == spec.address_bits + 2
     assert "READ_READY" in signals and "CANDIDATE_BUSY" in signals
+    assert "C<0,0>" in signals and "LC<0,0>" in signals
     assert not any(line.startswith("B") for line in deck.splitlines())
 
 

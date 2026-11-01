@@ -139,7 +139,7 @@ def size_wire_rc_distribution(c, model=None):
         for n in raw
         if n in gate_sized
         or n in ("PRECHN", "EVAL", "SAMPLE")
-        or n.startswith(("C<", "RC<", "SEL<", "G<", "BLOCK<", "CSEL<"))
+        or n.startswith(("C<", "LC<", "RC<", "SEL<", "G<", "BLOCK<", "CSEL<"))
     }
 
     def wire_load(net, rc):

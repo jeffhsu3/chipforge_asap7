@@ -7,6 +7,7 @@ import pytest
 from chipforge_asap7.brom import (
     BromSpec,
     WireRCSpec,
+    macro_circuit,
     routed_control_rc,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -144,3 +145,12 @@ def test_scaled_checker_keeps_physical_margin_units():
     assert b["passed"]
     for key, value in a["minimum_margins_ps"].items():
         assert b["minimum_margins_ps"][key] == pytest.approx(value * 10)
+
+
+def test_left_and_right_candidates_enter_wire_rc_optimization():
+    c = macro_circuit(BromSpec(4, 4), [0, 15, 0, 15])
+    size_wire_rc_distribution(c, WireRCSpec(wire_cap_ff_per_um=2.0, max_rounds=1))
+    objective = set(c.distribution["objective_nets"])
+    right = {n.removeprefix("C<") for n in objective if n.startswith("C<")}
+    left = {n.removeprefix("LC<") for n in objective if n.startswith("LC<")}
+    assert right and right == left
