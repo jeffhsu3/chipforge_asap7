@@ -1,5 +1,10 @@
 # CP-SAT peripheral routing compaction
 
+> Historical channel-layout report. This implementation has been replaced by
+> [dense shared-diffusion CMOS](brom.md#physical-implementation-and-migration).
+> Its areas and timing identities describe the previous compiler. The current
+> `--compact-periphery` option is a deprecated no-op.
+
 `--compact-periphery` reduces the area of the CGEN, decoder, output leaf,
 controller, output register and integrated BROM peripheral bank. It applies
 the GT2N library's constrained-routing approach to ASAP7 geometry. It preserves

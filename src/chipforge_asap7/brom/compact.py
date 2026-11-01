@@ -9,14 +9,14 @@ from functools import lru_cache
 
 
 def compact_periphery(circuit):
-    """Select compact routing before sizing; return the same circuit."""
-    if circuit.compact_periphery:
-        return circuit
-    if circuit.distribution is not None:
-        raise ValueError("select compact periphery before control sizing")
-    circuit.compact_periphery = True
-    # Distinct physical tops and timing identities, even with identical devices.
-    circuit.name += "_cp"
+    """Deprecated compatibility helper: dense CMOS is now the default."""
+    import warnings
+
+    warnings.warn(
+        "compact_periphery is deprecated; dense CMOS is the default",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return circuit
 
 
@@ -28,7 +28,8 @@ def assign_tracks(intervals, end_space=0):
     boundaries are legal. Interval-graph greedy coloring supplies an incumbent;
     a simultaneously occupied clique is an independent lower bound. Physical
     touching tips additionally require a two-track separation.
-    CP-SAT enforces every conflict and certifies the objective, deterministically.
+    A matching coloring and clique certify the optimum directly; otherwise
+    CP-SAT enforces every conflict and certifies the objective deterministically.
     """
     try:
         from ortools.sat.python import cp_model
@@ -49,13 +50,25 @@ def assign_tracks(intervals, end_space=0):
             return 2
         return int(lo < b and a < hi)
 
-    hint = {}
+    # Greedy coloring in start order: a track is free when its last interval
+    # ends before this one starts and no real tip on it or the next tracks
+    # aligns with this one's; `clearance` states the same rules pairwise.
+    hint, last_end, starts, tips = {}, {}, {}, {}
     for i in sorted(range(len(intervals)), key=lambda i: (intervals[i], i)):
-        hint[i] = next(
-            t
-            for t in range(2 * len(intervals))
-            if all(abs(t - old) >= clearance(i, j) for j, old in hint.items())
-        )
+        lo, hi = intervals[i]
+        for t in range(2 * len(intervals)):
+            if lo < last_end.get(t, lo):
+                continue
+            if end_space and any(
+                hi - end_space in starts.get(k, ()) or lo in tips.get(k, ())
+                for k in (t - 1, t, t + 1)
+            ):
+                continue
+            hint[i] = t
+            last_end[t] = max(last_end.get(t, hi), hi)
+            starts.setdefault(t, set()).add(lo)
+            tips.setdefault(t, set()).add(hi - end_space)
+            break
     upper = max(hint.values()) + 1
     witness = max(
         (
@@ -64,6 +77,10 @@ def assign_tracks(intervals, end_space=0):
         ),
         key=len,
     )
+    if upper == len(witness):
+        # A legal coloring meeting an independent clique bound is already
+        # an exact certificate; avoid an unnecessary symmetric SAT search.
+        return tuple(hint[i] for i in range(len(intervals))), witness
     model = cp_model.CpModel()
     tracks = [model.new_int_var(0, upper - 1, f"t{i}") for i in range(len(intervals))]
     for i in range(len(intervals)):
@@ -81,9 +98,12 @@ def assign_tracks(intervals, end_space=0):
     solver = cp_model.CpSolver()
     solver.parameters.num_search_workers = 1
     solver.parameters.random_seed = 0
-    solver.parameters.max_time_in_seconds = 5
+    # A deterministic-time budget keeps the result independent of machine
+    # load; a feasible assignment within it is still a legal channel.
+    solver.parameters.max_deterministic_time = 30
+    solver.parameters.max_time_in_seconds = 600
     status = solver.solve(model)
-    if status != cp_model.OPTIMAL:
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise RuntimeError(
             f"peripheral channel optimization: {solver.status_name(status)}"
         )

@@ -41,6 +41,12 @@ def size_control_distribution(
             terminals[net].append(d)
     unit = c.n.fins + c.p.fins
     records = []
+    embedded = {}
+    if getattr(c, "dense_spec", None) is not None:
+        by_name = {d.name: d for d in c.devices}
+        for role, members in c.placement_groups:
+            if role.startswith(("cgen_", "left_cgen_")):
+                embedded[by_name[members[4]].nodes[0]] = (role, members)
     for net in sorted(gates):
         if net in ("VDD", "VSS"):
             continue
@@ -65,6 +71,45 @@ def size_control_distribution(
             continue
         strength = unit if external else sum(d.spec.total_fins for d in drivers)
         if effective_load <= spec.max_stage_effort * strength:
+            continue
+        if net in embedded:
+            # Keep the candidate's output stage in its array-height lane.
+            # Fold parallel inverter fingers into the shared-diffusion unit;
+            # never export a candidate to a remote buffer in the bottom bank.
+            role, members = embedded[net]
+            count = ceil(effective_load / (unit * spec.max_stage_effort))
+            source = drivers[0].nodes[1]
+            extra = []
+            for _ in range(count - 1):
+                start = len(c.devices)
+                c.inv(source, net)
+                extra.extend(d.name for d in c.devices[start:])
+            c.placement_groups = [
+                (r, (*ms, *extra) if r == role else ms) for r, ms in c.placement_groups
+            ]
+            records.append(
+                {
+                    "net": net,
+                    "receiver_net": net,
+                    "external_input": False,
+                    "embedded_candidate": True,
+                    "load_gate_fins": load,
+                    "wire_gate_equivalent_fins": wire_gate_fins.get(net, 0),
+                    "original_driver_fins": strength,
+                    "original_stage_effort": load / strength,
+                    "sized_source_effort": count,
+                    "stages": [
+                        {
+                            "input": source,
+                            "output": net,
+                            "parallel_inverters": count,
+                            "output_load_gate_fins": load,
+                            "stage_effort": load / (count * unit),
+                            "devices": [*(d.name for d in drivers), *extra],
+                        }
+                    ],
+                }
+            )
             continue
         stages = [ceil(effective_load / (unit * spec.max_stage_effort))]
         while stages[0] * unit > spec.max_stage_effort * strength:

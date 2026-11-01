@@ -78,7 +78,7 @@ LAYERS: dict[str, dict[str, int]] = {
 #: Metal -> the ``(layer, texttype)`` its pin labels go on.
 PIN_LAYERS: dict[str, tuple[int, int]] = {
     metal: (LAYERS[f"{metal}_PIN"]["layer"], LAYERS[f"{metal}_PIN"]["datatype"])
-    for metal in ("M1", "M2", "M3", "M4")
+    for metal in ("M1", "M2", "M3", "M4", "M5")
 }
 
 _gdspy_module: ModuleType | None = None

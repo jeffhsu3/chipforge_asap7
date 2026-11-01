@@ -295,7 +295,11 @@ def extract_connectivity(
     objects.extend(("gate", p) for p in gates)
     objects.extend(("diff", p) for p in diffusions)
     for layer in (LIG, LISD, V0, M1, V1, M2, V2, M3, V3, M4, V4, M5):
-        objects.extend((layer, p) for p in layer_polygons(cell, layer))
+        polygons = layer_polygons(cell, layer)
+        if layer in (LIG, LISD, M1, M2, M3, M4, M5):
+            # Shared rails connect along abutting edges, without overlap area.
+            polygons = gdstk.boolean(polygons, [], "or", precision=1e-6)
+        objects.extend((layer, p) for p in polygons)
 
     same_layer = {"gate", "diff", LIG, LISD, M1, M2, M3, M4, M5}
     cross_layers = {

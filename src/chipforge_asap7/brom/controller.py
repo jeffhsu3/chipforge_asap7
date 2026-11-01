@@ -87,4 +87,5 @@ def clocked_macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
     add_controller(c)
     if spec.registered_output:
         add_registered_output(c, spec.bits)
+    c.dense_spec = spec
     return c

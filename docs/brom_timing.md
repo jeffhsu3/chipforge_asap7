@@ -1,5 +1,47 @@
 # BROM loaded transistor timing
 
+> Existing numerical results below predate the abutting-row routing. Regenerate
+> timing reports for the current circuit and physical fingerprints; these
+> historical margins do not qualify the new layout.
+
+## Historical dense CMOS validation before row abutment
+
+The earlier dense implementation with separated cell rows was checked on a **wire-RC-sized, registered,
+self-timed 4×4 RVT mux1** with words `[10, 12, 0, 0]`, no keeper, four replica
+guard pairs, one extra replica block, a 1 fF output load and 5 ps input slew.
+All reads, return/cancellation checks, local SAMPLE closure and both-rail
+register clock checks pass at the tested **10 ns complete stimulus schedule**.
+
+| Corner | Voltage / temperature | Maximum step | Minimum SAMPLE closure margin | Minimum register non-overlap |
+|---|---|---:|---:|---:|
+| TT | 0.70 V / 25 °C | 2 ps | 165.4 ps | 40.7 ps |
+| FF | 0.77 V / −40 °C | 0.5 ps | 110.8 ps | 26.7 ps |
+| SS | 0.63 V / 125 °C | 2 ps | 254.6 ps | 60.7 ps |
+
+The matching sized macro occupies **20.208 × 8.826 µm (178.356 µm²)** and
+passes full DRC and transistor LVS. `build/brom_dense/compiled_rc/manifest.json`
+attaches the TT estimate using matching circuit and physical fingerprints.
+The individual reports and `summary.json` are under `build/brom_dense/timing`.
+The current abutting-row implementation and the unsized example in `brom.md`
+have different physical identities; these timing numbers must not be attached
+to either. Fresh timing sweeps are required for the new routing.
+
+The 1 ns TT/FF schedules fail return-to-precharge and capture checks. Those
+failures do not isolate a path or establish a minimum period: address events
+scale with the schedule too. The first fine-step 10 ns TT/FF runs timed out;
+the FF 2 ps retry aborted numerically before the first request. Those errors
+are not timing bounds. FF completed successfully at 0.5 ps resolution with a
+longer simulator timeout. Checker thresholds and circuit guards were unchanged.
+
+This is one image containing four selector patterns, not all sixteen or a
+worst-case image search. The M1–M6 control-wire model is a conservative lumped
+resistance bound with assumed capacitance, not extracted RC or receiver-skew
+qualification. Address setup/hold, independent high/low limits, data/bitline
+wire RC and broader image/shape corners remain unqualified. No maximum clock
+frequency or Liberty timing claim is made; `timing_qualified` stays `false`.
+
+## Historical ideal-wire characterization
+
 The BROM compiler has a repeatable ngspice/BSIM-CMG 107 transient bench:
 `python -m chipforge_asap7.brom.timing` (installed as `asap7-brom-timing`).
 It simulates every transistor in the generated circuit, including the grounded

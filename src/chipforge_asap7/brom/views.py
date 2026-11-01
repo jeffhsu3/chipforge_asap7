@@ -17,8 +17,6 @@ from typing import Any
 
 from ..layout.layers import LAYERS
 from .compiler import BromSpec, selector_map
-from .layout import macro_periphery, macro_plan
-from .periphery import bus_positions
 
 __all__ = ["macro_lef", "macro_verilog"]
 
@@ -26,7 +24,7 @@ _BUS = re.compile(r"^(\w+)\[(\d+)\]$")
 #: Layers the router must treat as fully blocked over the macro.
 COVERED = ("M1", "M2", "M3")
 #: Layers whose drawn shapes are emitted exactly, so pins on M4 stay reachable.
-EXACT = ("M4", "M5")
+EXACT = ("M4", "M5", "M6")
 
 
 def _direction(pin: str) -> tuple[str, str]:
@@ -59,14 +57,16 @@ def macro_lef(circuit: Any, top: Any) -> str:
     """LEF 5.8 abstract of `top`, the cell `build_macro(circuit)` returned.
 
     Coordinates move so the boundary's lower-left corner is the LEF origin;
-    ``FOREIGN`` gives where the GDS origin then sits. Each pin is the M4 bus
-    under its label. M1-M3 are blocked over the whole footprint, M4 and M5
+    ``FOREIGN`` gives where the GDS origin then sits. Each pin is the metal
+    shape under its label: an M5 column reaching the bottom edge, or an M4
+    bar reaching a side. M1-M3 are blocked over the whole footprint, M4-M6
     only where they are drawn.
     """
     (x0, y0), (x1, y1) = top.get_bounding_box()
-    plan = macro_plan(circuit)
-    buses = bus_positions(macro_periphery(circuit))
-    labels = {pin: (24, plan.bank_y + buses[pin]) for pin in circuit.pins}
+    from .dense_macro import dense_macro_layout
+
+    _, plan = dense_macro_layout(circuit)
+    labels = {pin: point for pin, point in plan["ports"].items()}
 
     def rect(r):
         return (
@@ -74,21 +74,21 @@ def macro_lef(circuit: Any, top: Any) -> str:
             f"{_um(r[2] - x0)} {_um(r[3] - y0)} ;"
         )
 
-    m4 = _rects(top, "M4")
+    drawn = {layer: _rects(top, layer) for layer in EXACT}
     pins, pin_shapes = [], set()
     for pin in circuit.pins:
-        px, py = labels[pin]
-        shapes = [r for r in m4 if r[0] <= px <= r[2] and r[1] <= py <= r[3]]
+        metal, px, py = labels[pin]
+        shapes = [r for r in drawn[metal] if r[0] <= px <= r[2] and r[1] <= py <= r[3]]
         if not shapes:
-            raise ValueError(f"no M4 under pin label {pin}")
-        pin_shapes.update(shapes)
+            raise ValueError(f"no {metal} under pin label {pin}")
+        pin_shapes.update((metal, r) for r in shapes)
         direction, use = _direction(pin)
         pins += [
             f"  PIN {pin}",
             f"    DIRECTION {direction} ;",
             f"    USE {use} ;",
             "    PORT",
-            "      LAYER M4 ;",
+            f"      LAYER {metal} ;",
             *(rect(r) for r in shapes),
             "    END",
             f"  END {pin}",
@@ -98,7 +98,7 @@ def macro_lef(circuit: Any, top: Any) -> str:
     for layer in COVERED:
         obs += [f"    LAYER {layer} ;", rect(box)]
     for layer in EXACT:
-        shapes = [r for r in _rects(top, layer) if r not in pin_shapes]
+        shapes = [r for r in drawn[layer] if (layer, r) not in pin_shapes]
         if shapes:
             obs += [f"    LAYER {layer} ;", *(rect(r) for r in shapes)]
     obs.append("  END")

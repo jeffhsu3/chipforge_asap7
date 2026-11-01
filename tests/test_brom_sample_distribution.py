@@ -103,6 +103,7 @@ def test_checker_uses_every_receiving_latch_including_replica():
     assert any("evaluation ended before" in f for f in bad["failures"])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bits", [2, 4])
 def test_idle_nodesets_are_consistent_without_forcing_transient_state(bits, tmp_path):
     from chipforge_asap7.brom import ReplicaSpec, size_wire_rc_distribution

@@ -539,6 +539,9 @@ def characterize_replica(
         report["circuit_sha256"] = hashlib.sha256(
             physical.netlist().encode()
         ).hexdigest()
+        from .dense_macro import dense_macro_layout
+
+        report["physical_sha256"] = dense_macro_layout(physical)[1]["physical_sha256"]
         deck, signals = render_replica_bench(
             spec,
             words,

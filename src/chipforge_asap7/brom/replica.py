@@ -89,18 +89,9 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
         c.group_since(f"replica_readout_{col}", start)
     data = f"RDOUT<{spec.columns - 1}>"
     if spec.ways == 4:
-        terms = []
-        for way in range(4):
-            term = c.node()
-            gate(
-                "and2", data if way == 0 else "VSS", "VDD" if way == 0 else "VSS", term
-            )
-            terms.append(term)
-        data = terms[0]
-        for term in terms[1:]:
-            out = c.node()
-            gate("or2", data, term, out)
-            data = out
+        muxed = c.node()
+        c.mux4([data, "VSS", "VSS", "VSS"], ["VDD", "VSS", "VSS", "VSS"], muxed)
+        data = muxed
     # Include a real 8T latch input load on the replicated readout/mux path.
     members = next(m for name, m in c.placement_groups if name == "output_latch_0")
     by_name = {d.name: d for d in c.devices}

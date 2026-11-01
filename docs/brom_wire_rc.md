@@ -16,41 +16,43 @@ An insufficient resource limit raises an error without changing that circuit.
 
 ## Model and provenance
 
-The estimator follows peripheral M2 terminal escapes, M3 terminal columns,
-M4 row buses, M5 distribution spines, array-to-bank escapes, candidate tracks
-and selector gate access. Lengths include the router's metal end extensions.
-The shared macro/bank landing overlap is conservatively counted twice.
+The dense estimator consumes the physical plan used by GDS and LEF. It includes
+local M1–M3 accesses, M4 pin escapes and headers, M5 bank columns, M6 bank and candidate routes,
+selector programming accesses and bitline centerlines. Collinear overlaps and
+identical vias are deduplicated. Metal end caps beyond recorded centerlines are
+not included. The bank columns' common endpoints are drawn routing, and their
+full lengths are included in the estimate.
 
-Sheet and via resistances come from `verification.stack.STACK_CONDUCTORS`.
-The M3–M5 entries are public-geometry extrapolations; their provenance appears
-in the manifest. Capacitance uses the existing explicit 0.2 fF/µm wire
-assumption. Gate load uses 0.0417 fF/fin, from the repository's TT/RVT logical
-effort model. These coefficients are configurable through `WireRCSpec` and
-are not corner-independent constants.
+Sheet and via resistances come from `verification.stack.STACK_CONDUCTORS`;
+upper-metal values include public-geometry extrapolations, recorded in the
+manifest. Capacitance uses an explicit 0.2 fF/µm assumption. Gate load uses
+0.0417 fF/fin. These configurable assumptions are not corner-independent
+characterized constants.
 
-Each net reports lengths by layer, wire and gate capacitance, summed segment
-resistance, and maximum estimated driver-to-sink path resistance. The latter
-walks terminal accesses, row buses and spines, including the candidate escape
-and array access where applicable. It chooses the nearest same-polarity driver
-copy for each sink and retains the slower of the n/p geometric paths. It does
-not assume both transistor polarities conduct simultaneously.
+Each net reports lengths by layer, wire/gate capacitance, total metal/via
+resistance and the physical-layout fingerprint. The stress model uses total
+net resistance as a conservative **upper bound** on a connected driver-to-sink
+path (`path_model: total_net_resistance_upper_bound`). It does not claim to
+extract receiver-specific skew or find a shortest path through parallel routes.
 
-This is a routed-length estimate, **not KPEX/FasterCap extraction**. It excludes
-device-local/poly resistance and capacitance, coupling, via capacitance, power
-integrity and core bitline RC. Device capacitance remains in BSIM-CMG during
-simulation. The wire estimate must eventually be correlated with the existing
-open extraction flow; even that flow uses an incomplete public ASAP7 stack.
+This is a routed-length estimate, **not KPEX/FasterCap extraction**. Poly and
+local-interconnect resistance, coupling, via capacitance and power integrity
+remain excluded. BSIM-CMG supplies intrinsic device capacitance. The transient
+stress deck applies the estimates only to selected controls, including SAMPLE
+closure and register clocks; data and bitline wire RC are not inserted into
+that deck. No timing qualification follows from a successful sizing search.
 
 ## Search and placement
 
 The gate-sized circuit is the baseline. The search evaluates relocating buffer
 stages next to the original driver and, for later stages, near the median sink
-functional group. Complete latch and logic groups stay intact; selector array
+functional group. Candidate output fingers stay inside their central CGEN
+units. Complete latch and logic groups stay intact; selector array
 geometry and programming remain unchanged.
 
 Further rounds try bounded increases on the four largest estimated wire-RC
 cost nets, considering partial and full wire-load compensation. Every candidate
-is repacked and rerouted analytically before scoring. This accounts for the
+is repacked and routed with the dense cell generator before scoring. This accounts for the
 extra metal caused by larger drivers. Blindly compensating all wire loads can
 make the bank much larger and slower under the model.
 

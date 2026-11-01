@@ -73,7 +73,11 @@ dev = [
     "ruff>=0.12",
     "gdspy>=1.6.13",
     "matplotlib>=3.7",
+    "ortools>=9.10,<10",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: builds many layouts or runs a long simulation; skipped unless --runslow",
+]

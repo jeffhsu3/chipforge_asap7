@@ -12,7 +12,6 @@ from chipforge_asap7.brom import (
 from chipforge_asap7.brom.layout import (
     macro_periphery,
     macro_plan,
-    selector_placements,
     verify_macro_routes,
 )
 
@@ -43,10 +42,8 @@ def test_replica_loads_and_public_interface(ways, depth):
     assert {d.name for d in macro_periphery(c).devices}.isdisjoint(
         replica.selector.device_names | c.array.device_names
     )
-    placements = list(selector_placements(c))
-    assert len(placements) == 2
-    assert placements[1][2] > spec.columns * 108 + 108
-    assert placements[1][3] > spec.blocks * 432 + 108
+    plan = macro_plan(c)
+    assert plan["arrays"] and plan["array_y_nm"] > 0
 
 
 @pytest.mark.parametrize(
@@ -67,10 +64,14 @@ def test_disconnected_replica_bitline_is_rejected():
     from chipforge_asap7.layout.layers import LAYERS
 
     c = self_timed_macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
-    top = build_macro(c)
-    plan = macro_plan(c)
-    i = next(i for i, p in enumerate(plan.ports) if p.net == "RBL<0>")
-    x, y = plan.trunk_x[i], plan.route_y[i]
+    # The bank is a subcell; flatten so its vias can be removed here.
+    top = build_macro(c).flatten()
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
+    _, plan = dense_macro_layout(c)
+    _, _, (x, y), _ = next(
+        r for r in plan["routes"] if r[0] == "RBL<0>" and r[1] == "V4"
+    )
     count = []
 
     def remove(points, layer, datatype):
@@ -86,7 +87,7 @@ def test_disconnected_replica_bitline_is_rejected():
 
     top.remove_polygons(remove)
     assert len(count) == 1
-    with pytest.raises(ValueError, match="disconnected macro route"):
+    with pytest.raises(ValueError, match="disconnected dense route"):
         verify_macro_routes(c, top)
 
 

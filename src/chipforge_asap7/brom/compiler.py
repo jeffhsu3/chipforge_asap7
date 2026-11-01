@@ -240,6 +240,7 @@ def output_circuit(
         name += f"_k{keeper_fins}s{keeper_stack}"
     c = Circuit(name, ("BL", "PRECHN", "DOUT", "VDD", "VSS"), fins, vt)
     add_readout(c, "BL", "DOUT", keeper_fins=keeper_fins, keeper_stack=keeper_stack)
+    c.group_since("readout_0", 0)
     return c
 
 
@@ -295,17 +296,17 @@ def macro_circuit(spec: BromSpec, words: Sequence[int]) -> Circuit:
         if spec.ways == 1:
             data = f"DOUT<{bit}>"
         else:
-            terms = []
-            for way in range(spec.ways):
-                term = c.node()
-                c.and2(f"DOUT<{bit * spec.ways + way}>", f"CSEL<{way}>", term)
-                terms.append(term)
-            data = terms[0]
-            for term in terms[1:]:
-                out = c.node()
-                c.or2(data, term, out)
-                data = out
+            data = c.node()
+            mux_start = len(c.devices)
+            c.mux4(
+                [f"DOUT<{bit * 4 + way}>" for way in range(4)],
+                [f"CSEL<{way}>" for way in range(4)],
+                data,
+            )
+            c.group_since(f"output_mux_{bit}", mux_start)
         start = len(c.devices)
         c.latch(data, f"Q[{bit}]", "SAMPLE", sampleb)
         c.group_since(f"output_latch_{bit}", start)
-    return c
+    from .dense_macro import prepare_dense_macro
+
+    return prepare_dense_macro(c, spec)
