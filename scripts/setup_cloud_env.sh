@@ -15,6 +15,8 @@
 #   FasterCap       scripts/build_fastercap.sh into build/fastercap
 #   gdscheck        jeffhsu3/gdscheck asap7 branch, the DRC engine
 #   Icarus Verilog  apt; runs the BROM Verilog-model tests
+#   KLayout 0.30.10 built from source (klayout.org is unreachable here); LVS
+#                   needs >= 0.30 for the layer names KPEX reads
 #
 # The model card and BSIM-CMG source sit beside the repository, where
 # chipforge_asap7.devices.spice finds them; gdscheck sits there too, where
@@ -29,7 +31,10 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     ngspice iverilog p7zip-full \
     libwxgtk3.2-dev libeigen3-dev cmake g++ \
-    llvm-15 llvm-15-dev libclang-15-dev clang-15 clang-tools-15 lld-15
+    llvm-15 llvm-15-dev libclang-15-dev clang-15 clang-tools-15 lld-15 \
+    build-essential qtbase5-dev qttools5-dev libqt5svg5-dev qtmultimedia5-dev \
+    libqt5xmlpatterns5-dev ruby ruby-dev python3-dev zlib1g-dev libgit2-dev \
+    libcurl4-openssl-dev
 
 # Clone `url` at `commit` into `dir`, checking out only `paths` (all if none).
 sparse_clone() {
@@ -80,6 +85,18 @@ if [[ ! -x ${home}/gdscheck/target/release/gdscheck ]]; then
 fi
 ln -sf "${home}/gdscheck/target/release/gdscheck" /usr/local/bin/gdscheck
 
+# KLayout 0.30: the LVS deck names its layers for KPEX with name(), which the
+# distribution's KLayout 0.28 lacks. Ruby runs the LVS deck and Python the
+# report macro; the Qt script bindings are left out, which halves the build.
+klayout=${src}/klayout-0.30.10
+sparse_clone https://github.com/KLayout/klayout.git "${klayout}" \
+    87060b43644e8a72ce3d209b08217ddb3aa2472b
+if [[ ! -x ${klayout}/bin-release/klayout ]]; then
+    (cd "${klayout}" && ./build.sh -ruby /usr/bin/ruby -python /usr/bin/python3.12 \
+        -without-qtbinding -option "-j$(nproc)" -prefix "${klayout}/bin-release")
+fi
+ln -sf "${klayout}/bin-release/klayout" /usr/local/bin/klayout
+
 # FasterCap, where verification.pex finds it.
 if [[ ! -x ${repo}/build/fastercap/build/FasterCap ]]; then
     (cd "${repo}" && scripts/build_fastercap.sh build/fastercap)
@@ -92,4 +109,5 @@ echo "simulation tools ready:"
 ngspice -v 2>&1 | grep -m1 ngspice
 openvaf --version
 command -v gdscheck iverilog
+klayout -v
 echo "FasterCap: ${repo}/build/fastercap/build/FasterCap"
