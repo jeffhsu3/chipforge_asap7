@@ -33,7 +33,7 @@ apt-get install -y --no-install-recommends \
     libwxgtk3.2-dev libeigen3-dev cmake g++ \
     llvm-15 llvm-15-dev libclang-15-dev clang-15 clang-tools-15 lld-15 \
     build-essential qtbase5-dev qttools5-dev libqt5svg5-dev qtmultimedia5-dev \
-    libqt5xmlpatterns5-dev ruby ruby-dev python3-dev zlib1g-dev libgit2-dev \
+    libqt5xmlpatterns5-dev ruby ruby-dev python3.13-dev zlib1g-dev libgit2-dev \
     libcurl4-openssl-dev
 
 # Clone `url` at `commit` into `dir`, checking out only `paths` (all if none).
@@ -88,14 +88,17 @@ ln -sf "${home}/gdscheck/target/release/gdscheck" /usr/local/bin/gdscheck
 # KLayout 0.30: the LVS deck names its layers for KPEX with name(), which the
 # distribution's KLayout 0.28 lacks. Ruby runs the LVS deck and Python the
 # report macro; the Qt script bindings are left out, which halves the build.
+# Built against Python 3.13: against the system 3.12 every run segfaulted
+# while starting the embedded interpreter.
 klayout=${src}/klayout-0.30.10
 sparse_clone https://github.com/KLayout/klayout.git "${klayout}" \
     87060b43644e8a72ce3d209b08217ddb3aa2472b
-if [[ ! -x ${klayout}/bin-release/klayout ]]; then
-    (cd "${klayout}" && ./build.sh -ruby /usr/bin/ruby -python /usr/bin/python3.12 \
-        -without-qtbinding -option "-j$(nproc)" -prefix "${klayout}/bin-release")
+if [[ ! -x ${klayout}/bin-py313/klayout ]]; then
+    (cd "${klayout}" && ./build.sh -ruby /usr/bin/ruby -python /usr/bin/python3.13 \
+        -without-qtbinding -option "-j$(nproc)" \
+        -build "${klayout}/build-py313" -prefix "${klayout}/bin-py313")
 fi
-ln -sf "${klayout}/bin-release/klayout" /usr/local/bin/klayout
+ln -sf "${klayout}/bin-py313/klayout" /usr/local/bin/klayout
 
 # FasterCap, where verification.pex finds it.
 if [[ ! -x ${repo}/build/fastercap/build/FasterCap ]]; then
