@@ -36,8 +36,8 @@ fi
 
 # Upstream requests wx 3.0 explicitly.  Current distributions ship 3.2; use
 # the installed ABI while retaining upstream's static/debug choices.
-wx_version=$(wx-config --version)
-sed -i "s/--version=3\.0/--version=${wx_version}/" \
+wx_version=$(wx-config --version | cut -d. -f1,2)
+sed -i -E "s/--version=[0-9.]+/--version=${wx_version}/" \
     "${source_root}/FasterCap/CMakeLists.txt"
 
 cmake -S "${source_root}/FasterCap" -B "${build_root}" \
@@ -46,5 +46,11 @@ cmake -S "${source_root}/FasterCap" -B "${build_root}" \
 cmake --build "${build_root}" --parallel
 
 solver=$(realpath "${build_root}/FasterCap")
-"${solver}" -bv
+# With no input file the solver prints its banner and exits 64 (usage), so
+# check the banner rather than the status.
+banner=$("${solver}" 2>&1 || true)
+if [[ ${banner} != *"FasterCap version"* ]]; then
+    echo "built ${solver} does not run" >&2
+    exit 1
+fi
 echo "FasterCap executable: ${solver}"
