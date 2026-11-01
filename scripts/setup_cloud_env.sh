@@ -11,6 +11,7 @@
 #                   ngspice >= 44 reads)
 #   BSIM-CMG 107    Verilog-A source, sparse checkout of Xyce
 #   ASAP7 models    sparse checkout of the PDK at the commit asap7 pins
+#   ASAP7 release   standard cells and SRAM add-on, for LVS and references
 #   FasterCap       scripts/build_fastercap.sh into build/fastercap
 #   gdscheck        jeffhsu3/gdscheck asap7 branch, the DRC engine
 #   Icarus Verilog  apt; runs the BROM Verilog-model tests
@@ -28,7 +29,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     ngspice iverilog p7zip-full \
     libwxgtk3.2-dev libeigen3-dev cmake g++ \
-    llvm-15 llvm-15-dev libclang-15-dev clang-15
+    llvm-15 llvm-15-dev libclang-15-dev clang-15 clang-tools-15 lld-15
 
 # Clone `url` at `commit` into `dir`, checking out only `paths` (all if none).
 sparse_clone() {
@@ -46,6 +47,15 @@ sparse_clone() {
 # ASAP7 BSIM-CMG model cards (asap7 pins the PDK submodule at this commit).
 sparse_clone https://github.com/The-OpenROAD-Project/asap7_pdk_r1p7.git \
     "${home}/asap7/asap7_pdk_r1p7" 58d72c9d291e186a77468586ab0c43d8a21eda6a models
+
+# The released standard cells and SRAM add-on the LVS and reference tests
+# compare against, at the commits asap7 pins. The standard cells skip their
+# multi-gigabyte CCS libraries; nothing here reads them.
+sparse_clone https://github.com/The-OpenROAD-Project/asap7sc7p5t_28.git \
+    "${home}/asap7/asap7sc7p5t_28" f970bd3c3292b79ae4d022a3ec80533534614066 \
+    CDL GDS LIB/NLDM
+sparse_clone https://github.com/The-OpenROAD-Project/asap7_sram_0p0.git \
+    "${home}/asap7/asap7_sram_0p0" 522eeccbccefcd66e61893fa1059df24d95e9f86
 
 # BSIM-CMG 107 Verilog-A.
 sparse_clone https://github.com/Xyce/Xyce.git "${home}/Xyce" \

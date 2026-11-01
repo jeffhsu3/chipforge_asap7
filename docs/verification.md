@@ -144,6 +144,48 @@ output differential reaches 80% of VDD. The default 100 mV input differential,
 CLI. Generated decks, waveforms, logs, resolution delays, peak currents, energy,
 and `results.json` are written under `build/sense_amp_spice/`.
 
+### 6T SRAM read path, clock to Q
+
+`asap7-sram6t-read` (`chipforge_asap7.devices.sram6t_read_spice`) times a 6T
+SRAM read end to end: OpenFinRAM's Table III bench from
+`scripts/characterize_read.py`, moved from Xyce to ngspice with BSIM-CMG 107
+through OSDI. One real `sram_cell_6t_122` cell per stored value (pull-down
+and pass gate two fins, pull-up one) reads onto a bitline loaded with
+0.06 fF per cell, through OpenFinRAM's precharge/column mux, the 16T sense
+amplifier above, an `io_nand` latch and the tristate output buffer. A first
+deck measures wordline-to-100 mV bitline access; SAE then fires that long
+after CLK plus an 85 ps guard. Two cycles read a 1 then a 0, giving the
+clock-to-Q cell rise and fall and the 10-90 % output transitions:
+
+```bash
+uv run asap7-sram6t-read --words 128 256 512 1024 \
+  --model-card ../asap7/asap7_pdk_r1p7/models/hspice/7nm_TT.pm
+```
+
+At the MOST report's stimulus point (0.04 ns input slew, 46.08 fF output
+load, TT, 0.7 V, 25 °C), in ns:
+
+| Words per bitline | Bitline access | Cell rise | Cell fall | Rise / fall transition | OpenFinRAM Xyce rise / fall |
+|---|---:|---:|---:|---:|---:|
+| 128 | 0.028 | 0.183 | 0.186 | 0.061 / 0.046 | — |
+| 256 | 0.054 | 0.209 | 0.211 | 0.061 / 0.046 | 0.217 / 0.221 |
+| 512 | 0.104 | 0.259 | 0.261 | 0.061 / 0.046 | 0.272 / 0.274 |
+| 1024 | 0.205 | 0.361 | 0.362 | 0.061 / 0.046 | 0.383 / 0.385 |
+
+These run 4-6 % below OpenFinRAM's Xyce transients of the same circuit
+(`reports/table3_timing_comparison.md` there), with matching transitions
+(Xyce 0.063 / 0.048 ns). The ASAP7 SRAM add-on's Cadence-characterized
+`.lib` gives 0.189 / 0.182 ns at 128 words and 0.198 / 0.191 ns at 256.
+One deliberate difference from OpenFinRAM's deck: the output latch starts
+holding 0. Left to the DC solve, ngspice settles it at 1, and the first
+"rise" then times only the buffer enable (36 ps).
+
+The column is a lumped capacitance without wire resistance or segmenting, so
+the deepest columns overstate the delay of a banked array; SAE timing is a
+fixed guard rather than a replica circuit; and it is one corner of one model
+card. The tool writes its decks, logs and `results.json` under
+`build/sram6t_read/`.
+
 ### Looking at the results
 
 Both benches take `--plot` (with the `plot` extra installed) and draw the run

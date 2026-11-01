@@ -96,10 +96,24 @@ def boxes_on() -> Callable[[object, str], list[Box]]:
     return layer_boxes
 
 
+def _asap7_release() -> Path:
+    """The public ASAP7 checkout: ``ASAP7_ROOT``, else a sibling ``asap7``.
+
+    A missing release resolves to a path that does not exist, so each test
+    skips (or fails under ``ASAP7_REQUIRE_TOOLS=1``) on its own check.
+    """
+    from chipforge_asap7.verification.reference import find_asap7_release
+
+    try:
+        return find_asap7_release()
+    except FileNotFoundError:
+        return Path(os.environ.get("ASAP7_ROOT", "asap7-release-not-found"))
+
+
 @pytest.fixture(scope="session")
 def released_library() -> Path:
     """Root of the public ASAP7 7.5-track standard-cell release, if present."""
-    return Path.home() / "iv4/repos/asap7/asap7sc7p5t_28"
+    return _asap7_release() / "asap7sc7p5t_28"
 
 
 @pytest.fixture(scope="session")
@@ -110,7 +124,7 @@ def released_sram_gds() -> Path:
     `chipforge_asap7.devices.inverter` is modelled on, and the only place the
     released collateral shows a tapless, stacked-band, shared-diffusion cell.
     """
-    return Path.home() / "iv4/repos/asap7/asap7_sram_0p0/gds/srambank_32b.gds"
+    return _asap7_release() / "asap7_sram_0p0/gds/srambank_32b.gds"
 
 
 @pytest.fixture

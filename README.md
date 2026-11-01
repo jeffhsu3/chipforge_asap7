@@ -97,7 +97,8 @@ against a unit-fin LVS reference in the tests. The full write-up of each is in
 with:
 
 - [SPICE testbenches](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/verification.md#single-device-spice-testbench) for one FinFET
-  and for OpenFinRAM's sense amplifier, on BSIM-CMG 107 through OpenVAF.
+  and for OpenFinRAM's sense amplifier, plus a 6T SRAM read path from wordline
+  to Q, on BSIM-CMG 107 through OpenVAF.
 - [Open LVS and PEX](https://github.com/jeffhsu3/chipforge_asap7/blob/main/docs/verification.md#open-lvs-and-pex): KLayout LVS, FasterCap
   capacitance and KPEX resistance, correlated against the released inverter.
   Research grade, not sign-off.
