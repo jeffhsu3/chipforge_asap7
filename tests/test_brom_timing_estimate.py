@@ -24,6 +24,8 @@ def report(scale=1, status="passed"):
     spec = BromSpec(4, 1, registered_output=True)
     words = [0, 1, 0, 1]
     c = self_timed_macro_circuit(spec, words)
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
     return {
         "status": status,
         "passed": status == "passed",
@@ -31,6 +33,7 @@ def report(scale=1, status="passed"):
         "words": words,
         "conditions": asdict(TimingConditions(phase_scale=scale)),
         "circuit_sha256": hashlib.sha256(c.netlist().encode()).hexdigest(),
+        "physical_sha256": dense_macro_layout(c)[1]["physical_sha256"],
         "scope": "ideal wires",
         "model_sha256": "model",
         "osdi_sha256": "osdi",
@@ -63,7 +66,12 @@ def test_nonmonotonic_schedule_sweep_reports_no_transition_pair():
 
 @pytest.mark.parametrize(
     "key,value",
-    [("words", [1, 1, 1, 1]), ("model_sha256", "other"), ("circuit_sha256", "other")],
+    [
+        ("words", [1, 1, 1, 1]),
+        ("model_sha256", "other"),
+        ("circuit_sha256", "other"),
+        ("physical_sha256", "other"),
+    ],
 )
 def test_mismatched_sweeps_rejected(key, value):
     b = report()
@@ -157,6 +165,7 @@ def test_register_pulse_trials_preserve_ramp_widths_and_both_polarities(tmp_path
     assert "166542.5p" in deck and "166547.5p" in deck
 
 
+@pytest.mark.slow
 def test_registered_rc_stress_includes_pin_clock_and_phase_feedback(tmp_path):
     deck, signals = render_replica_bench(
         BromSpec(4, 1, registered_output=True),

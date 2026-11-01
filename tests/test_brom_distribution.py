@@ -61,7 +61,8 @@ def test_external_phase_input_is_buffered_without_driving_pin():
 
 
 def test_all_generated_stage_loads_match_actual_netlist():
-    c = self_timed_macro_circuit(BromSpec(8, 16), [0] * 8)
+    # Both halves must exceed the gate-load threshold after splitting.
+    c = self_timed_macro_circuit(BromSpec(8, 32), [0] * 8)
     old = gate_loads(c)
     size_control_distribution(c)
     records = {r["net"]: r for r in c.distribution["nets"]}
@@ -71,6 +72,7 @@ def test_all_generated_stage_loads_match_actual_netlist():
         "SAMPLE",
         "SEL<0>",
         "C<0,0>",
+        "LC<0,0>",
         "RC<2,15>",
     } <= records.keys()
     for net, record in records.items():

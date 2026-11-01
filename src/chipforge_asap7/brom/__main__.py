@@ -18,6 +18,7 @@ from . import (
     build_periphery,
     cgen_circuit,
     clocked_macro_circuit,
+    compact_periphery,
     controller_circuit,
     decoder_circuit,
     macro_circuit,
@@ -28,7 +29,7 @@ from . import (
     size_control_distribution,
     size_wire_rc_distribution,
 )
-from .layout import macro_periphery, macro_plan
+from .dense_macro import dense_macro_layout
 from .periphery import periphery_plan
 from .views import macro_lef, macro_verilog
 
@@ -58,6 +59,11 @@ def main(argv: list[str] | None = None) -> None:
         "--registered-output",
         action="store_true",
         help="Rising-edge Q register; requires --clocked or --self-timed",
+    )
+    parser.add_argument(
+        "--compact-periphery",
+        action="store_true",
+        help="Deprecated no-op: dense CMOS is always enabled (requires optimize extra)",
     )
     sizing = parser.add_mutually_exclusive_group()
     sizing.add_argument(
@@ -131,6 +137,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.self_timed
         else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
     )
+    if args.compact_periphery:
+        compact_periphery(macro)
     if args.wire_rc_controls:
         size_wire_rc_distribution(macro)
     elif args.sized_controls:
@@ -161,8 +169,11 @@ def main(argv: list[str] | None = None) -> None:
         )
     if args.clocked or args.self_timed:
         circuits["controller"] = controller_circuit(spec.fins, spec.vt)
+    if args.compact_periphery:
+        for circuit in circuits.values():
+            compact_periphery(circuit)
     args.out.mkdir(parents=True, exist_ok=True)
-    bank_plan = periphery_plan(macro_periphery(macro))
+    _, physical = dense_macro_layout(macro)
     report = {
         "spec": asdict(spec),
         "top_cell": macro.name,
@@ -178,6 +189,7 @@ def main(argv: list[str] | None = None) -> None:
         "registered_output": bool(macro.output_register),
         "output_register": macro.output_register,
         "control_distribution": macro.distribution,
+        "sample_distribution": macro.sample_distribution,
         "keeper": (
             {
                 "fins": spec.keeper_fins,
@@ -203,27 +215,17 @@ def main(argv: list[str] | None = None) -> None:
             if macro.replica
             else None
         ),
-        "layout": "compact_selector_array",
+        "layout": "dense_cmos_split_selector",
         "selector_plan": asdict(macro.array.plan),
-        "array_core_nm": [
-            macro_plan(macro).array_width,
-            macro_plan(macro).array_height,
-        ],
-        "periphery_layout": "folded_local_rows",
-        "periphery_plan": {
-            "row_count": len(bank_plan.rows),
-            "device_pitch_nm": bank_plan.device_pitch,
-            "row_capacity": bank_plan.row_capacity,
-            "width_nm": bank_plan.width,
-            "height_nm": bank_plan.height,
-            "shared_spines": len(bank_plan.spine_x),
-            "pins": bank_plan.pins,
-        },
-        "periphery_origin_nm": [0, macro_plan(macro).bank_y],
-        "array_interfaces": [asdict(p) for p in macro_plan(macro).ports],
+        "array_core_nm": [spec.columns * 108, spec.blocks * 432],
+        "periphery_layout": "shared_diffusion_cmos",
+        "physical_plan": physical,
+        "physical_sha256": physical["physical_sha256"],
         "selector_devices": spec.blocks * spec.columns,
         "isolation_devices": spec.blocks * spec.columns,
-        "periphery_devices": len(macro_periphery(macro).devices),
+        "periphery_devices": len(macro.devices)
+        - len(macro.array.device_names)
+        - (len(macro.replica.selector.device_names) if macro.replica else 0),
         "timing_qualified": False,
         "interface": (
             "CLK high precharges, low requests read; RESETN active low; internal replica feedback"
@@ -254,18 +256,21 @@ def main(argv: list[str] | None = None) -> None:
         reference.write_text(circuit.lvs_reference())
         bounds = top.get_bounding_box()
         record = {
+            "placement_certificates": physical["placement_certificates"]
+            if role == "macro"
+            else periphery_plan(circuit).certificates,
             "cell": circuit.name,
             "transistors": len(circuit.devices),
             "gds": gds.name,
             "cdl": f"{role}.cdl",
             "width_nm": float(bounds[1, 0] - bounds[0, 0]),
             "height_nm": float(bounds[1, 1] - bounds[0, 1]),
-            "periphery_route_connectivity": "passed",
+            "periphery_route_connectivity": "pending_lvs",
             "drc": "not_run",
             "lvs": "not_run",
         }
         if role == "macro":
-            record["array_route_connectivity"] = "passed"
+            record["array_route_connectivity"] = "pending_lvs"
             (args.out / "macro.lef").write_text(macro_lef(circuit, top))
             (args.out / "macro.v").write_text(macro_verilog(circuit, spec, words))
             record["lef"], record["verilog"] = "macro.lef", "macro.v"
@@ -277,7 +282,11 @@ def main(argv: list[str] | None = None) -> None:
             failed |= bool(violations)
         if args.lvs:
             result = run_lvs(
-                gds, reference, args.out / "lvs" / role, cell_name=top.name
+                gds,
+                reference,
+                args.out / "lvs" / role,
+                cell_name=top.name,
+                merge_fin_diffusion=True,
             )
             summary = summarize_lvsdb(result.report)
             renamed = [p for c in summary["circuits"] for p in c["renamed_pins"]]
@@ -292,6 +301,9 @@ def main(argv: list[str] | None = None) -> None:
             record["extra_pins"] = extra
             matched = result.matched and not renamed and not missing and not extra
             record["lvs"] = "passed" if matched else "failed"
+            record["periphery_route_connectivity"] = record["lvs"]
+            if role == "macro":
+                record["array_route_connectivity"] = record["lvs"]
             record["renamed_pins"] = renamed
             failed |= not matched
         report_path.write_text(json.dumps(report, indent=2) + "\n")

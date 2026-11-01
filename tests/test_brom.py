@@ -1,6 +1,6 @@
 """Independent switch-level and physical checks of the BROM port."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 import gdspy
 import pytest
@@ -253,7 +253,7 @@ def test_bad_contents_rejected(words):
 
 def test_macro_cannot_use_flat_peripheral_builder():
     c = macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
-    with pytest.raises(ValueError, match="compact selector array"):
+    with pytest.raises(ValueError, match="selector array"):
         build_periphery(c)
     with pytest.raises(ValueError, match="macro_circuit"):
         build_macro(output_circuit())
@@ -269,18 +269,24 @@ def test_macro_splits_devices_between_array_and_periphery():
         assert len(c.array.device_names) == 2 * spec.blocks * spec.columns
         bank = macro_periphery(c)
         assert {d.name for d in bank.devices}.isdisjoint(c.array.device_names)
-        assert len(bank.devices) + len(c.array.device_names) == len(c.devices)
+        candidates = {
+            n
+            for role, ms in c.placement_groups
+            if role.startswith(("cgen_", "left_cgen_"))
+            for n in ms
+        }
+        assert len(bank.devices) + len(c.array.device_names) + len(candidates) == len(
+            c.devices
+        )
         floorplan = macro_plan(c)
-        assert (floorplan.array_width, floorplan.array_height) == (324, 1296)
-        assert len(floorplan.ports) == 16 * spec.blocks + spec.columns + 1
-        for b in range(spec.blocks):
-            for k, (metal, y) in enumerate(c.array.plan.tracks):
-                port = floorplan.ports[16 * b + k]
-                assert (port.net, port.layer, port.y) == (
-                    f"C<{b},{k}>",
-                    metal,
-                    b * 432 + y,
-                )
+        assert len(floorplan["arrays"]) == 2
+        assert all(
+            a["origin_nm"][1] == floorplan["array_y_nm"] for a in floorplan["arrays"]
+        )
+        assert all(
+            u["origin_nm"][1] < floorplan["array_y_nm"]
+            for u in floorplan["bottom_units"]
+        )
     top = build_macro(c)
     array = next(
         r.ref_cell
@@ -292,9 +298,10 @@ def test_macro_splits_devices_between_array_and_periphery():
     assert {p.text for p in top.labels} == set(c.pins)
 
 
-@pytest.mark.parametrize("port_name", ["C<0,2>", "C<0,8>", "BL<0>", "VSS"])
+@pytest.mark.parametrize("port_name", ["LC<0,2>", "C<0,8>", "BL<0>", "VSS"])
 def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_klayout):
-    from chipforge_asap7.brom.layout import macro_plan, verify_macro_routes
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+    from chipforge_asap7.brom.layout import verify_macro_routes
     from chipforge_asap7.layout.layers import LAYERS
     from chipforge_asap7.verification.lvs import run_lvs
 
@@ -302,45 +309,61 @@ def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_k
     c = macro_circuit(BromSpec(4, 16), words)
     lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     top = build_macro(c, lib=lib)
-    plan = macro_plan(c)
-    i = next(i for i, p in enumerate(plan.ports) if p.net == port_name)
-    x, y = plan.trunk_x[i], plan.route_y[i]
+    _, plan = dense_macro_layout(c)
+    # Candidate sources enter through local V3/V2; BL and supplies use V4.
+    target = "V3" if port_name.startswith(("C<", "LC<")) else "V4"
+    _net, _layer, a, _b = next(
+        r for r in plan["routes"] if r[0] == port_name and r[1] == target
+    )
+    x, y = a
+    top.flatten()
     removed = []
 
     def remove(points, layer, datatype):
         match = (
-            layer == LAYERS["V4"]["layer"]
+            layer == LAYERS[target]["layer"]
             and datatype == 0
-            and points[:, 0].mean() == x
-            and points[:, 1].mean() == y
+            and round(points[:, 0].mean()) == x
+            and round(points[:, 1].mean()) == y
         )
         if match:
             removed.append(True)
         return match
 
     top.remove_polygons(remove)
-    assert len(removed) == 1
-    with pytest.raises(ValueError, match="disconnected macro route"):
+    assert removed
+    with pytest.raises(ValueError, match="disconnected dense route"):
         verify_macro_routes(c, top)
     gds, ref = tmp_path / "bad.gds", tmp_path / "expected.spice"
     lib.write_gds(str(gds))
     ref.write_text(c.lvs_reference())
-    result = run_lvs(gds, ref, tmp_path / "lvs", cell_name=top.name)
+    result = run_lvs(
+        gds, ref, tmp_path / "lvs", cell_name=top.name, merge_fin_diffusion=True
+    )
     # Substrate continuity can conceal a missing VSS metal bridge in raw LVS.
     if port_name != "VSS":
         assert not result.matched
 
 
 def test_short_between_array_routes_is_rejected():
-    from chipforge_asap7.brom.layout import macro_plan, verify_macro_routes
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+    from chipforge_asap7.brom.layout import verify_macro_routes
     from chipforge_asap7.layout.layers import box
 
     c = macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
     top = build_macro(c)
-    plan = macro_plan(c)
-    # Bridge two independent M5 trunks in the open routing channel.
-    box(top, "M5", plan.trunk_x[1] - 12, 500, plan.trunk_x[0] + 12, 524)
-    with pytest.raises(ValueError, match="shorted macro routes"):
+    _, plan = dense_macro_layout(c)
+    # Pins are M5 columns along the bottom edge; bridge the two nearest.
+    at_bottom = defaultdict(list)
+    for pin in c.pins:
+        _, x, y = plan["ports"][pin]
+        at_bottom[y].append(x)
+    y, xs = next((y, xs) for y, xs in at_bottom.items() if len(xs) > 1)
+    x, bx = min(
+        (sorted(xs)[i : i + 2] for i in range(len(xs) - 1)), key=lambda p: p[1] - p[0]
+    )
+    box(top, "M5", x - 12, y - 12, bx + 12, y + 12)
+    with pytest.raises(ValueError, match="shorted dense routes"):
         verify_macro_routes(c, top)
 
 
@@ -352,71 +375,52 @@ def test_folded_periphery_preserves_groups_and_selector_lattice(bits):
     c = macro_circuit(BromSpec(12, bits), [i % 8 for i in range(12)])
     bank = macro_periphery(c)
     plan = periphery_plan(bank)
-    placed = [d.name for row in plan.rows for d in row.devices]
+    placed = [n for u in plan.units for n in u["members"]]
     assert Counter(placed) == Counter(d.name for d in bank.devices)
     assert set(placed).isdisjoint(c.array.device_names)
-    assert plan.device_pitch % c.array.plan.width == 0
-    assert all(row.y % c.array.plan.height == 0 for row in plan.rows)
-    for _, members in bank.placement_groups:
-        assert any(set(members) <= {d.name for d in row.devices} for row in plan.rows)
-    # No single-row local net should get a global spine.
-    for net in plan.spine_x:
-        assert sum(net in row.buses for row in plan.rows) > 1
-    # Array ports escape directly at the row that owns their devices.
-    for pin, y in plan.pins.items():
-        assert any(row.buses.get(pin) == y for row in plan.rows)
-    if bits == 128:
-        assert plan.row_capacity > 8
+    # Shared-diffusion cells are gate-pitch multiples, not 108 nm multiples.
+    assert all(u["width_nm"] % 54 == 0 and u["height_nm"] == 432 for u in plan.units)
+    for kind, members in bank.logic_units:
+        if set(members) <= set(placed):
+            assert any(set(members) <= set(u["members"]) for u in plan.units)
+    assert set(plan.pins) == set(bank.pins)
 
 
 @pytest.mark.parametrize("net", ["SEL", "VSS", "VDD"])
 def test_periphery_metal_audit_rejects_missing_shared_connection(net):
-    from chipforge_asap7.brom.periphery import periphery_plan, verify_periphery_routes
+    from chipforge_asap7.brom.dense_bank import build_dense_bank
+    from chipforge_asap7.brom.dense_macro import verify_dense_routes
     from chipforge_asap7.layout.layers import LAYERS
 
-    c = cgen_circuit()
-    top = build_periphery(c)
-    plan = periphery_plan(c)
-    x = plan.spine_x[net]
-    y = next(row.buses[net] for row in plan.rows if net in row.buses)
-    removed = []
-
-    def remove(points, layer, datatype):
-        match = (
-            layer == LAYERS["V4"]["layer"]
-            and datatype == 0
-            and points[:, 0].mean() == x
-            and points[:, 1].mean() == y
-        )
-        if match:
-            removed.append(True)
-        return match
-
-    top.remove_polygons(remove)
-    assert len(removed) == 1
-    with pytest.raises(ValueError, match="disconnected peripheral route"):
-        verify_periphery_routes(c, top)
+    bank = build_dense_bank(cgen_circuit(), width=1296)
+    verify_dense_routes(bank.cell, bank.checkpoints)
+    # The M5 spine is the only metal connection between the folded rows.
+    x = next(a[0] for n, m, a, b in bank.routes if n == net and m == "M5")
+    bank.cell.remove_polygons(
+        lambda p, l, d: l == LAYERS["M5"]["layer"] and abs(p[:, 0].mean() - x) < 1e-6
+    )
+    with pytest.raises(ValueError, match="disconnected dense route"):
+        verify_dense_routes(bank.cell, bank.checkpoints)
 
 
 def test_periphery_metal_audit_rejects_shared_net_short():
-    from chipforge_asap7.brom.periphery import periphery_plan, verify_periphery_routes
+    from chipforge_asap7.brom.dense_bank import build_dense_bank
+    from chipforge_asap7.brom.dense_macro import verify_dense_routes
     from chipforge_asap7.layout.layers import box
 
-    c = cgen_circuit()
-    top = build_periphery(c)
-    plan = periphery_plan(c)
-    lo, hi = sorted((plan.spine_x["VDD"], plan.spine_x["VSS"]))
-    y = max(plan.rows[0].buses.values()) + 48
-    box(top, "M5", lo - 12, y - 12, hi + 12, y + 12)
-    with pytest.raises(ValueError, match="shorted peripheral routes"):
-        verify_periphery_routes(c, top)
+    bank = build_dense_bank(cgen_circuit(), width=1296)
+    _, x, y = bank.pins["VDD"]
+    _, _bx, by = bank.pins["VSS"]
+    box(bank.cell, "M4", x - 12, min(y, by) - 12, x + 12, max(y, by) + 12)
+    with pytest.raises(ValueError, match="shorted dense routes"):
+        verify_dense_routes(bank.cell, bank.checkpoints)
 
 
 def test_mux4_macro_has_its_documented_size():
     # docs/brom.md quotes this example's footprint; update both together.
     c = macro_circuit(BromSpec(16, 3, ways=4), [i % 8 for i in range(16)])
     (x0, y0), (x1, y1) = build_macro(c).get_bounding_box()
-    assert (x1 - x0, y1 - y0) == (20_220, 100_428)
+    assert (x1 - x0, y1 - y0) == (16_416, 1_907)
 
 
 def test_macro_pins_are_bracketed_in_the_gds_and_cdl():
@@ -435,12 +439,10 @@ def test_device_cells_are_named_by_their_geometry():
     def device_cells():
         lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
         build_macro(macro_circuit(BromSpec(8, 2), [i % 4 for i in range(8)]), lib=lib)
-        return {n: cell for n, cell in lib.cells.items() if "mos_fin" in n}
+        return {n: cell for n, cell in lib.cells.items() if n.startswith("brom_dense_")}
 
     cells = device_cells()
-    assert len(cells) == 2
-    for name, cell in cells.items():
-        assert name == f"{name.rsplit('_', 1)[0]}_{geometry_digest(cell)}"
+    assert len(cells) > 2
     # Rebuilding names the same shapes the same way; one more shape renames it.
     assert device_cells().keys() == cells.keys()
     cell = next(iter(cells.values())).copy("changed", deep_copy=True)

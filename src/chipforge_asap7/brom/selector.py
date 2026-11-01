@@ -172,7 +172,7 @@ def selector_lvs_reference(
 
 
 def default_selector_plan(fins: int = 2, vt: str = "rvt") -> SelectorPlan:
-    """Frozen CP-SAT witness plans; no solver is needed during compilation."""
+    """Frozen selector witnesses; this lookup does not run a solver."""
     if type(fins) is not int or fins not in (1, 2, 3):
         raise ValueError("compact BROM selectors support 1..3 fins")
     plans = json.loads(Path(__file__).with_name("selector_plans.json").read_text())

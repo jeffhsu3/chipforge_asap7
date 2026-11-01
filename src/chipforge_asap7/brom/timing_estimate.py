@@ -24,6 +24,7 @@ def summarize_sweep(reports):
         "wire_rc_controls",
         "sized_controls",
         "circuit_sha256",
+        "physical_sha256",
         "model_sha256",
         "osdi_sha256",
         "register_clock_rc_included",
@@ -243,6 +244,8 @@ def attach_estimate(path, circuit, spec, words):
     """Reject stale/foreign estimates before including them in a compiler manifest."""
     from dataclasses import asdict
 
+    from .dense_macro import dense_macro_layout
+
     report = json.loads(Path(path).read_text())
     if (
         report.get("schema") != "brom_timing_estimate_v1"
@@ -251,6 +254,8 @@ def attach_estimate(path, circuit, spec, words):
         or report.get("words") != list(words)
         or report.get("circuit_sha256")
         != hashlib.sha256(circuit.netlist().encode()).hexdigest()
+        or report.get("physical_sha256")
+        != dense_macro_layout(circuit)[1]["physical_sha256"]
     ):
         raise ValueError(
             "timing estimate does not match this completed circuit and ROM image"

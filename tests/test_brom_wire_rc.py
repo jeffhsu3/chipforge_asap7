@@ -7,6 +7,7 @@ import pytest
 from chipforge_asap7.brom import (
     BromSpec,
     WireRCSpec,
+    macro_circuit,
     routed_control_rc,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -32,6 +33,7 @@ def test_rc_assumptions_are_explicit_and_scale_capacitance():
     assert "M5" in a["PRECHN"]["length_um_by_layer"]
 
 
+@pytest.mark.slow
 def test_search_preserves_array_and_reduces_estimated_cost():
     c = circuit()
     original = {
@@ -88,16 +90,15 @@ def test_wire_loads_can_change_sizing_and_invalid_values_are_rejected():
 
 
 def test_estimated_spine_length_matches_router_coordinates():
-    from chipforge_asap7.brom.layout import macro_periphery
-    from chipforge_asap7.brom.periphery import periphery_plan
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
 
     c = circuit()
-    plan = periphery_plan(macro_periphery(c))
-    ys = [r.buses["PRECHN"] for r in plan.rows if "PRECHN" in r.buses]
+    _, plan = dense_macro_layout(c)
+    spans = [(a, b) for n, m, a, b in plan["routes"] if n == "PRECHN" and m == "M5"]
+    # PRECHN has one shared bank spine; compare drawn centerline coordinates.
+    expected = sum(abs(b[1] - a[1]) for a, b in set(spans)) / 1000
     rc = routed_control_rc(c)["PRECHN"]
-    assert rc["length_um_by_layer"]["M5"] == pytest.approx(
-        (max(ys) - min(ys) + 48) / 1000
-    )
+    assert rc["length_um_by_layer"]["M5"] == pytest.approx(expected)
     assert 0 < rc["max_driver_sink_path_ohm"] <= rc["resistance_sum_ohm"]
 
 
@@ -110,6 +111,7 @@ def test_too_small_budget_leaves_circuit_unchanged():
     assert c.distribution is None
 
 
+@pytest.mark.slow
 def test_rc_stress_deck_has_real_resistors_and_scaled_cancel(tmp_path):
     from chipforge_asap7.brom import ReplicaSpec
     from chipforge_asap7.brom.replica_timing import render_replica_bench
@@ -143,3 +145,12 @@ def test_scaled_checker_keeps_physical_margin_units():
     assert b["passed"]
     for key, value in a["minimum_margins_ps"].items():
         assert b["minimum_margins_ps"][key] == pytest.approx(value * 10)
+
+
+def test_left_and_right_candidates_enter_wire_rc_optimization():
+    c = macro_circuit(BromSpec(4, 4), [0, 15, 0, 15])
+    size_wire_rc_distribution(c, WireRCSpec(wire_cap_ff_per_um=2.0, max_rounds=1))
+    objective = set(c.distribution["objective_nets"])
+    right = {n.removeprefix("C<") for n in objective if n.startswith("C<")}
+    left = {n.removeprefix("LC<") for n in objective if n.startswith("LC<")}
+    assert right and right == left

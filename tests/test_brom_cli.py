@@ -23,9 +23,9 @@ def test_external_phases(tmp_path):
     out, r = compile_words(tmp_path)
     assert r["timing_qualified"] is False
     assert r["controller"] == "external_phases"
-    assert r["layout"] == "compact_selector_array"
-    assert r["periphery_layout"] == "folded_local_rows"
-    assert r["periphery_plan"]["row_count"] > 1
+    assert r["layout"] == "dense_cmos_split_selector"
+    assert r["periphery_layout"] == "shared_diffusion_cmos"
+    assert len(r["physical_plan"]["bottom_units"]) > 1
     assert r["array_core_nm"] == [216, 432]
     assert r["isolation_devices"] == 2
     assert r["selector_map"] == [[10, 12]]
