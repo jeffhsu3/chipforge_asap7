@@ -12,7 +12,7 @@ chipforge_asap7 is also a critical dependency for opensource FinFET SRAM compile
 ## Install
 
 The package is a standalone, importable library — it does **not** depend on
-chipforge, so any project can consume it.
+chipforge.
 
 ```bash
 git clone https://github.com/jeffhsu3/chipforge_asap7.git
