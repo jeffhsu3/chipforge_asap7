@@ -38,29 +38,46 @@ def deck_for(tmp_path, fins=1, words=64, **kwargs):
     )
 
 
+def ladder(deck, line):
+    """Each line's word devices, resistors and capacitors, by node."""
+    nodes = lambda name: name == f"BL{line}" or name.startswith(f"BL{line}_")
+    parts = [x.split() for x in deck.splitlines()]
+    words = [d for d in parts if d[0].startswith("N") and nodes(d[1])]
+    rs = [float(d[3]) for d in parts if d[0].startswith(f"R{line}")]
+    cs = [float(d[3].rstrip("f")) for d in parts if d[0].startswith(f"C{line}")]
+    return words, rs, cs
+
+
 @pytest.mark.parametrize("fins", [1, 2])
 def test_both_lines_carry_every_other_word_as_an_off_device(tmp_path: Path, fins):
-    nets = {}
-    for name, drain, gate, source, body, model, _, nfin in devices(
-        deck_for(tmp_path, fins=fins, words=64)
-    ):
-        nets.setdefault(drain, []).append((name, gate, source, body, model, nfin))
-    word = ("0", "0", "0", "nmos_rvt", f"NFIN={fins}")
-    # BLP: the selected word on WL plus 63 off words, and its precharge PMOS.
+    deck = deck_for(tmp_path, fins=fins, words=64)
+    off = ("0", "0", "0", "nmos_rvt", "L=20n", f"NFIN={fins}")
+    blp, _, _ = ladder(deck, "P")
+    blu, _, _ = ladder(deck, "U")
+    # BLP: 63 off words, the selected word on WL at the far end, and the
+    # precharge PMOS at the sense end.
     assert (
-        sorted(d[1:] for d in nets["BLP"] if d[0] != "NPP")
-        == [word] * 63 + [("WL", "0", "0", "nmos_rvt", f"NFIN={fins}")]
+        sorted(tuple(d[2:]) for d in blp if d[0] not in ("NPP", "NPsel")) == [off] * 63
     )
-    # BLU: the same 63 off words; the selected word's drain floats.
-    assert sorted(d[1:] for d in nets["BLU"] if d[0] != "NPU") == [word] * 63
-    pre = [d for d in nets["BLP"] + nets["BLU"] if d[0] in ("NPP", "NPU")]
-    assert [d[1:] for d in pre] == [("PRECHN", "VDD", "VDD", "pmos_rvt", "NFIN=3")] * 2
+    (selected,) = [d for d in blp if d[0] == "NPsel"]
+    assert selected[1:3] == ["BLP_63", "WL"]
+    assert {d[1] for d in blp if d[0] == "NPP"} == {"BLP"}
+    # BLU: the same 63 off words; the far word's drain floats.
+    assert sorted(tuple(d[2:]) for d in blu if d[0] != "NPU") == [off] * 63
+    assert "BLU_63" not in {d[1] for d in blu}
 
 
-def test_wire_load_is_half_a_tile_per_word(tmp_path: Path):
+def test_the_bitline_is_a_distributed_m2_ladder(tmp_path: Path):
     deck = deck_for(tmp_path, words=1024)
-    # 1024 words x 81 nm x 0.2 fF/um.
-    assert "Cwp BLP 0 16.5888f" in deck and "Cwu BLU 0 16.5888f" in deck
+    for line in ("P", "U"):
+        _, rs, cs = ladder(deck, line)
+        # 1024 words x 81 nm x 0.2 fF/um; 1023 segments of 81 nm of 18 nm M2.
+        assert len(cs) == 1024 and sum(cs) == pytest.approx(16.5888)
+        assert len(rs) == 1023
+        assert sum(rs) == pytest.approx(1023 * 0.081 * 3.03147 / 0.018, rel=1e-5)
+    # No resistance: one lumped node per line.
+    _, rs, cs = ladder(deck_for(tmp_path, words=16, wire_ohm_per_um=0), "P")
+    assert rs == [] and len(cs) == 16
 
 
 def test_sense_target_counts_from_the_precharged_level(tmp_path: Path):
@@ -88,6 +105,7 @@ def test_vt_flavour_selects_its_models(tmp_path: Path):
         {"min_sense_split": 0},
         {"step_ps": 0},
         {"wire_ff_per_um": -1},
+        {"wire_ohm_per_um": -1},
         {"precharge_fins": True},
     ],
 )

@@ -16,10 +16,13 @@ wordline pulse, both in the worst case for their outcome:
   is the most that can droop a line that should read high.
 
 Every word device is a real BSIM-CMG 107 transistor with the tile's fin count,
-source on VSS.  The M2 wire is a lumped capacitance per word along the line
-(one word is half a 162 nm tile); its resistance, the V1/M1 stubs, the
-grounded isolation gates and the poly wordline's RC are not modelled.  A 3-fin
-precharge PMOS is off during the read and leaks toward VDD, as in the column.
+source on VSS.  The M2 bitline is a distributed RC ladder, one segment per
+word (half a 162 nm tile): the stack's M2 sheet resistance over the 18 nm
+track, and an assumed capacitance per length.  The sense end is word 0, and
+the selected word is the far one, read through the whole line.  The V1/M1
+stubs, the grounded isolation gates and the poly wordline's RC are not
+modelled.  A 3-fin precharge PMOS at the sense end is off during the read and
+leaks toward VDD, as in the column.
 
 Measured from the wordline's 50 % point, on ``BLP``:
 
@@ -44,6 +47,8 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..layout.rules import CONTACT_SIZE
+from ..verification.stack import STACK_CONDUCTORS
 from .rom_bitcell import RomBitcellSpec
 from .spice import (
     compile_bsimcmg107,
@@ -64,6 +69,11 @@ DEFAULT_WORDS = (16, 64, 256, 1024)
 DEFAULT_FINS = (1, 2)
 #: Same explicit wire assumption as the BROM routed-RC estimate.
 DEFAULT_WIRE_FF_PER_UM = 0.2
+#: The bitline is a minimum-width M2 track: the stack's sheet resistance
+#: over its width, which the tile draws flush with the 18 nm V1s.
+DEFAULT_WIRE_OHM_PER_UM = next(
+    s.sheet_resistance_ohm for s in STACK_CONDUCTORS if s.name == "M2"
+) / (CONTACT_SIZE / 1000)
 VTS = ("rvt", "lvt", "slvt")
 
 
@@ -76,6 +86,7 @@ class RomReadConditions:
     vt: str = "rvt"
     slew_ps: float = 40.0
     wire_ff_per_um: float = DEFAULT_WIRE_FF_PER_UM
+    wire_ohm_per_um: float = DEFAULT_WIRE_OHM_PER_UM
     sense_margin_v: float = 0.1
     #: Fraction of each margin the leaking line must keep (see module doc).
     min_sense_split: float = 0.5
@@ -95,8 +106,9 @@ class RomReadConditions:
         for name in ("slew_ps", "step_ps", "window_ns"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.wire_ff_per_um < 0:
-            raise ValueError("wire_ff_per_um must be non-negative")
+        for name in ("wire_ff_per_um", "wire_ohm_per_um"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative")
         fins = self.precharge_fins
         if isinstance(fins, bool) or not isinstance(fins, int) or fins < 1:
             raise ValueError("precharge_fins must be a positive integer")
@@ -109,6 +121,7 @@ class RomReadResult:
     fins: int
     words: int
     wire_ff: float
+    wire_ohm: float
     blp_precharged_v: float | None
     blu_precharged_v: float | None
     t_sense_s: float | None
@@ -121,10 +134,18 @@ class RomReadResult:
     passed_inverter: bool
 
 
+def _word_pitch_um() -> float:
+    """M2 along the row per word: one tile of two words per bitcell width."""
+    return RomBitcellSpec().width / 2 / 1000
+
+
 def _wire_ff(words: int, conditions: RomReadConditions) -> float:
-    """M2 along the row: one tile of two words per bitcell width."""
-    per_word_um = RomBitcellSpec().width / 2 / 1000
-    return words * per_word_um * conditions.wire_ff_per_um
+    return words * _word_pitch_um() * conditions.wire_ff_per_um
+
+
+def _wire_ohm(words: int, conditions: RomReadConditions) -> float:
+    """Sense end to the far word: ``words - 1`` segments."""
+    return (words - 1) * _word_pitch_um() * conditions.wire_ohm_per_um
 
 
 def _validate(fins: int, words: int) -> None:
@@ -147,7 +168,7 @@ def render_rom_read_deck(
 
     Releasing the precharge PMOS kicks both floating lines above VDD through
     its gate overlap.  The sense margin is counted from ``precharged_v``,
-    BLP's level as the wordline rises (VDD if not yet known): a first run
+    BLP's level as the wordline starts to rise (VDD if not yet known): a first run
     measures it, a second times the read from it.
     """
     _validate(fins, words)
@@ -156,12 +177,26 @@ def render_rom_read_deck(
     sense = (vdd if precharged_v is None else precharged_v) - c.sense_margin_v
     sl = c.slew_ps / 1000.0
     nmos, pmos = f"nmos_{c.vt}", f"pmos_{c.vt}"
-    wire = _wire_ff(words, c)
-    off = [
-        f"N{line}{w} BL{line} 0 0 0 {nmos} L=20n NFIN={fins}"
-        for line in ("P", "U")
-        for w in range(1, words)
-    ]
+    seg_um = _word_pitch_um()
+    seg_ohm, seg_ff = seg_um * c.wire_ohm_per_um, seg_um * c.wire_ff_per_um
+
+    def node(line: str, k: int) -> str:
+        # Word 0 sits at the sense end; a resistance-free line is one node.
+        return f"BL{line}" if k == 0 or seg_ohm == 0 else f"BL{line}_{k}"
+
+    ladder = []
+    for line in ("P", "U"):
+        for k in range(words):
+            if k and seg_ohm:
+                ladder.append(
+                    f"R{line}{k} {node(line, k - 1)} {node(line, k)} {seg_ohm:g}"
+                )
+            ladder.append(f"C{line}{k} {node(line, k)} 0 {seg_ff:g}f")
+            if k < words - 1:
+                ladder.append(
+                    f"N{line}{k} {node(line, k)} 0 0 0 {nmos} L=20n NFIN={fins}"
+                )
+    far = words - 1
     end = 1.1 + c.window_ns
     return (
         f"* NOR-ROM read, {fins}-fin words, {words} words on each bitline\n"
@@ -172,14 +207,14 @@ def render_rom_read_deck(
         f"Vwl WL 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
         f"NPP BLP PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
         f"NPU BLU PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
-        # The selected word: programmed on BLP; on BLU its drain floats, so
-        # it is not on the line at all.
-        f"NP0 BLP WL 0 0 {nmos} L=20n NFIN={fins}\n"
-        + "\n".join(off)
-        + f"\nCwp BLP 0 {wire:g}f\nCwu BLU 0 {wire:g}f\n"
+        # The selected word is the far one, behind the whole line: programmed
+        # on BLP; on BLU its drain floats, so it is not on the line at all.
+        f"NPsel {node('P', far)} WL 0 0 {nmos} L=20n NFIN={fins}\n"
+        + "\n".join(ladder)
+        + "\n"
         f".tran {c.step_ps:g}p {end:g}n\n"
-        f".measure tran blp_pre FIND v(BLP) AT={1.1 + sl / 2:g}n\n"
-        f".measure tran blu_pre FIND v(BLU) AT={1.1 + sl / 2:g}n\n"
+        f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
+        f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"
         f".measure tran t_sense TRIG v(WL) VAL={half:g} RISE=1 "
         f"TARG v(BLP) VAL={sense:g} FALL=1\n"
         f".measure tran t_half TRIG v(WL) VAL={half:g} RISE=1 "
@@ -238,6 +273,7 @@ def run_rom_read(
                     fins=f,
                     words=depth,
                     wire_ff=_wire_ff(depth, c),
+                    wire_ohm=_wire_ohm(depth, c),
                     blp_precharged_v=pre,
                     blu_precharged_v=_measure(log, "blu_pre"),
                     t_sense_s=t_sense,
@@ -257,7 +293,7 @@ def run_rom_read(
             {
                 "conditions": asdict(c),
                 "model_card": str(model_card),
-                "scope": "lumped M2 wire C; no wire/poly R; one model card and corner",
+                "scope": "distributed M2 RC, selected word at the far end; no poly wordline RC; one model card and corner",
                 "results": [asdict(r) for r in results],
             },
             indent=2,
@@ -276,6 +312,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--temperature-c", type=float, default=25.0)
     parser.add_argument("--vt", choices=VTS, default="rvt")
     parser.add_argument("--wire-ff-per-um", type=float, default=DEFAULT_WIRE_FF_PER_UM)
+    parser.add_argument(
+        "--wire-ohm-per-um", type=float, default=DEFAULT_WIRE_OHM_PER_UM
+    )
     parser.add_argument("--sense-margin-v", type=float, default=0.1)
     parser.add_argument("--min-sense-split", type=float, default=0.5)
     parser.add_argument("--step-ps", type=float, default=1.0)
@@ -299,6 +338,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             temperature_c=args.temperature_c,
             vt=args.vt,
             wire_ff_per_um=args.wire_ff_per_um,
+            wire_ohm_per_um=args.wire_ohm_per_um,
             sense_margin_v=args.sense_margin_v,
             min_sense_split=args.min_sense_split,
             step_ps=args.step_ps,
