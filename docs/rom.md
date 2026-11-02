@@ -142,7 +142,11 @@ more than half of either margin.
 uv run asap7-rom-read --fins 1 2 --words 16 64 256 1024 4096 --temperature-c 125
 ```
 
-TT model card, RVT, 0.7 V, 40 ps wordline slew; times in ps, levels in mV:
+### Bitline depth, with an ideal wordline
+
+These runs drive the selected gate directly with the 40 ps edge
+(`--no-wordline-rc`), isolating the bitline. TT model card, RVT, 0.7 V;
+times in ps, levels in mV:
 
 | Fins | Words per bitline | Wire R (kΩ) | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `t_half` 125 °C | `split` 125 °C |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -176,18 +180,77 @@ At 25 °C 4096 words pass too; at 125 °C both fail the sense margin, and
   With twice the leaking fins, 2 fins droops more. At 4096 words the
   leakage also helps discharge `BLP`, which is why that read is faster hot.
 
+### Wordline RC
+
+By default the bench also draws the selected word's wordline
+(`wordline_network`), using `RomArraySpec`'s geometry for a `--bits`-row array
+with a strap row every `--strap-every` rows:
+
+- an 18 nm M3 strap (168 Ω/µm) running down the array from the decoder at its
+  top edge, where the 40 ps edge is applied;
+- at each strap row, a 68 Ω stack onto the poly: V2, V1, V0, 18 nm of
+  16 nm LIG, and the gate-to-LIG link;
+- the gate poly, 20 nm at 7.14 Ω/sq (357 Ω/µm), continuous through every bit
+  row and strap row;
+- each row's word transistor gate as a BSIM-CMG load on the poly.
+
+Wires carry the same assumed 0.2 fF/µm as the bitline. The read uses the
+slowest row, chosen by the RC mesh's first moments (Elmore delay generalised
+to a mesh). With several strap rows that is in the bottom group, furthest
+from the decoder. It sits a third of the way up the group: the group's upper
+strap is reached through less M3. With one strap row it is the top row.
+
+At 256 words per bitline; times from the decoder output's 50 % point, in ps
+(`t_wl` is decoder output to the selected gate):
+
+| Bits | Strap every | Fins | `t_wl` 25 °C | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `split` 125 °C (mV) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 16 | 1 | 0.4 | 33.5 | 85.1 | 33.5 | 98 |
+| 16 | 16 | 2 | 0.9 | 30.3 | 67.5 | 30.0 | 98 |
+| 64 | 16 | 1 | 1.3 | 34.7 | 86.3 | 34.6 | 98 |
+| 64 | 16 | 2 | 3.1 | 33.4 | 70.7 | 32.9 | 98 |
+| 64 | 64 | 1 | 4.2 | 39.2 | 90.9 | 38.9 | 98 |
+| 64 | 64 | 2 | 10.1 | 44.2 | 83.9 | 43.3 | 97 |
+| 256 | 16 | 1 | 13.3 | 53.1 | 107.0 | 52.4 | 98 |
+| 256 | 16 | 2 | 28.8 | 73.2 | 122.1 | 71.0 | 96 |
+| 256 | 64 | 1 | 13.8 | 54.7 | 109.4 | 54.0 | 98 |
+| 256 | 64 | 2 | 30.7 | 78.0 | 129.5 | 75.3 | 96 |
+| 256 | 256 | 1 | 42.6 | 105.7 | 179.0 | 102.2 | 96 |
+| 256 | 256 | 2 | 113.9 | 188.2 | 277.4 | 175.2 | 91 |
+
+Every case passes both margins. Findings:
+
+- **Its gates make the wordline slower than its wire does.** Every bit row
+  hangs a word transistor on it, so a second fin doubles the wordline's
+  load. The 2-fin gate arrives 2-3x later than the 1-fin gate in every case.
+- **The fin trade-off flips with array width.** At 16 and 64 bits the
+  bitline still dominates, and 2 fins senses 1-3 ps sooner. With 64 bits
+  strapped every 64 rows, and in every 256-bit case, one fin is faster:
+  53.1 against 73.2 ps at 256 bits with the default straps. Only the
+  inverter read at 64 bits or fewer still favours 2 fins.
+- **At 256 bits, the M3 strap, not the poly, sets the wordline delay.**
+  Strapping every 64 rows instead of every 16 adds only 0.5 ps (1 fin) and
+  1.9 ps (2 fins); the 22 µm M3 run, about 3.8 kΩ, dominates. Without
+  intermediate straps (every 256 rows) the poly's full length is in the
+  path: 2 fins then takes 188 ps to sense.
+
 What the bench does not cover:
 
-- the poly wordline's RC, strapped to M3 every 16 bit rows; the wordline is
-  an ideal 40 ps edge;
+- the decoder's wordline driver: the edge is ideal at the top of the M3
+  strap, so a real driver's output resistance adds to `t_wl`. That resistance
+  matters more for 2 fins, with twice the load;
+- the other words' gates on adjacent wordlines (coupling), and the
+  M3 straps' neighbours;
 - the V1/M1 stubs and the grounded isolation gates;
 - any process corner beyond TT, and mismatch. A single fin has no averaging,
   so its read current varies more than two fins' does;
 - the precharge, sense and output circuits the NOR-ROM does not draw yet.
   Their timing, and a cycle time, are not established.
 
-So one fin is electrically feasible at nominal conditions, at the depths the
-ROM is checked to. It is not yet qualified across corners or with the wordline RC.
+So one fin is electrically feasible at nominal conditions, at the depths and
+widths the ROM is checked to. On wide arrays it is also the faster choice,
+because it halves the wordline load. It is not yet qualified across corners,
+or with a real decoder driver.
 
 ## Minimum-area proof for this topology
 
