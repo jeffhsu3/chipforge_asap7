@@ -141,12 +141,65 @@ the inter-row separation then gives `H >= 27*(f+1)` nm. With two bits per
 tile, the core area per bit satisfies `A_bit = W*H/2 >= 2187*(f+1)` nm².
 
 The SMT-LIB model uses real coordinates and minimum fin spacing, relaxing
-grid membership and omitting contact and routing constraints. Every permitted
+grid membership and omitting contact and routing constraints (those are
+checked separately, below). Every permitted
 tile must satisfy these necessary inequalities; allowing more layouts makes
 an UNSAT result a valid lower bound. Neither derived dimension bound is
 inserted into the base model. Z3 checks that `W < 162`, `H < 27*(f+1)`, and
 their disjunction are each UNSAT. The dimension bounds and positive dimensions
 give the area bound by multiplication, without nonlinear SMT arithmetic.
+
+### Routing constraints
+
+A second block of assertions models the tile's contacts and wiring, using the
+pinned M1, M2, V0, V1 and LISD rules. It extends the topology with these
+routing assumptions:
+
+- Each source/drain column has one LISD bar. The bar spans the row's ACTIVE,
+  stays clear of both gates, and carries one 18 nm V0.
+- The shared source reaches VSS through one straight M1 column. The column is
+  full height and continuous across rows.
+- Each drain lands on its own M1 stub, which may be horizontal or vertical.
+  Its programming V1 sits on that stub.
+- Both V1s meet one straight, full-width M2 bitline per row.
+
+| Rule | Constraint used |
+| --- | --- |
+| `LISD.W.1`, `LISD.S.1`-`S.3` | 24 nm bars; spacing by facing-edge class, across X and to the next row |
+| `V0.LISD.EN.2` | 3 nm of LISD on both sides of one opposite pair |
+| `V0.M1.EN.1`, `V0.M1.AUX.3` | a 5 nm end-cap on some side; M1 flush with the V0 on one opposite pair |
+| `M1.A.1` | 504 nm²; with one flush pair this is linear: an 18 nm stub is at least 28 nm long |
+| `M1.S.1`-`S.5` | spacing by the facing edges' lengths: long (≥ 36.25 nm), `mid` (24-36 nm) or `tiny` |
+| `V1.M1.EN.1` | 5 nm on one side and 2 nm on the other, on one opposite pair |
+| `V1.M2.AUX.2`, `M2.S.1` | the bitline is flush with the V1s across Y; rows of bitlines 18 nm apart |
+| `V0.S.1`, `V1.S.1` | 18 nm between vias |
+
+Corner-to-corner spacing (`M1.S.6`) and the conditional V0/V1 spacings are
+omitted. Omitting rules only enlarges the modeled space, so the model stays a
+relaxation. The X order of the columns is fixed by the topology. Each shape
+is checked against the next tile's copy at `+ width` and the next row's copy
+at `+ height`. Facing spacings apply wherever the two Y spans overlap.
+
+The area bound is still proved on the FEOL model alone, so the UNSAT results
+need none of the routing assumptions. The routing block adds the
+`routed_drawn_witness` query: every drawn routing coordinate is fixed, and the
+query must be SAT. So the drawn wiring fits the minimum tile under the encoded
+rules. In it, the drain stubs stand exactly 26 nm off the VSS column (M1.S.2
+asks 25) and 36 nm from the next tile's stub (M1.S.4 asks 31).
+
+The routing rules also hold the row pitch on their own. Without ACTIVE.S.1,
+a tile no wider than 162 nm still cannot have `H < 27*(f+1)`. Gates 54 nm
+apart leave an LISD bar at most 34 nm wide, so its ends are `mid` edges and
+the bars of adjacent rows need LISD.S.3's 27 nm. A wider tile admits a
+long-edged bar and an 18 nm gap. The tests keep each routing rule honest:
+each one rejects a drawn witness broken in its own way, and accepts the same
+geometry once that rule is removed. The broken witnesses are:
+
+- a stub 24 nm from the column;
+- stub tips 29 nm apart;
+- the old full-ACTIVE-height drain pad;
+- a 27 nm stub;
+- 2 nm of LISD around the V0.
 
 A separate SAT query fixes all coordinates to the generator's **drawn
 polygons**. The runner requires this witness to attain both bounds, writes a
