@@ -98,6 +98,7 @@ Larger blocks do not compare on equal terms yet:
 | 64 × 32 | 57.355 µm² | 35.71 | 32.016 × 8.387 µm, 268.518 µm² | 7.63 |
 | 256 × 32 | 212.336 µm² | 38.58 | 36.336 × 12.707 µm, 461.722 µm² | 17.74 |
 | 1024 × 16 | — | — | 38.496 × 36.899 µm, 1,420.464 µm² | 11.53 |
+| 1024 × 148 | — | — | 175.872 × 60.227 µm, 10,592.243 µm² | 14.31 |
 
 The NOR-ROM figures are the selected shapes from
 [the shape search](#shape-search-and-routing-aware-packing): array, wordline
