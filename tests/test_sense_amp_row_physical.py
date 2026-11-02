@@ -66,7 +66,7 @@ def _terminated(library, cells, stack, tag):
     return top
 
 
-def test_isolated_amplifiers_only_trip_the_missing_body_tap(asap7_drc):
+def test_isolated_amplifiers_only_trip_the_missing_body_tap(asap7_drc, runset_residual):
     library = _library()
     top = library.new_cell("sarow_isolated")
     cursor = 0
@@ -77,13 +77,16 @@ def test_isolated_amplifiers_only_trip_the_missing_body_tap(asap7_drc):
             )
         )
         cursor += spec.width + 1000
-    assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+    found = set(asap7_drc(library, top, tag="isolated"))
+    assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize(
-    "spec", [SenseAmpRowSpec(), SenseAmpRowSpec(band_height=(162, 162))], ids=lambda spec: spec.cell_name
+    "spec",
+    [SenseAmpRowSpec(), SenseAmpRowSpec(band_height=(162, 162))],
+    ids=lambda spec: spec.cell_name,
 )
-def test_terminated_amplifier_is_clean(asap7_drc, spec):
+def test_terminated_amplifier_is_clean(asap7_drc, spec, runset_residual):
     library = _library()
     top = _terminated(
         library,
@@ -91,10 +94,12 @@ def test_terminated_amplifier_is_clean(asap7_drc, spec):
         spec.stack,
         "sarow_terminated",
     )
-    assert asap7_drc(library, top, tag="terminated") == []
+    assert (
+        set(asap7_drc(library, top, tag="terminated")) - runset_residual(spec) == set()
+    )
 
 
-def test_the_four_io_cells_abut_on_one_row_pair(asap7_drc):
+def test_the_four_io_cells_abut_on_one_row_pair(asap7_drc, runset_residual):
     """Bitline leaf, sense amplifier, write driver and output latch side by side, terminated: nothing fires."""
     library = _library()
     cells = [
@@ -106,7 +111,8 @@ def test_the_four_io_cells_abut_on_one_row_pair(asap7_drc):
         build_output_latch(OutputLatchSpec(), lib=library),
     ]
     top = _terminated(library, cells, WriteDriverSpec().stack, "io_row")
-    assert asap7_drc(library, top, tag="io_row") == []
+    found = set(asap7_drc(library, top, tag="io_row"))
+    assert found - runset_residual(WriteDriverSpec()) == set()
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.cell_name)

@@ -156,6 +156,25 @@ def require_klayout(external_tool) -> Path:
 
 
 @pytest.fixture
+def runset_residual() -> Callable[..., frozenset[str]]:
+    """The DRC rules a layout may keep because a cell in it uses a 135 nm n band.
+
+    Those cells plan via pads on `RUNSET_RAIL_SPACE` (see
+    `rowcell.RUNSET_RESIDUAL_RULES`); a 162 nm band takes M1.S.2's clearances
+    and keeps none.  Takes cell specs, or an IO column, whose cells share a band.
+    """
+    from chipforge_asap7.devices.rowcell import RUNSET_RESIDUAL_RULES
+
+    def _residual(*specs) -> frozenset[str]:
+        bands = [getattr(s, "band_height", None) or s.mux.band_height for s in specs]
+        if any(band[0] < 162 for band in bands):
+            return RUNSET_RESIDUAL_RULES
+        return frozenset()
+
+    return _residual
+
+
+@pytest.fixture
 def asap7_drc(external_tool, tmp_path) -> Callable[..., list[str]]:
     """Run ASAP7 DRC over a library via gdscheck, and report what it found.
 

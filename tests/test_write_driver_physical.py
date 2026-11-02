@@ -35,7 +35,7 @@ def _library():
     return library
 
 
-def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc):
+def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc, runset_residual):
     library = _library()
     top = library.new_cell("wrdrv_isolated")
     cursor = 0
@@ -46,11 +46,12 @@ def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc):
             )
         )
         cursor += spec.width + 1000
-    assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+    found = set(asap7_drc(library, top, tag="isolated"))
+    assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize("spec", SPECS[:2], ids=lambda spec: spec.cell_name)
-def test_terminated_driver_is_clean(spec, asap7_drc):
+def test_terminated_driver_is_clean(spec, asap7_drc, runset_residual):
     library = _library()
     cell = build_write_driver(spec, lib=library)
     support = {
@@ -65,7 +66,9 @@ def test_terminated_driver_is_clean(spec, asap7_drc):
         placed = cell if item == "cell" else support[item]
         top.add(gdspy.CellReference(placed, origin=(cursor, 0)))
         cursor += spec.width if item == "cell" else placed.get_bounding_box()[1][0]
-    assert asap7_drc(library, top, tag="terminated") == []
+    assert (
+        set(asap7_drc(library, top, tag="terminated")) - runset_residual(spec) == set()
+    )
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.cell_name)

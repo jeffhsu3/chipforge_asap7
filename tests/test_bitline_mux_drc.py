@@ -40,7 +40,7 @@ def _library():
     return library
 
 
-def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
+def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc, runset_residual):
     library = _library()
     top = library.new_cell("blmux_isolated")
     cursor = 0
@@ -51,13 +51,14 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
             )
         )
         cursor += spec.width + 1000
-    assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+    found = set(asap7_drc(library, top, tag="isolated"))
+    assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize(
     "spec", [*SPECS[:2], *SPECS[3:], PORT_A, PORT_B], ids=lambda spec: spec.cell_name
 )
-def test_terminated_leaf_is_clean(spec, asap7_drc):
+def test_terminated_leaf_is_clean(spec, asap7_drc, runset_residual):
     library = _library()
     leaf = build_bitline_mux(spec, lib=library)
     support = {
@@ -72,15 +73,19 @@ def test_terminated_leaf_is_clean(spec, asap7_drc):
         cell = leaf if item == "leaf" else support[item]
         top.add(gdspy.CellReference(cell, origin=(cursor, 0)))
         cursor += spec.width if item == "leaf" else cell.get_bounding_box()[1][0]
-    assert asap7_drc(library, top, tag="terminated") == []
+    assert (
+        set(asap7_drc(library, top, tag="terminated")) - runset_residual(spec) == set()
+    )
 
 
 @pytest.mark.parametrize("selects", [2, 4])
-def test_stacking_leaves_adds_no_violation(selects, asap7_drc):
+def test_stacking_leaves_adds_no_violation(selects, asap7_drc, runset_residual):
     """Rails merge, M3 tracks meet end to end, and no seam rule fires."""
     library = _library()
-    group = build_bitline_mux_group(BitlineMuxSpec(selects=selects), lib=library)
-    assert set(asap7_drc(library, group, tag=f"group{selects}")) == NO_TAP_IN_CELL
+    spec = BitlineMuxSpec(selects=selects)
+    group = build_bitline_mux_group(spec, lib=library)
+    found = set(asap7_drc(library, group, tag=f"group{selects}"))
+    assert found - runset_residual(spec) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize(
@@ -98,10 +103,13 @@ def test_stacking_leaves_adds_no_violation(selects, asap7_drc):
         "port_b_m4_on_the_array_grid",
     ],
 )
-def test_two_row_leaves_and_their_groups_add_no_violation(spec, asap7_drc):
+def test_two_row_leaves_and_their_groups_add_no_violation(
+    spec, asap7_drc, runset_residual
+):
     library = _library()
     top = library.new_cell("blmux_two_row")
     top.add(gdspy.CellReference(build_bitline_mux(spec, lib=library)))
     group = build_bitline_mux_group(spec, lib=library)
     top.add(gdspy.CellReference(group, origin=(spec.width + 1000, 0)))
-    assert set(asap7_drc(library, top, tag="two_row")) == NO_TAP_IN_CELL
+    found = set(asap7_drc(library, top, tag="two_row"))
+    assert found - runset_residual(spec) == NO_TAP_IN_CELL

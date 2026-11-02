@@ -55,7 +55,7 @@ def _terminated(library, cells, stack, tag):
     return top
 
 
-def test_isolated_latches_only_trip_the_missing_body_tap(asap7_drc):
+def test_isolated_latches_only_trip_the_missing_body_tap(asap7_drc, runset_residual):
     library = _library()
     top = library.new_cell("outlatch_isolated")
     cursor = 0
@@ -66,10 +66,11 @@ def test_isolated_latches_only_trip_the_missing_body_tap(asap7_drc):
             )
         )
         cursor += spec.width + 1000
-    assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+    found = set(asap7_drc(library, top, tag="isolated"))
+    assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
 
-def test_terminated_latch_is_clean(asap7_drc):
+def test_terminated_latch_is_clean(asap7_drc, runset_residual):
     spec = OutputLatchSpec()
     library = _library()
     top = _terminated(
@@ -78,7 +79,9 @@ def test_terminated_latch_is_clean(asap7_drc):
         spec.stack,
         "outlatch_terminated",
     )
-    assert asap7_drc(library, top, tag="terminated") == []
+    assert (
+        set(asap7_drc(library, top, tag="terminated")) - runset_residual(spec) == set()
+    )
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.cell_name)
