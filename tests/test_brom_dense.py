@@ -112,8 +112,15 @@ def test_dense_shape_matrix(depth, bits, ways, tmp_path, asap7_drc, require_klay
     ref = tmp_path / "macro.sp"
     lib.write_gds(str(path))
     ref.write_text(c.lvs_reference())
+    # The 1024x16 shape's flat-enough compare outlasts run_lvs's 300 s default
+    # on a 4-core machine; a real mismatch still fails at once.
     result = run_lvs(
-        path, ref, tmp_path / "lvs", cell_name=top.name, merge_fin_diffusion=True
+        path,
+        ref,
+        tmp_path / "lvs",
+        cell_name=top.name,
+        merge_fin_diffusion=True,
+        timeout=1800,
     )
     assert result.matched, result.log.read_text()
     assert not any(
