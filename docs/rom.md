@@ -68,6 +68,48 @@ x:   0    27    54    81   108   135   162
 | 2 | 81 x 81 | 6561 |
 | 3 | 81 x 108 | 8748 |
 
+## Density compared with SRAM and BROM
+
+Measured on 2026-11-02 from the generators in this repository. Bitcell areas
+are placement-boundary areas per stored bit; they exclude taps, edges and
+periphery.
+
+| Bitcell | Tile (nm) | Bits per tile | µm² per bit | Bits per µm² |
+| --- | --- | ---: | ---: | ---: |
+| NOR-ROM, 1 fin | 162 x 54 | 2 | 0.004374 | 228.6 |
+| NOR-ROM, 2 fins (default) | 162 x 81 | 2 | 0.006561 | 152.4 |
+| NOR-ROM, 3 fins | 162 x 108 | 2 | 0.008748 | 114.3 |
+| BROM selector core ([proof](brom_minimum.md)) | 108 x 432 | 4 | 0.011664 | 85.7 |
+| 6T SRAM `sram_cell_6t_122` ([proof](sram_6t_minimum.md)) | 108 x 270 | 1 | 0.029160 | 34.3 |
+| 8T SRAM `sram_cell_8t` (dual port) | 108 x 594 | 1 | 0.064152 | 15.6 |
+
+The two-fin NOR-ROM bit is 1.8× denser than the BROM selector core,
+4.4× denser than the 6T bitcell and 9.8× denser than the 8T bitcell. With
+its strap row every 16 bit rows, the tap row and the closed edges, a
+two-fin NOR-ROM array still stores 136.7 bits/µm² (0.007313 µm² per bit at
+64 × 32 and 256 × 32).
+
+Larger blocks do not compare on equal terms yet:
+
+| Words × bits | NOR-ROM array + decoder envelope | Bits per µm² | BROM complete macro, mux4 | Bits per µm² |
+| --- | ---: | ---: | ---: | ---: |
+| 16 × 4 | — | — | 16.416 × 2.339 µm, 38.397 µm² | 1.67 |
+| 64 × 16 | — | — | 21.600 × 4.499 µm, 97.178 µm² | 10.54 |
+| 64 × 32 | 57.355 µm² | 35.71 | 32.016 × 8.387 µm, 268.518 µm² | 7.63 |
+| 256 × 32 | 212.336 µm² | 38.58 | 36.336 × 12.707 µm, 461.722 µm² | 17.74 |
+| 1024 × 16 | — | — | 38.496 × 36.899 µm, 1,420.464 µm² | 11.53 |
+
+The NOR-ROM figures are the selected shapes from
+[the shape search](#shape-search-and-routing-aware-packing): array, wordline
+decoder and predecoders only. They have no precharge, sensing, column select
+or output latch, which the NOR-ROM does not draw yet. The BROM figures are the
+bounding box of a complete two-fin RVT macro, including its CGEN, address
+latches, precharge, sampling and output latches. On these sizes the
+periphery, not the bitcell, sets BROM density. Its 64 × 32 macro is less
+dense than 64 × 16 (not yet investigated), and 1024 × 16 uses the
+electrical-order fallback placement described in [brom.md](brom.md).
+The comparison will be fair only once the NOR-ROM has its read path.
+
 ## Minimum-area proof for this topology
 
 `chipforge_asap7.verification.rom_minimum` proves the minimum periodic core
