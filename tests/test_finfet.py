@@ -6,6 +6,7 @@ import pytest
 from chipforge_asap7.devices import FinFETSpec, build_finfet, nmos_fin, pmos_fin
 from chipforge_asap7.devices.finfet import (
     DEVICE_GATE_CUT_HEIGHT,
+    DRAIN_STRIP_MIN_LENGTH,
     GATE_LIG_HEIGHT,
     GATE_SD_SPACE,
     GATE_V0_DX,
@@ -383,6 +384,13 @@ def test_select_layers_tile_the_whole_cell():
             assert (box[1], box[3]) == (0, spec.height)
 
 
+def _drain_strip(cell, spec):
+    """The drain M1: flush with its V0 top and bottom (V0.M1.AUX.3)."""
+    y = spec.drain_contact_y()
+    half = CONTACT_SIZE / 2
+    return next(p for p in polys(cell, "M1") if (p[1], p[3]) == (y - half, y + half))
+
+
 def test_drain_pad_spans_only_the_drain_columns():
     """The drain conductor must not be dragged across the source columns.
 
@@ -395,12 +403,15 @@ def test_drain_pad_spans_only_the_drain_columns():
         FinFETSpec(fins=2, fingers=2, multipliers=4),
     ):
         cell = build_finfet(spec)
-        act_lo, act_hi = spec.active_span()
-        pad = next(p for p in polys(cell, "M1") if (p[1], p[3]) == (act_lo, act_hi))
+        pad = _drain_strip(cell, spec)
         end_cap = CONTACT_SIZE / 2 + M1_V0_ENCLOSURE
+        # A lone drain grows symmetrically to a long edge (M1.S.2).
+        span = spec.drain_xs[-1] - spec.drain_xs[0] + 2 * end_cap
+        grow = max(0, DRAIN_STRIP_MIN_LENGTH - span) / 2
 
-        assert pad[0] == spec.drain_xs[0] - end_cap
-        assert pad[2] == spec.drain_xs[-1] + end_cap
+        assert pad[0] == spec.drain_xs[0] - end_cap - grow
+        assert pad[2] == spec.drain_xs[-1] + end_cap + grow
+        assert pad[2] - pad[0] >= DRAIN_STRIP_MIN_LENGTH
         assert spec.width - pad[2] >= M1_BOUNDARY_INSET
 
         # A contiguous pad has to bridge the source columns *between* two
@@ -503,10 +514,8 @@ def test_source_to_drain_m1_spacing_sits_exactly_on_the_rule():
     """M1.S.1 has zero slack here: ACTIVE_ENC and the rail height set it."""
     for spec in (FinFETSpec(fins=1), FinFETSpec(fins=4, fingers=3)):
         cell = build_finfet(spec)
-        act_lo, act_hi = spec.active_span()
-        m1 = polys(cell, "M1")
-        rail = next(p for p in m1 if p[1] < 0)
-        drain = next(p for p in m1 if (p[1], p[3]) == (act_lo, act_hi))
+        rail = next(p for p in polys(cell, "M1") if p[1] < 0)
+        drain = _drain_strip(cell, spec)
 
         assert rail[3] - rail[1] == M1_WIDTH
         assert drain[1] - rail[3] == M1_MIN_SPACE

@@ -35,6 +35,116 @@
       "value": 27,
       "rule": "ACTIVE.S.1",
       "deck": "decks/active.yml"
+    },
+    "edge_long_min_nm": {
+      "value": 36.25,
+      "rule": "M1/M2/LISD .long (pdk.yml virtual_layers)",
+      "deck": "pdk.yml"
+    },
+    "edge_mid_min_nm": {
+      "value": 24,
+      "rule": "M1/M2/LISD .mid / .tiny boundary (pdk.yml virtual_layers)",
+      "deck": "pdk.yml"
+    },
+    "via_size_nm": {
+      "value": 18,
+      "rule": "V0.W.1, V1.W.1",
+      "deck": "decks/v0.yml"
+    },
+    "v0_space_nm": {
+      "value": 18,
+      "rule": "V0.S.1",
+      "deck": "decks/v0.yml"
+    },
+    "v1_space_nm": {
+      "value": 18,
+      "rule": "V1.S.1",
+      "deck": "decks/v1.yml"
+    },
+    "v0_m1_endcap_nm": {
+      "value": 5,
+      "rule": "V0.M1.EN.1 (sides: any)",
+      "deck": "decks/v0.yml"
+    },
+    "v0_lisd_enclosure_nm": {
+      "value": 3,
+      "rule": "V0.LISD.EN.2 (sides: opposite)",
+      "deck": "decks/v0.yml"
+    },
+    "v1_m1_enclosure_nm": {
+      "value": 5,
+      "rule": "V1.M1.EN.1 (sides: opposite)",
+      "deck": "decks/v1.yml"
+    },
+    "v1_m1_opposite_enclosure_nm": {
+      "value": 2,
+      "rule": "V1.M1.EN.1 opposite_value",
+      "deck": "decks/v1.yml"
+    },
+    "v1_m2_endcap_nm": {
+      "value": 5,
+      "rule": "V1.M2.EN.2 (sides: any)",
+      "deck": "decks/v1.yml"
+    },
+    "lisd_width_nm": {
+      "value": 24,
+      "rule": "LISD.W.1",
+      "deck": "decks/lisd.yml"
+    },
+    "lisd_space_long_nm": {
+      "value": 18,
+      "rule": "LISD.S.1",
+      "deck": "decks/lisd.yml"
+    },
+    "lisd_space_short_long_nm": {
+      "value": 25,
+      "rule": "LISD.S.2",
+      "deck": "decks/lisd.yml"
+    },
+    "lisd_space_mid_nm": {
+      "value": 27,
+      "rule": "LISD.S.3",
+      "deck": "decks/lisd.yml"
+    },
+    "m1_width_nm": {
+      "value": 18,
+      "rule": "M1.W.1",
+      "deck": "decks/m1.yml"
+    },
+    "m1_space_long_nm": {
+      "value": 18,
+      "rule": "M1.S.1",
+      "deck": "decks/m1.yml"
+    },
+    "m1_space_short_long_nm": {
+      "value": 25,
+      "rule": "M1.S.2",
+      "deck": "decks/m1.yml"
+    },
+    "m1_space_mid_nm": {
+      "value": 27,
+      "rule": "M1.S.3",
+      "deck": "decks/m1.yml"
+    },
+    "m1_space_tiny_nm": {
+      "value": 31,
+      "rule": "M1.S.4, M1.S.5",
+      "deck": "decks/m1.yml"
+    },
+    "m1_area_nm2": {
+      "value": 504,
+      "rule": "M1.A.1",
+      "deck": "decks/m1.yml"
+    },
+    "m2_width_nm": {
+      "value": 18,
+      "rule": "M2.W.1",
+      "deck": "decks/m2.yml"
+    },
+    "m2_space_long_nm": {
+      "value": 18,
+      "rule": "M2.S.1",
+      "deck": "decks/m2.yml"
     }
   },
   "sha256": {

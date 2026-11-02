@@ -1,10 +1,13 @@
 """A scoped minimum-area proof for the existing periodic NOR-ROM topology.
 
 The lower-bound model uses only necessary FEOL inequalities, with continuous
-coordinates and no routing constraints. UNSAT in this relaxed model excludes
-smaller tiles in the stated topology. A separate drawn witness must attain
-the bound, pass the pinned gdscheck deck, and have the expected extracted
-connectivity. This is not a search over other NOR-ROM architectures.
+coordinates. UNSAT in this relaxed model excludes smaller tiles in the stated
+topology. A routing model adds the tile's contacts and wiring -- LISD, V0, the
+M1 VSS column and drain stubs, programming V1s and the M2 bitline -- under the
+pinned M1/M2/V0/V1/LISD rules, including the edge-length spacing classes. The
+drawn routing must satisfy it at the bound. A separate drawn witness must
+attain the bound, pass the pinned gdscheck deck, and have the expected
+extracted connectivity. This is not a search over other NOR-ROM architectures.
 
 Run with ``python -m chipforge_asap7.verification.rom_minimum --help``.
 Z3 is invoked through SMT-LIB; no Python solver bindings are required.
@@ -30,7 +33,7 @@ from ..devices.rom_bitcell import (
 )
 from ..layout.layers import LAYERS, require_gdspy
 from .drc import drc_counts, find_gdscheck, run_gdscheck
-from .minimum_proof import dimension_queries, run_query
+from .minimum_proof import dimension_queries, run_query, smt_number
 from .minimum_proof import smt_assert as _assert
 from .minimum_proof import tool_info as _tool_info
 from .minimum_proof import validate_rule_source as validate_pinned_source
@@ -43,11 +46,20 @@ ASSUMPTIONS = (
     "Different bit rows have separate ACTIVE strips and bitlines.",
     "Ordinary ASAP7 rules apply: no SRAMDRC marker or SRAM rule exceptions.",
 )
+ROUTING_ASSUMPTIONS = (
+    "Each source/drain column has one rectangular LISD bar spanning its row's ACTIVE, clear of both gates.",
+    "Each LISD bar carries one V0; V0s and V1s are 18 nm squares.",
+    "The shared source reaches VSS through one straight full-height M1 column, continuous across rows.",
+    "Each drain lands on its own rectangular M1 stub, horizontal or vertical, inside its tile row.",
+    "Each programming V1 sits on its drain's stub; both meet one straight full-width M2 bitline per row.",
+    "Identical rows repeat in Y; the wordline straps, taps and edges lie outside the tile.",
+)
 LIMITS = (
     "Area is the periodic core area per bit; straps, taps, edges and periphery are excluded.",
     "Alternative topologies, programming layers and diffusion-sharing schemes are outside the proof.",
     "Switches are ideal; leakage, read current, timing, noise margins and PVT are not proved.",
     "The SMT model is a necessary-rule relaxation, not an encoding of the full DRC deck.",
+    "The routing model omits corner-to-corner (M1.S.6) spacing and conditional V0/V1 spacings.",
     "Rule transcription and the topology-to-constraint mapping are explicit trusted assumptions.",
     "Z3 proof terms are saved; they are not independently checked by a second proof checker.",
     "DRC checks the finite witness; it does not certify every array size or programmed image.",
@@ -120,8 +132,225 @@ def layout_constraints(fins: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def measure_tile(cell: Any, fins: int) -> dict[str, float]:
-    """Read the actual polygons, not the spec's width/height properties."""
+#: Routed rectangles in the tile, in cyclic X order: the columns' LISD bars,
+#: their V0s, the M1 VSS column and drain stubs, and the two programming V1s.
+COLUMNS = ("da", "s", "db")
+ROUTED = (
+    *(f"lisd_{c}" for c in COLUMNS),
+    *(f"v0_{c}" for c in COLUMNS),
+    "m1_s",
+    "m1_da",
+    "m1_db",
+    "v1_da",
+    "v1_db",
+)
+
+
+def _rect(name: str) -> tuple[str, str, str, str]:
+    return tuple(f"{name}_{edge}" for edge in ("x0", "y0", "x1", "y1"))
+
+
+def _edge_class_space(
+    facts: dict[str, Any], prefix: str, la: str, lb: str, tiny: bool
+) -> str:
+    """Spacing two facing edges of lengths `la` and `lb` need, as an SMT term.
+
+    Long edges are at least `edge_long_min_nm`; a short edge is `mid` from
+    `edge_mid_min_nm` and `tiny` below it (pdk.yml's virtual layers). Long to
+    long is S.1, short to long S.2, mid to mid S.3; a tiny edge facing any
+    short edge is S.4/S.5 where the layer has them (`tiny`); LISD has none, so
+    there the pair relaxes to S.1, which every pair satisfies.
+    """
+    long_ = facts["edge_long_min_nm"]
+    mid = facts["edge_mid_min_nm"]
+    is_long = lambda l: f"(>= {l} {smt_number(long_)})"
+    is_tiny = lambda l: f"(< {l} {mid})"
+    both_long = f"(and {is_long(la)} {is_long(lb)})"
+    one_long = f"(or {is_long(la)} {is_long(lb)})"
+    any_tiny = f"(or {is_tiny(la)} {is_tiny(lb)})"
+    tiny_space = (
+        facts[f"{prefix}_space_tiny_nm"] if tiny else facts[f"{prefix}_space_long_nm"]
+    )
+    return (
+        f"(ite {both_long} {facts[f'{prefix}_space_long_nm']} "
+        f"(ite {one_long} {facts[f'{prefix}_space_short_long_nm']} "
+        f"(ite {any_tiny} {tiny_space} {facts[f'{prefix}_space_mid_nm']})))"
+    )
+
+
+def routing_constraints(fins: int) -> str:
+    """The tile's contacts and wiring under the pinned routing rules.
+
+    Appended to `layout_constraints`. Every assertion is a necessary condition
+    on the stated routing topology (`ROUTING_ASSUMPTIONS`): a layout drawn in
+    it must satisfy them all, and the drawn tile is checked to. The X order of
+    the columns is fixed by the topology, with the next tile's drain stub at
+    `+ width`; the next row's copy of every shape is at `+ height`.
+    """
+    minimum_dimensions(fins)
+    r = _facts()
+    via = r["via_size_nm"]
+    half_gate = r["gate_width_nm"] / 2
+    lines = [
+        "; Routing: LISD, V0, M1 column and stubs, V1 and the M2 bitline.",
+        *(f"(declare-const {v} Real)" for n in ROUTED for v in _rect(n)),
+        "(declare-const m2_y0 Real)",
+        "(declare-const m2_y1 Real)",
+    ]
+    add = lambda name, expr: lines.append(_assert(name, expr))
+
+    def inside(inner: str, outer: str, margin: float = 0) -> str:
+        ix0, iy0, ix1, iy1 = _rect(inner)
+        ox0, oy0, ox1, oy1 = _rect(outer)
+        m = smt_number(margin)
+        return (
+            f"(and (>= (- {ix0} {ox0}) {m}) (>= (- {ox1} {ix1}) {m}) "
+            f"(>= (- {iy0} {oy0}) {m}) (>= (- {oy1} {iy1}) {m}))"
+        )
+
+    def pair_enclosure(inner: str, outer: str, near: float, far: float) -> str:
+        """Some opposite pair encloses by `near` on one side and `far` on the other."""
+        ix0, iy0, ix1, iy1 = _rect(inner)
+        ox0, oy0, ox1, oy1 = _rect(outer)
+        terms = []
+        for lo, hi in (((ix0, ox0), (ox1, ix1)), ((iy0, oy0), (oy1, iy1))):
+            a, b = f"(- {lo[0]} {lo[1]})", f"(- {hi[0]} {hi[1]})"
+            terms.append(f"(and (>= {a} {near}) (>= {b} {far}))")
+            terms.append(f"(and (>= {a} {far}) (>= {b} {near}))")
+        return f"(or {' '.join(terms)})"
+
+    def flush_pair(inner: str, outer: str) -> str:
+        """Max enclosure 0 on an opposite pair: the outer shape is flush there."""
+        ix0, iy0, ix1, iy1 = _rect(inner)
+        ox0, oy0, ox1, oy1 = _rect(outer)
+        return f"(or (and (= {ix0} {ox0}) (= {ix1} {ox1})) (and (= {iy0} {oy0}) (= {iy1} {oy1})))"
+
+    def x_space(
+        left: str, right: str, prefix: str, tiny: bool, shift: str = "0"
+    ) -> str:
+        """Facing across X: where the Y spans overlap, the class spacing applies."""
+        _, ly0, lx1, ly1 = _rect(left)
+        rx0, ry0, _, ry1 = _rect(right)
+        gap = f"(- (+ {rx0} {shift}) {lx1})"
+        facing = f"(and (< {ly0} {ry1}) (< {ry0} {ly1}))"
+        need = _edge_class_space(
+            r, prefix, f"(- {ly1} {ly0})", f"(- {ry1} {ry0})", tiny
+        )
+        return f"(and (>= {gap} 0) (=> {facing} (>= {gap} {need})))"
+
+    def y_space(shape: str, prefix: str, tiny: bool) -> str:
+        """A shape against its copy one row up: facing across Y, edges its width."""
+        x0, y0, x1, y1 = _rect(shape)
+        width = f"(- {x1} {x0})"
+        need = _edge_class_space(r, prefix, width, width, tiny)
+        return f"(>= (- (+ {y0} height) {y1}) {need})"
+
+    gates = {"da": ("(- gi width)", "ga"), "s": ("ga", "gb"), "db": ("gb", "gi")}
+    for column in COLUMNS:
+        lisd, v0 = f"lisd_{column}", f"v0_{column}"
+        lx0, ly0, lx1, ly1 = _rect(lisd)
+        vx0, vy0, vx1, vy1 = _rect(v0)
+        left, right = gates[column]
+        add(f"lisd_width_{column}", f"(>= (- {lx1} {lx0}) {r['lisd_width_nm']})")
+        add(f"lisd_spans_active_{column}", f"(and (<= {ly0} alo) (>= {ly1} ahi))")
+        add(
+            f"lisd_clear_of_gates_{column}",
+            f"(and (>= {lx0} (+ {left} {smt_number(half_gate)})) (<= {lx1} (- {right} {smt_number(half_gate)})))",
+        )
+        add(f"lisd_row_space_{column}", y_space(lisd, "lisd", False))
+        add(
+            f"v0_size_{column}",
+            f"(and (= (- {vx1} {vx0}) {via}) (= (- {vy1} {vy0}) {via}))",
+        )
+        add(f"v0_on_lisd_{column}", inside(v0, lisd))
+        add(
+            f"v0_lisd_enclosure_{column}",
+            pair_enclosure(
+                v0, lisd, r["v0_lisd_enclosure_nm"], r["v0_lisd_enclosure_nm"]
+            ),
+        )
+        add(
+            f"v0_row_space_{column}",
+            f"(>= (- (+ {vy0} height) {vy1}) {r['v0_space_nm']})",
+        )
+    for a, b, shift in (("da", "s", "0"), ("s", "db", "0"), ("db", "da", "width")):
+        add(
+            f"lisd_space_{a}_{b}",
+            x_space(f"lisd_{a}", f"lisd_{b}", "lisd", False, shift),
+        )
+        add(
+            f"v0_space_{a}_{b}",
+            _v0_x_space(f"v0_{a}", f"v0_{b}", r["v0_space_nm"], shift),
+        )
+
+    # The VSS column: full height and continuous across rows, so its sides are
+    # long; it covers the source V0, flush with it across X (V0.M1.AUX.3).
+    sx0, sy0, sx1, sy1 = _rect("m1_s")
+    vx0, vy0, vx1, vy1 = _rect("v0_s")
+    add("m1_column_full_height", f"(and (= {sy0} 0) (= {sy1} height))")
+    add(
+        "m1_column_on_v0",
+        f"(and (= {sx0} {vx0}) (= {sx1} {vx1}) (<= {sy0} {vy0}) (>= {sy1} {vy1}))",
+    )
+    add("m1_column_width", f"(>= (- {sx1} {sx0}) {r['m1_width_nm']})")
+    add(
+        "m1_column_endcap",
+        f"(or (>= (- {vy0} {sy0}) {r['v0_m1_endcap_nm']}) (>= (- {sy1} {vy1}) {r['v0_m1_endcap_nm']}))",
+    )
+
+    for drain in ("da", "db"):
+        stub, v0, v1 = f"m1_{drain}", f"v0_{drain}", f"v1_{drain}"
+        mx0, my0, mx1, my1 = _rect(stub)
+        ux0, uy0, ux1, uy1 = _rect(v1)
+        add(f"m1_stub_on_v0_{drain}", inside(v0, stub))
+        add(f"m1_stub_flush_{drain}", flush_pair(v0, stub))
+        add(
+            f"m1_stub_endcap_{drain}", pair_enclosure(v0, stub, r["v0_m1_endcap_nm"], 0)
+        )
+        # M1.A.1 on a stub one via wide across its flush pair: linear in the length.
+        add(
+            f"m1_stub_area_{drain}",
+            f"(or (>= (* {via} (- {mx1} {mx0})) {r['m1_area_nm2']}) (>= (* {via} (- {my1} {my0})) {r['m1_area_nm2']}))",
+        )
+        add(f"m1_stub_in_row_{drain}", f"(and (>= {my0} 0) (<= {my1} height))")
+        add(f"m1_stub_row_space_{drain}", y_space(stub, "m1", True))
+        add(
+            f"v1_size_{drain}",
+            f"(and (= (- {ux1} {ux0}) {via}) (= (- {uy1} {uy0}) {via}))",
+        )
+        add(f"v1_on_stub_{drain}", inside(v1, stub))
+        add(
+            f"v1_m1_enclosure_{drain}",
+            pair_enclosure(
+                v1, stub, r["v1_m1_enclosure_nm"], r["v1_m1_opposite_enclosure_nm"]
+            ),
+        )
+        # The bitline runs the full width, so V1.M2.EN.2's end-cap is along X
+        # and V1.M2.AUX.2's flush pair can only be across Y.
+        add(f"v1_m2_flush_{drain}", f"(and (= {uy0} m2_y0) (= {uy1} m2_y1))")
+        add(
+            f"v1_row_space_{drain}",
+            f"(>= (- (+ {uy0} height) {uy1}) {r['v1_space_nm']})",
+        )
+    add("m1_space_da_s", x_space("m1_da", "m1_s", "m1", True))
+    add("m1_space_s_db", x_space("m1_s", "m1_db", "m1", True))
+    add("m1_space_db_da", x_space("m1_db", "m1_da", "m1", True, "width"))
+    add("v1_space_da_db", f"(>= (- v1_db_x0 v1_da_x1) {r['v1_space_nm']})")
+    add("v1_space_db_da", f"(>= (- (+ v1_da_x0 width) v1_db_x1) {r['v1_space_nm']})")
+    add("m2_width", f"(>= (- m2_y1 m2_y0) {r['m2_width_nm']})")
+    add("m2_row_space", f"(>= (- (+ m2_y0 height) m2_y1) {r['m2_space_long_nm']})")
+    return "\n".join(lines) + "\n"
+
+
+def _v0_x_space(left: str, right: str, space: int, shift: str) -> str:
+    _, ly0, lx1, ly1 = _rect(left)
+    rx0, ry0, _, ry1 = _rect(right)
+    gap = f"(- (+ {rx0} {shift}) {lx1})"
+    facing = f"(and (< {ly0} {ry1}) (< {ry0} {ly1}))"
+    return f"(and (>= {gap} 0) (=> {facing} (>= {gap} {space})))"
+
+
+def _rectangle_reader(cell: Any):
     polygons = cell.get_polygons(by_spec=True)
 
     def rectangles(layer: str) -> list[tuple[float, float, float, float]]:
@@ -140,6 +369,59 @@ def measure_tile(cell: Any, fins: int) -> dict[str, float]:
             boxes.append((x0, y0, x1, y1))
         return sorted(boxes)
 
+    return rectangles
+
+
+def measure_routing(
+    tile: Any, array: Any, spec: RomArraySpec, bit: int
+) -> dict[str, float]:
+    """Read the drawn routing of one tile, with V1s from a programmed array row.
+
+    The tile has no V1s: `build_rom_array` drops them on the stubs. `bit` must
+    be a row of `array` whose first tile has both words programmed; its V1s are
+    read back into tile coordinates.
+    """
+    rectangles = _rectangle_reader(tile)
+    lisd, v0, m1, m2 = (rectangles(name) for name in ("LISD", "V0", "M1", "M2"))
+    height = spec.bitcell.height
+    if len(lisd) != 3 or len(v0) != 3 or len(m1) != 3 or len(m2) != 1:
+        raise ValueError("proof witness needs three LISD/V0/M1 shapes and one M2")
+    column = [box for box in m1 if box[1] == 0 and box[3] == height]
+    stubs = sorted(box for box in m1 if box not in column)
+    if len(column) != 1 or len(stubs) != 2:
+        raise ValueError("proof witness needs one full-height M1 column and two stubs")
+    row = spec.row_y(bit)
+    v1 = sorted(
+        (x0, y0 - row, x1, y1 - row)
+        for x0, y0, x1, y1 in _rectangle_reader(array)("V1")
+        if 0 <= (x0 + x1) / 2 < spec.bitcell.width
+        and row <= (y0 + y1) / 2 < row + height
+    )
+    if len(v1) != 2:
+        raise ValueError("the witness row must program both words of its first tile")
+    if m2[0][0] > 0 or m2[0][2] < spec.bitcell.width:
+        raise ValueError("proof witness bitline does not span the tile")
+    shapes = {
+        **{f"lisd_{c}": box for c, box in zip(COLUMNS, lisd)},
+        **{f"v0_{c}": box for c, box in zip(COLUMNS, v0)},
+        "m1_s": column[0],
+        "m1_da": stubs[0],
+        "m1_db": stubs[1],
+        "v1_da": v1[0],
+        "v1_db": v1[1],
+    }
+    witness = {
+        var: value
+        for name, box in shapes.items()
+        for var, value in zip(_rect(name), box)
+    }
+    witness["m2_y0"], witness["m2_y1"] = m2[0][1], m2[0][3]
+    return witness
+
+
+def measure_tile(cell: Any, fins: int) -> dict[str, float]:
+    """Read the actual polygons, not the spec's width/height properties."""
+    rectangles = _rectangle_reader(cell)
     if rectangles("SRAMDRC") or rectangles("GATE_CUT"):
         raise ValueError("proof witness excludes SRAMDRC and gate cuts in the tile")
     boundaries, active = rectangles("BOUNDARY"), rectangles("ACTIVE")
@@ -179,9 +461,26 @@ def measure_tile(cell: Any, fins: int) -> dict[str, float]:
     }
 
 
-def proof_queries(fins: int, witness: dict[str, float]) -> dict[str, tuple[str, str]]:
+def proof_queries(
+    fins: int, witness: dict[str, float], routing: dict[str, float] | None = None
+) -> dict[str, tuple[str, str]]:
+    """The FEOL bound and drawn witness, plus the routed witness when given.
+
+    The bound stays on the FEOL model: its UNSAT needs no routing assumption.
+    `routed_drawn_witness` fixes every drawn routing coordinate as well and
+    must be SAT under the routing rules too, so the drawn wiring fits the bound.
+    """
     width, height = minimum_dimensions(fins)
-    return dimension_queries(layout_constraints(fins), width, height, witness)
+    queries = dimension_queries(layout_constraints(fins), width, height, witness)
+    if routing is not None:
+        source, _ = dimension_queries(
+            layout_constraints(fins) + routing_constraints(fins),
+            width,
+            height,
+            {**witness, **routing},
+        )["drawn_witness"]
+        queries["routed_drawn_witness"] = (source, "sat")
+    return queries
 
 
 def topology_check() -> dict[str, Any]:
@@ -314,7 +613,9 @@ def extract_witness(gds: Path, cell_name: str, spec: RomArraySpec) -> dict[str, 
     }
 
 
-def _draw_witness(fins: int, gds: Path) -> tuple[dict[str, float], RomArraySpec, str]:
+def _draw_witness(
+    fins: int, gds: Path
+) -> tuple[dict[str, float], dict[str, float], RomArraySpec, str]:
     gdspy = require_gdspy()
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     previous = gdspy.current_library
@@ -331,7 +632,9 @@ def _draw_witness(fins: int, gds: Path) -> tuple[dict[str, float], RomArraySpec,
         ]
         top = build_rom_array(array, sites, lib=library)
         library.write_gds(str(gds))
-        return witness, array, top.name
+        # Row 3 programs both words of every tile.
+        routing = measure_routing(tile, top, array, bit=3)
+        return witness, routing, array, top.name
     finally:
         gdspy.current_library = previous
 
@@ -347,7 +650,7 @@ def prove_minimum(
     """
     out.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
-        "format": "chipforge_asap7.rom_minimum.v1",
+        "format": "chipforge_asap7.rom_minimum.v2",
         "status": "incomplete",
         "fins": fins,
         "assumptions": ASSUMPTIONS,
@@ -369,13 +672,17 @@ def prove_minimum(
         }
         report["topology"] = topology_check()
         gds = out / "witness.gds"
-        witness, array, cell_name = _draw_witness(fins, gds)
+        witness, routing, array, cell_name = _draw_witness(fins, gds)
         if (witness["width"], witness["height"]) != (width, height):
             raise ValueError("drawn tile does not attain the independent lower bound")
         report["drawn_tile_nm"] = witness
+        report["drawn_routing_nm"] = routing
+        report["routing_assumptions"] = ROUTING_ASSUMPTIONS
         report["queries"] = {
             name: run_query(z3, source, out / f"{name}.smt2", expected)
-            for name, (source, expected) in proof_queries(fins, witness).items()
+            for name, (source, expected) in proof_queries(
+                fins, witness, routing
+            ).items()
         }
         report["gds"] = {
             "path": gds.name,

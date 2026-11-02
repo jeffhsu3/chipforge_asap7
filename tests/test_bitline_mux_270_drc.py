@@ -19,6 +19,10 @@ from chipforge_asap7.devices import (
     build_sideways_mux_group,
 )
 from chipforge_asap7.devices.row import RowStack
+from chipforge_asap7.layout.grid import GATE_PITCH
+
+# Cells sit on the 54 nm gate site (GATE.S.1), so the gap between them is too.
+GAP = 19 * GATE_PITCH  # 1026 nm
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 #: The 7.5-track standard-cell row the leaf sits in.
@@ -35,16 +39,35 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc):
     library = _library()
     top = library.new_cell("blmux270_isolated")
     cursor = 0
-    for spec in (SidewaysMuxSpec(selects=1), SidewaysMuxSpec(), SidewaysMuxSpec(selects=16, select=9)):
-        top.add(gdspy.CellReference(build_sideways_mux(spec, lib=library), origin=(cursor, 0)))
-        cursor += spec.width + 1000
+    for spec in (
+        SidewaysMuxSpec(selects=1),
+        SidewaysMuxSpec(),
+        SidewaysMuxSpec(selects=16, select=9),
+    ):
+        top.add(
+            gdspy.CellReference(
+                build_sideways_mux(spec, lib=library), origin=(cursor, 0)
+            )
+        )
+        cursor += spec.width + GAP
     assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize(
     "selects, swapped, local_ysel",
-    [(1, False, False), (2, False, False), (4, False, False), (4, True, False), (8, True, False),
-     (16, False, False), (8, False, True), (8, True, True), (16, True, True), (16, False, "pd"), (16, True, "pd")],
+    [
+        (1, False, False),
+        (2, False, False),
+        (4, False, False),
+        (4, True, False),
+        (8, True, False),
+        (16, False, False),
+        (8, False, True),
+        (8, True, True),
+        (16, True, True),
+        (16, False, "pd"),
+        (16, True, "pd"),
+    ],
 )
 def test_terminated_leaf_is_clean(selects, swapped, local_ysel, asap7_drc):
     predecode = local_ysel == "pd"
@@ -63,9 +86,13 @@ def test_terminated_leaf_is_clean(selects, swapped, local_ysel, asap7_drc):
     assert asap7_drc(library, top, tag="terminated") == []
 
 
-@pytest.mark.parametrize("selects, local_ysel", [(4, False), (8, False), (16, False), (8, True), (16, True)])
+@pytest.mark.parametrize(
+    "selects, local_ysel", [(4, False), (8, False), (16, False), (8, True), (16, True)]
+)
 def test_stacking_leaves_adds_no_violation(selects, local_ysel, asap7_drc):
     """Mirrored leaves share their rails (and the inverters' wells), the M3 tracks meet, and no seam rule fires."""
     library = _library()
-    group = build_sideways_mux_group(SidewaysMuxSpec(selects=selects, local_ysel=local_ysel), lib=library)
+    group = build_sideways_mux_group(
+        SidewaysMuxSpec(selects=selects, local_ysel=local_ysel), lib=library
+    )
     assert set(asap7_drc(library, group, tag=f"group{selects}")) == NO_TAP_IN_CELL

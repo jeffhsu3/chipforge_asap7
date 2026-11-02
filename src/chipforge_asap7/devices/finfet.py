@@ -76,6 +76,7 @@ __all__ = [
     "ACTIVE_ENC",
     "CONTACT_SIZE",
     "DEVICE_GATE_CUT_HEIGHT",
+    "DRAIN_STRIP_MIN_LENGTH",
     "GATE_CUT_MIN_SPACE",
     "GATE_LIG_HEIGHT",
     "GATE_SD_SPACE",
@@ -106,6 +107,7 @@ __all__ = [
 
 # ── Device rules (nm), matching the released ASAP7 7.5-track cells ─────
 M1_BOUNDARY_INSET = 18  # M1.S.1 clearance the drain pad keeps from the cell edge
+DRAIN_STRIP_MIN_LENGTH = 38  # > 36 nm: a long edge under M1.S.2
 SD_BAR_WIDTH = 24  # LISD source/drain bar width (x_sd +/- 12)
 GATE_SD_SPACE = 5  # gate-edge to LISD-edge spacing in the ASAP7 cells
 POLY_OVERHANG = 5  # released cells run GATE 5 nm beyond placement boundaries
@@ -427,11 +429,10 @@ class FinFETSpec:
         without having to rediscover the leaf device's internal geometry.
         """
 
-        act_lo, act_hi = self.active_span()
         return {
             "B": (GATE_PITCH, self.height_per_row),
             "S": (self.source_xs[0], 0),
-            "D": (self.drain_xs[0], (act_lo + act_hi) / 2),
+            "D": (self.drain_xs[0], self.drain_contact_y()),
             "G": (self.sd_xs[0] + GATE_V0_DX, self.gate_contact_y()),
         }
 
@@ -556,7 +557,6 @@ def build_finfet(
     half_m1 = M1_WIDTH / 2  # metal
     half_rail = LI_RAIL_HEIGHT / 2
     m1_pad = half_ct + M1_V0_ENCLOSURE  # M1 half-extent along its own track
-    act_lo, act_hi = spec.active_span()
     select_hi = spec.height_per_row
     device_x0 = spec.device_x0
     device_x1 = spec.width
@@ -666,17 +666,26 @@ def build_finfet(
             x_drain + half_ct,
             y_drain + half_ct,
         )
-    # One contiguous pad ties every drain column, ending on the V0.M1.EN.1
+    # One contiguous strip ties every drain column, ending on the V0.M1.EN.1
     # end-cap past the outermost drain via at each side.  Running it out to the
     # cell edge instead would drag the drain conductor across every source
     # column -- no short, but a large and entirely avoidable Cds.
+    #
+    # The strip is exactly as tall as the V0 (flush top and bottom), as
+    # released INVxp33 draws it: V0.M1.AUX.3 forbids enclosure on both
+    # opposite sides.  It is also at least DRAIN_STRIP_MIN_LENGTH long, so its
+    # bottom edge is a long edge and sits legally at M1.S.1's 18 nm from the
+    # source rail; a short (<= 36 nm) edge there would need M1.S.2's 25 nm.
+    strip_x0 = spec.drain_xs[0] - m1_pad
+    strip_x1 = spec.drain_xs[-1] + m1_pad
+    grow = max(0.0, DRAIN_STRIP_MIN_LENGTH - (strip_x1 - strip_x0)) / 2
     box(
         cell,
         "M1",
-        spec.drain_xs[0] - m1_pad,
-        act_lo,
-        spec.drain_xs[-1] + m1_pad,
-        act_hi,
+        strip_x0 - grow,
+        y_drain - half_ct,
+        strip_x1 + grow,
+        y_drain + half_ct,
     )
 
     # All active gates meet one LIG strap.  Its V0 is offset off the gate

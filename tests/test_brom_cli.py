@@ -91,3 +91,17 @@ def test_rejected_option_combinations(tmp_path, flags):
     with pytest.raises(SystemExit, match="2"):
         main([str(words), "--bits", "2", *flags, "--out", str(tmp_path / "out")])
     assert not (tmp_path / "out").exists()
+
+
+def test_bad_timing_report_is_a_usage_error(tmp_path):
+    words = tmp_path / "words.json"
+    words.write_text("[0, 1, 2, 3]")
+    stale = tmp_path / "stale.json"
+    stale.write_text(json.dumps({"schema": "brom_timing_estimate_v1"}))
+    for report in (tmp_path / "missing.json", stale):
+        with pytest.raises(SystemExit, match="2"):
+            main(
+                [str(words), "--bits", "2", "--self-timed"]
+                + ["--timing-report", str(report), "--out", str(tmp_path / "out")]
+            )
+        assert not (tmp_path / "out").exists()

@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import TRACK_PITCH
+from ..layout.rules import M1_TIP_TO_SIDE, TRACK_PITCH
 from .cli import parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
@@ -62,6 +62,9 @@ WRITE_DRIVER_PINS = ("D", "WRENA", "WRENAN", "SA", "SAN", "VDD", "VSS")
 _COLUMNS = 10  # diffusion columns; one dummy pitch each side
 # The bottom row's M2 tie tracks, from its seam: one just below it, two above.
 _TIE_OFFSETS = (-19, 17, 53)
+# With M1.S.2's clearances (a 162 nm n band): 5 nm lower, so that the top tie
+# stands 25 nm from the p landings standing above it.
+_TIE_OFFSETS_TIP = (-24, 12, 48)
 
 
 #: How far the control columns stop short of the top edge: M3's tip-to-tip
@@ -104,7 +107,7 @@ class WriteDriverSpec:
         # to clear each other by 18 nm in y (M1.S.6, corner to corner).  The
         # lowest tie is beside pads that stop on the via row, the next beside
         # pads that reach the 80 nm track, and the highest beside p pads.
-        y_n, y_p = via_y(n_lo, RUNSET_RAIL_SPACE), via_y(p_lo, RUNSET_RAIL_SPACE)
+        y_n, y_p = via_y(n_lo, self.rail_space), via_y(p_lo, self.rail_space)
         low, mid, high = self.tie_levels
         if (
             low - CAP < y_n + CAP + 18
@@ -167,9 +170,27 @@ class WriteDriverSpec:
         return self.column_x[left] + GATE_PITCH // 2
 
     @property
+    def tip_clearances(self) -> bool:
+        """M1.S.2's tip-to-side spaces (25 nm), which need a 162 nm n band; a
+        135 nm one keeps the 18 nm the public runset accepts."""
+        return self.band_height[0] >= 162
+
+    @property
+    def rail_space(self) -> int:
+        """A via pad's tip to its rail."""
+        return M1_TIP_TO_SIDE if self.tip_clearances else RUNSET_RAIL_SPACE
+
+    @property
+    def tie_offsets(self) -> tuple[int, int, int]:
+        return _TIE_OFFSETS_TIP if self.tip_clearances else _TIE_OFFSETS
+
+    @property
     def n_level(self) -> int:
         """The bottom row's M2 track its n pads reach, a pitch above their via row's landings."""
-        return via_y(self.bands["n0"], RUNSET_RAIL_SPACE) + HALF + 18 + HALF + 3
+        # The landings on the via row are 34 nm stubs: tip-to-side, 25 nm
+        # (a 135 nm band keeps the 21 the runset accepts).
+        space = M1_TIP_TO_SIDE if self.tip_clearances else 18 + 3
+        return via_y(self.bands["n0"], self.rail_space) + HALF + space + HALF
 
     @property
     def tie_levels(self) -> tuple[int, int, int]:
@@ -182,7 +203,7 @@ class WriteDriverSpec:
         the highest beside p pads.
         """
         seam = self.stack.seam_y(0)
-        low, mid, high = (seam + offset for offset in _TIE_OFFSETS)
+        low, mid, high = (seam + offset for offset in self.tie_offsets)
         return low, mid, high
 
     @property
@@ -267,11 +288,11 @@ def build_write_driver(
     width, height = spec.width, spec.height
     c, g = spec.column_x, spec.gate_x
     seam0, seam1 = spec.stack.seam_ys
-    y_n0, y_p0, y_n1 = via_y(n0, RUNSET_RAIL_SPACE), via_y(p0, RUNSET_RAIL_SPACE), via_y(n1, RUNSET_RAIL_SPACE)
+    y_n0, y_p0, y_n1 = via_y(n0, spec.rail_space), via_y(p0, spec.rail_space), via_y(n1, spec.rail_space)
     lvl = spec.n_level  # 80: the bottom row's n-side track
     tie_d, tie_a, tie_an = spec.tie_levels
     # The latch's ties mirror the upper two about its own seam.
-    tie_w, tie_wn = seam1 - _TIE_OFFSETS[1], seam1 - _TIE_OFFSETS[2]
+    tie_w, tie_wn = seam1 - spec.tie_offsets[1], seam1 - spec.tie_offsets[2]
 
     draw_frame(cell, spec.stack, width, spec.vt)
 
@@ -304,24 +325,24 @@ def build_write_driver(
     m3_column(cell, tx["SA"], 0, height)
     m3_column(cell, tx["SAN"], 0, height)
     for column, net in ((2, "SA"), (6, "SAN")):
-        sd_contact(cell, n0, c[column], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, n0, c[column], rail_space=RUNSET_RAIL_SPACE)
-        sd_contact(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, n0, c[column], rail_space=spec.rail_space)
+        landing(cell, n0, c[column], rail_space=spec.rail_space)
+        sd_contact(cell, p0, c[column], rail_space=spec.rail_space)
+        landing(cell, p0, c[column], rail_space=spec.rail_space)
 
     # D: the pass gate's source, and the inverter's gates on the far stripe.
-    sd_contact(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, n0, c[0], rail_space=spec.rail_space)
+    landing(cell, n0, c[0], rail_space=spec.rail_space)
     m3_column(
         cell, tx["D"], y_n0 - CAP, height - TOP_CLEARANCE, vias=[tie_d]
     )  # over its pad's landing too
     gate_contact(cell, seam0, [g(8)], g(8), tie_d - CAP)
     m2_track(cell, tie_d, c[0] - PAD, g(8) + PAD, vias=[g(8)])
     # DN: the inverter's drains, joined on M3 within the column.
-    sd_contact(cell, n0, c[8], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, n0, c[8], rail_space=RUNSET_RAIL_SPACE)
-    sd_contact(cell, p0, c[8], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, p0, c[8], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, n0, c[8], rail_space=spec.rail_space)
+    landing(cell, n0, c[8], rail_space=spec.rail_space)
+    sd_contact(cell, p0, c[8], rail_space=spec.rail_space)
+    landing(cell, p0, c[8], rail_space=spec.rail_space)
     m3_column(cell, c[8], y_n0 - CAP, y_p0 + CAP)
 
     # WRENA on the two transmission-gate nFET stripes; WRENAN on the two pass
@@ -347,7 +368,7 @@ def build_write_driver(
     # that column's M3 through the pFET's contact to the latch: its keeper
     # drain, its pull-down drain, and the tie of the other half's gates.
     for pad, column, tie, stripe in ((1, 3, tie_w, 4), (7, 5, tie_wn, 3)):
-        sd_contact(cell, n0, c[pad], reach=lvl + CAP, rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, n0, c[pad], reach=lvl + CAP, rail_space=spec.rail_space)
         m2_track(
             cell,
             lvl,
@@ -356,12 +377,12 @@ def build_write_driver(
             vias=[c[pad]],
         )
         square(cell, "V2", c[column], lvl)
-        sd_contact(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, p0, c[column], rail_space=RUNSET_RAIL_SPACE)
-        sd_contact(cell, k1, c[column], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, k1, c[column], rail_space=RUNSET_RAIL_SPACE)
-        sd_contact(cell, n1, c[column], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, n1, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, p0, c[column], rail_space=spec.rail_space)
+        landing(cell, p0, c[column], rail_space=spec.rail_space)
+        sd_contact(cell, k1, c[column], rail_space=spec.rail_space)
+        landing(cell, k1, c[column], rail_space=spec.rail_space)
+        sd_contact(cell, n1, c[column], rail_space=spec.rail_space)
+        landing(cell, n1, c[column], rail_space=spec.rail_space)
         m3_column(cell, c[column], lvl - CAP, y_n1 + CAP, vias=[tie])
         gate_contact(cell, seam1, [g(stripe)], g(stripe), tie - CAP)
         m2_track(

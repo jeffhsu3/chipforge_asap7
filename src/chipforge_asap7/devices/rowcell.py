@@ -47,6 +47,8 @@ __all__ = [
     "HALF",
     "M4_HALF",
     "PAD",
+    "RUNSET_RAIL_SPACE",
+    "RUNSET_RESIDUAL_RULES",
     "V3_M3_CAP",
     "V3_M4_CAP",
     "draw_frame",
@@ -63,12 +65,17 @@ __all__ = [
     "stack_to_m3",
     "supply_contact",
     "via_y",
-    "RUNSET_RAIL_SPACE",
 ]
 
 #: The rail-to-pad space the 297 nm 8T cells are still planned on (M1.S.1's 18):
 #: their bands have no room for M1.S.2's 25 until they grow.
 RUNSET_RAIL_SPACE = M1_MIN_SPACE
+#: What a cell planned on `RUNSET_RAIL_SPACE` breaks by design: its via pads'
+#: ends stand 18 nm from their rail (M1.S.2), and its first M2 track 21 nm from
+#: the landing stubs below it (M2.S.2), where gdscheck wants 25.  The 297 nm 8T
+#: row keeps its 135 nm n band, which has no room for 25, so that two rows still
+#: span one 594 nm 8T bitcell row; its cells' DRC tests allow these and no more.
+RUNSET_RESIDUAL_RULES = frozenset({"M1.S.2", "M2.S.2"})
 HALF = CONTACT_SIZE // 2  # 9: half a via, half an 18 nm track
 CAP = HALF + M1_V0_ENCLOSURE  # 14: metal past a via along its own track
 PAD = HALF + M2_V1_ENCLOSURE  # 17: M2 past a V1

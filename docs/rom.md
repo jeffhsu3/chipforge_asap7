@@ -68,6 +68,49 @@ x:   0    27    54    81   108   135   162
 | 2 | 81 x 81 | 6561 |
 | 3 | 81 x 108 | 8748 |
 
+## Density compared with SRAM and BROM
+
+Measured on 2026-11-02 from the generators in this repository. Bitcell areas
+are placement-boundary areas per stored bit; they exclude taps, edges and
+periphery.
+
+| Bitcell | Tile (nm) | Bits per tile | µm² per bit | Bits per µm² |
+| --- | --- | ---: | ---: | ---: |
+| NOR-ROM, 1 fin | 162 x 54 | 2 | 0.004374 | 228.6 |
+| NOR-ROM, 2 fins (default) | 162 x 81 | 2 | 0.006561 | 152.4 |
+| NOR-ROM, 3 fins | 162 x 108 | 2 | 0.008748 | 114.3 |
+| BROM selector core ([proof](brom_minimum.md)) | 108 x 432 | 4 | 0.011664 | 85.7 |
+| 6T SRAM `sram_cell_6t_122` ([proof](sram_6t_minimum.md)) | 108 x 270 | 1 | 0.029160 | 34.3 |
+| 8T SRAM `sram_cell_8t` (dual port) | 108 x 594 | 1 | 0.064152 | 15.6 |
+
+The two-fin NOR-ROM bit is 1.8× denser than the BROM selector core,
+4.4× denser than the 6T bitcell and 9.8× denser than the 8T bitcell. With
+its strap row every 16 bit rows, the tap row and the closed edges, a
+two-fin NOR-ROM array still stores 136.7 bits/µm² (0.007313 µm² per bit at
+64 × 32 and 256 × 32).
+
+Larger blocks do not compare on equal terms yet:
+
+| Words × bits | NOR-ROM array + decoder envelope | Bits per µm² | BROM complete macro, mux4 | Bits per µm² |
+| --- | ---: | ---: | ---: | ---: |
+| 16 × 4 | — | — | 16.416 × 2.339 µm, 38.397 µm² | 1.67 |
+| 64 × 16 | — | — | 21.600 × 4.499 µm, 97.178 µm² | 10.54 |
+| 64 × 32 | 57.355 µm² | 35.71 | 32.016 × 8.387 µm, 268.518 µm² | 7.63 |
+| 256 × 32 | 212.336 µm² | 38.58 | 36.336 × 12.707 µm, 461.722 µm² | 17.74 |
+| 1024 × 16 | — | — | 38.496 × 36.899 µm, 1,420.464 µm² | 11.53 |
+| 1024 × 148 | — | — | 175.872 × 60.227 µm, 10,592.243 µm² | 14.31 |
+
+The NOR-ROM figures are the selected shapes from
+[the shape search](#shape-search-and-routing-aware-packing): array, wordline
+decoder and predecoders only. They have no precharge, sensing, column select
+or output latch, which the NOR-ROM does not draw yet. The BROM figures are the
+bounding box of a complete two-fin RVT macro, including its CGEN, address
+latches, precharge, sampling and output latches. On these sizes the
+periphery, not the bitcell, sets BROM density. Its 64 × 32 macro is less
+dense than 64 × 16 (not yet investigated), and 1024 × 16 uses the
+electrical-order fallback placement described in [brom.md](brom.md).
+The comparison will be fair only once the NOR-ROM has its read path.
+
 ## Minimum-area proof for this topology
 
 `chipforge_asap7.verification.rom_minimum` proves the minimum periodic core
@@ -98,12 +141,65 @@ the inter-row separation then gives `H >= 27*(f+1)` nm. With two bits per
 tile, the core area per bit satisfies `A_bit = W*H/2 >= 2187*(f+1)` nm².
 
 The SMT-LIB model uses real coordinates and minimum fin spacing, relaxing
-grid membership and omitting contact and routing constraints. Every permitted
+grid membership and omitting contact and routing constraints (those are
+checked separately, below). Every permitted
 tile must satisfy these necessary inequalities; allowing more layouts makes
 an UNSAT result a valid lower bound. Neither derived dimension bound is
 inserted into the base model. Z3 checks that `W < 162`, `H < 27*(f+1)`, and
 their disjunction are each UNSAT. The dimension bounds and positive dimensions
 give the area bound by multiplication, without nonlinear SMT arithmetic.
+
+### Routing constraints
+
+A second block of assertions models the tile's contacts and wiring, using the
+pinned M1, M2, V0, V1 and LISD rules. It extends the topology with these
+routing assumptions:
+
+- Each source/drain column has one LISD bar. The bar spans the row's ACTIVE,
+  stays clear of both gates, and carries one 18 nm V0.
+- The shared source reaches VSS through one straight M1 column. The column is
+  full height and continuous across rows.
+- Each drain lands on its own M1 stub, which may be horizontal or vertical.
+  Its programming V1 sits on that stub.
+- Both V1s meet one straight, full-width M2 bitline per row.
+
+| Rule | Constraint used |
+| --- | --- |
+| `LISD.W.1`, `LISD.S.1`-`S.3` | 24 nm bars; spacing by facing-edge class, across X and to the next row |
+| `V0.LISD.EN.2` | 3 nm of LISD on both sides of one opposite pair |
+| `V0.M1.EN.1`, `V0.M1.AUX.3` | a 5 nm end-cap on some side; M1 flush with the V0 on one opposite pair |
+| `M1.A.1` | 504 nm²; with one flush pair this is linear: an 18 nm stub is at least 28 nm long |
+| `M1.S.1`-`S.5` | spacing by the facing edges' lengths: long (≥ 36.25 nm), `mid` (24-36 nm) or `tiny` |
+| `V1.M1.EN.1` | 5 nm on one side and 2 nm on the other, on one opposite pair |
+| `V1.M2.AUX.2`, `M2.S.1` | the bitline is flush with the V1s across Y; rows of bitlines 18 nm apart |
+| `V0.S.1`, `V1.S.1` | 18 nm between vias |
+
+Corner-to-corner spacing (`M1.S.6`) and the conditional V0/V1 spacings are
+omitted. Omitting rules only enlarges the modeled space, so the model stays a
+relaxation. The X order of the columns is fixed by the topology. Each shape
+is checked against the next tile's copy at `+ width` and the next row's copy
+at `+ height`. Facing spacings apply wherever the two Y spans overlap.
+
+The area bound is still proved on the FEOL model alone, so the UNSAT results
+need none of the routing assumptions. The routing block adds the
+`routed_drawn_witness` query: every drawn routing coordinate is fixed, and the
+query must be SAT. So the drawn wiring fits the minimum tile under the encoded
+rules. In it, the drain stubs stand exactly 26 nm off the VSS column (M1.S.2
+asks 25) and 36 nm from the next tile's stub (M1.S.4 asks 31).
+
+The routing rules also hold the row pitch on their own. Without ACTIVE.S.1,
+a tile no wider than 162 nm still cannot have `H < 27*(f+1)`. Gates 54 nm
+apart leave an LISD bar at most 34 nm wide, so its ends are `mid` edges and
+the bars of adjacent rows need LISD.S.3's 27 nm. A wider tile admits a
+long-edged bar and an 18 nm gap. The tests keep each routing rule honest:
+each one rejects a drawn witness broken in its own way, and accepts the same
+geometry once that rule is removed. The broken witnesses are:
+
+- a stub 24 nm from the column;
+- stub tips 29 nm apart;
+- the old full-ACTIVE-height drain pad;
+- a 27 nm stub;
+- 2 nm of LISD around the V0.
 
 A separate SAT query fixes all coordinates to the generator's **drawn
 polygons**. The runner requires this witness to attain both bounds, writes a

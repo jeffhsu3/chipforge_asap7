@@ -202,9 +202,13 @@ def size_wire_rc_distribution(c, model=None):
                     {"round": round_index + 1, "rejected": "device/parallel limit"}
                 )
                 continue
-            for mode in ("source", "median"):
+            # Keeping the appended placement is a candidate too: the dense
+            # periphery already places each chain near its loads, and moving
+            # stages can cost more than a wire-aware resize gains.
+            for mode in ("appended", "source", "median"):
                 candidate = deepcopy(trial)
-                _place(candidate, mode)
+                if mode != "appended":
+                    _place(candidate, mode)
                 rc = routed_control_rc(candidate, model)
                 score = _score(candidate, model, rc, nets)
                 history.append(

@@ -17,6 +17,16 @@ The default row is 297 nm, half a 594 nm 8T bitcell row, which needs bands of
 unequal height (`RowStack(band_height=(135, 162))`; a single integer still
 means both).
 
+That 135 nm n band has no room for gdscheck's M1.S.2: a via pad's end must
+stand 25 nm from its rail, and these cells plan it 18 nm away (and their first
+M2 track 21 nm from the landings below it, M2.S.2), the spacing the public
+runset accepted. Growing the band to 162 nm would make the rows 324 nm and
+break the match with the 594 nm bitcell row, so the 297 nm row keeps both,
+named in `rowcell.RUNSET_RESIDUAL_RULES`; its DRC tests allow those two rules
+and no others. On an n band of 162 nm or more the bitline leaf, sense
+amplifier, write driver and output latch take the 25 nm clearances
+(`tip_clearances`) and are clean of both.
+
 ```python
 from chipforge_asap7.devices import (
     BitlineMuxSpec, build_bitline_mux, build_bitline_mux_group,
