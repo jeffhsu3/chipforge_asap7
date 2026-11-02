@@ -14,6 +14,8 @@ from chipforge_asap7.devices.rom_read_spice import (
     RomReadConditions,
     render_rom_read_deck,
     run_rom_read,
+    strap_stack_ohm,
+    wordline_network,
 )
 from chipforge_asap7.devices.spice import (
     compile_bsimcmg107,
@@ -60,7 +62,8 @@ def test_both_lines_carry_every_other_word_as_an_off_device(tmp_path: Path, fins
         sorted(tuple(d[2:]) for d in blp if d[0] not in ("NPP", "NPsel")) == [off] * 63
     )
     (selected,) = [d for d in blp if d[0] == "NPsel"]
-    assert selected[1:3] == ["BLP_63", "WL"]
+    assert selected[1] == "BLP_63"
+    assert selected[2] == wordline_network(fins, CONDITIONS, "nmos_rvt").selected_gate
     assert {d[1] for d in blp if d[0] == "NPP"} == {"BLP"}
     # BLU: the same 63 off words; the far word's drain floats.
     assert sorted(tuple(d[2:]) for d in blu if d[0] != "NPU") == [off] * 63
@@ -78,6 +81,49 @@ def test_the_bitline_is_a_distributed_m2_ladder(tmp_path: Path):
     # No resistance: one lumped node per line.
     _, rs, cs = ladder(deck_for(tmp_path, words=16, wire_ohm_per_um=0), "P")
     assert rs == [] and len(cs) == 16
+
+
+def test_strap_stack_is_the_drawn_via_stack():
+    # Gate link 0.1, 18 nm of 16 nm LIG at 8.33 ohm/sq, V0 19.38, V1, V2 19.53.
+    assert strap_stack_ohm() == pytest.approx(
+        0.1 + 8.33353 * 18 / 16 + 19.3796 + 2 * 19.5347
+    )
+
+
+def test_the_wordline_is_m3_straps_onto_continuous_poly(tmp_path: Path):
+    c = RomReadConditions(bits=64, strap_every=16)
+    net = wordline_network(2, c, "nmos_rvt")
+    assert (net.rows, net.straps) == (64, 4)
+    rs = {d[0]: d[1:] for d in (x.split() for x in net.lines) if d[0].startswith("RW")}
+    # One stack from each strap's M3 node to its poly tap.
+    stacks = [v for v in rs.values() if v[0].startswith("WM") and v[1].startswith("WT")]
+    assert len(stacks) == 4
+    assert all(
+        float(v[2]) == pytest.approx(strap_stack_ohm(2), rel=1e-5) for v in stacks
+    )
+    # The poly runs through every row and tap: 64 + 4 nodes, 67 segments.
+    poly = [
+        v for v in rs.values() if v[0][:2] in ("WT", "WR") and v[1][:2] in ("WT", "WR")
+    ]
+    assert len(poly) == 67
+    # Every row but the selected one hangs a gate load on the poly.
+    loads = [x for x in net.lines if x.startswith("NG")]
+    assert len(loads) == 63 and f"WR{net.selected_row} " not in " ".join(loads)
+    # The worst row sits in the bottom group, furthest from the decoder.
+    assert 0 <= net.selected_row < 16
+
+
+def test_one_strap_row_makes_the_top_row_the_slowest():
+    net = wordline_network(1, RomReadConditions(bits=16, strap_every=16), "nmos_rvt")
+    assert (net.straps, net.selected_row) == (1, 15)
+
+
+def test_the_ideal_wordline_drives_the_gate_directly(tmp_path: Path):
+    deck = deck_for(tmp_path, wordline_rc=False)
+    assert not any(x.startswith(("RW", "NG")) for x in deck.splitlines())
+    assert " WL 0 0 nmos_rvt" in deck
+    rc = deck_for(tmp_path)
+    assert ".measure tran t_wordline TRIG v(WL)" in rc
 
 
 def test_sense_target_counts_from_the_precharged_level(tmp_path: Path):
@@ -107,6 +153,8 @@ def test_vt_flavour_selects_its_models(tmp_path: Path):
         {"wire_ff_per_um": -1},
         {"wire_ohm_per_um": -1},
         {"precharge_fins": True},
+        {"bits": 0},
+        {"strap_every": 0},
     ],
 )
 def test_rejects_bad_conditions(kwargs):
@@ -149,7 +197,12 @@ def test_one_fin_reads_slower_than_two_and_depth_slows_both(
     for fins in (1, 2):
         assert r[fins, 256].t_sense_s > 2 * r[fins, 16].t_sense_s
         assert r[fins, 256].t_half_s > r[fins, 256].t_sense_s
+    # One fin pulls less current, so a long line reads slower...
+    assert r[1, 256].t_sense_s > r[2, 256].t_sense_s
     for words in (16, 256):
-        assert r[1, words].t_sense_s > r[2, words].t_sense_s
+        # ...but twice the fins is twice the gate load on the wordline.
+        assert r[2, words].t_wordline_s > r[1, words].t_wordline_s
+        # The poly wordline delays the gate, a little.
+        assert 0 < r[1, words].t_wordline_s < r[1, words].t_sense_s
         # The released precharge kicks both lines above VDD.
         assert r[1, words].blp_precharged_v > CONDITIONS.vdd

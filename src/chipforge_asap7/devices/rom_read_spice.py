@@ -19,12 +19,18 @@ Every word device is a real BSIM-CMG 107 transistor with the tile's fin count,
 source on VSS.  The M2 bitline is a distributed RC ladder, one segment per
 word (half a 162 nm tile): the stack's M2 sheet resistance over the 18 nm
 track, and an assumed capacitance per length.  The sense end is word 0, and
-the selected word is the far one, read through the whole line.  The V1/M1
-stubs, the grounded isolation gates and the poly wordline's RC are not
-modelled.  A 3-fin precharge PMOS at the sense end is off during the read and
-leaks toward VDD, as in the column.
+the selected word is the far one, read through the whole line.  A 3-fin
+precharge PMOS at the sense end is off during the read and leaks toward VDD,
+as in the column.
 
-Measured from the wordline's 50 % point, on ``BLP``:
+The wordline (:func:`wordline_network`) is the drawn one for a ``bits``-row
+array: an M3 strap from the decoder at the array's top edge, a V2/V1/V0/LIG
+stack onto the continuous gate poly at every strap row, and every row's word
+transistor gate on the poly as a BSIM-CMG load.  The read uses the slowest
+row.  The decoder's driver is an ideal edge at the top of the M3 strap; the
+V1/M1 stubs and the grounded isolation gates are not modelled.
+
+Measured from the decoder output's 50 % point, on ``BLP``:
 
 * ``t_sense`` -- the line has fallen by the sense margin from its precharged
   level, which the precharge release kicks slightly above VDD (a
@@ -45,11 +51,19 @@ import argparse
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from pathlib import Path
 
+from ..layout.grid import GATE_WIDTH
 from ..layout.rules import CONTACT_SIZE
 from ..verification.stack import STACK_CONDUCTORS
-from .rom_bitcell import RomBitcellSpec
+from .rom_bitcell import (
+    HALF_LIG,
+    STRAP_WL_XS,
+    STRAP_WL_Y,
+    RomArraySpec,
+    RomBitcellSpec,
+)
 from .spice import (
     compile_bsimcmg107,
     find_default_bsimcmg107_source,
@@ -61,8 +75,11 @@ from .sram6t_read_spice import _control, _measure, _simulate
 __all__ = [
     "RomReadConditions",
     "RomReadResult",
+    "WordlineNetwork",
     "render_rom_read_deck",
     "run_rom_read",
+    "strap_stack_ohm",
+    "wordline_network",
 ]
 
 DEFAULT_WORDS = (16, 64, 256, 1024)
@@ -75,6 +92,31 @@ DEFAULT_WIRE_OHM_PER_UM = next(
     s.sheet_resistance_ohm for s in STACK_CONDUCTORS if s.name == "M2"
 ) / (CONTACT_SIZE / 1000)
 VTS = ("rvt", "lvt", "slvt")
+_STACK = {s.name: s for s in STACK_CONDUCTORS}
+#: Every WL is one M3 strap the width of a via, and gate poly at GATE.W.1.
+M3_OHM_PER_UM = _STACK["M3"].sheet_resistance_ohm / (CONTACT_SIZE / 1000)
+POLY_OHM_PER_UM = _STACK["Gate"].sheet_resistance_ohm / (GATE_WIDTH / 1000)
+#: Only to rank the rows by wordline delay: the BROM model's gate load.
+GATE_FF_PER_FIN_ESTIMATE = 0.0417
+DEFAULT_BITS = 64
+
+
+def strap_stack_ohm(fins: int = 2) -> float:
+    """M3 to poly at a strap row: V2, V1, V0, the LIG run and the gate link.
+
+    The V0/V1/V2 stack is drawn at one X, so M1 and M2 add only their via
+    landings; the LIG runs ``HALF_LIG * 2`` wide from the gate's centre to the
+    V0's (:func:`~chipforge_asap7.devices.rom_bitcell.build_rom_strap`).
+    """
+    run_nm = abs(RomBitcellSpec(fins=fins).gate_xs["WLa"] - STRAP_WL_XS[0])
+    lig = _STACK["Local"].sheet_resistance_ohm * run_nm / (2 * HALF_LIG)
+    return (
+        _STACK["Gate"].via_resistance_ohm  # gate to LIG link
+        + lig
+        + _STACK["Local"].via_resistance_ohm  # V0
+        + _STACK["M1"].via_resistance_ohm  # V1
+        + _STACK["M2"].via_resistance_ohm  # V2
+    )
 
 
 @dataclass(frozen=True)
@@ -93,6 +135,11 @@ class RomReadConditions:
     precharge_fins: int = 3
     step_ps: float = 1.0
     window_ns: float = 4.0
+    #: Bit rows the wordline crosses, and the strap interval; ``wordline_rc``
+    #: False drives the selected gate directly with the ideal edge.
+    bits: int = DEFAULT_BITS
+    strap_every: int = 16
+    wordline_rc: bool = True
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -109,9 +156,12 @@ class RomReadConditions:
         for name in ("wire_ff_per_um", "wire_ohm_per_um"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
-        fins = self.precharge_fins
-        if isinstance(fins, bool) or not isinstance(fins, int) or fins < 1:
-            raise ValueError("precharge_fins must be a positive integer")
+        for name in ("precharge_fins", "bits", "strap_every"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(self.wordline_rc, bool):
+            raise TypeError("wordline_rc must be a bool")
 
 
 @dataclass(frozen=True)
@@ -120,6 +170,9 @@ class RomReadResult:
 
     fins: int
     words: int
+    bits: int
+    wordline_row: int | None
+    t_wordline_s: float | None
     wire_ff: float
     wire_ohm: float
     blp_precharged_v: float | None
@@ -153,6 +206,109 @@ def _validate(fins: int, words: int) -> None:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
     RomBitcellSpec(fins=fins)  # the tile's own fin limits
+
+
+@dataclass(frozen=True)
+class WordlineNetwork:
+    """The drawn wordline as SPICE: M3 strap, strap stacks, poly, gate loads."""
+
+    lines: tuple[str, ...]
+    selected_row: int
+    selected_gate: str
+    rows: int
+    straps: int
+
+
+def _solve(matrix: list[list[float]], rhs: list[float]) -> list[float]:
+    """Dense Gaussian elimination with partial pivoting (no numpy needed)."""
+    n = len(rhs)
+    a = [row[:] + [rhs[i]] for i, row in enumerate(matrix)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(a[r][col]))
+        a[col], a[pivot] = a[pivot], a[col]
+        for r in range(col + 1, n):
+            factor = a[r][col] / a[col][col]
+            if factor:
+                for k in range(col, n + 1):
+                    a[r][k] -= factor * a[col][k]
+    x = [0.0] * n
+    for r in reversed(range(n)):
+        x[r] = (a[r][n] - sum(a[r][k] * x[k] for k in range(r + 1, n))) / a[r][r]
+    return x
+
+
+def wordline_network(fins: int, c: RomReadConditions, nmos: str) -> WordlineNetwork:
+    """One wordline of a ``c.bits``-row array, driven from the decoder above.
+
+    Geometry is `RomArraySpec`'s: the M3 strap runs the array's height from
+    the decoder at the top edge; each strap row drops a via stack onto the
+    continuous gate poly; every bit row hangs its word transistor's gate on
+    the poly at the row's centre.  Wire capacitance uses ``wire_ff_per_um``.
+
+    The read uses the row with the largest first moment of the mesh's step
+    response (Elmore delay generalised to a mesh), ranked with an estimated
+    gate load; the transient then uses the real BSIM-CMG gates.
+    """
+    spec = RomArraySpec(
+        words=2,
+        bits=c.bits,
+        bitcell=RomBitcellSpec(fins=fins),
+        strap_every=c.strap_every,
+    )
+    half_row = spec.bitcell.height / 2
+    taps = [y + STRAP_WL_Y for y in spec.strap_ys]
+    poly = sorted(
+        [(y, f"WT{k}") for k, y in enumerate(taps)]
+        + [(spec.row_y(r) + half_row, f"WR{r}") for r in range(c.bits)]
+    )
+    resistors: list[tuple[str, str, float]] = []
+    caps: dict[str, float] = {}
+
+    def wire(a: str, b: str, length_nm: float, ohm_per_um: float) -> None:
+        um = length_nm / 1000
+        resistors.append((a, b, um * ohm_per_um))
+        for n in (a, b):
+            caps[n] = caps.get(n, 0.0) + um * c.wire_ff_per_um / 2
+
+    # M3: decoder (WL, the source) at the top edge, down past every strap row.
+    m3 = [("WL", spec.height)] + [
+        (f"WM{k}", y) for k, y in reversed(list(enumerate(taps)))
+    ]
+    for (a, ya), (b, yb) in pairwise(m3):
+        wire(a, b, ya - yb, M3_OHM_PER_UM)
+    stack = strap_stack_ohm(fins)
+    for k in range(len(taps)):
+        resistors.append((f"WM{k}", f"WT{k}", stack))
+    for (ya, a), (yb, b) in pairwise(poly):
+        wire(a, b, yb - ya, POLY_OHM_PER_UM)
+
+    # Rank the rows: first moments m = G^-1 C 1, the source node grounded.
+    nodes = sorted({n for r in resistors for n in r[:2]} - {"WL"})
+    index = {n: i for i, n in enumerate(nodes)}
+    g = [[0.0] * len(nodes) for _ in nodes]
+    for a, b, ohm in resistors:
+        for x, y in ((a, b), (b, a)):
+            if x in index:
+                g[index[x]][index[x]] += 1 / ohm
+                if y in index:
+                    g[index[x]][index[y]] -= 1 / ohm
+    load = [
+        caps.get(n, 0.0)
+        + (fins * GATE_FF_PER_FIN_ESTIMATE if n.startswith("WR") else 0)
+        for n in nodes
+    ]
+    moment = _solve(g, load)
+    selected = max(range(c.bits), key=lambda r: (moment[index[f"WR{r}"]], -r))
+
+    lines = [f"RW{i} {a} {b} {ohm:g}" for i, (a, b, ohm) in enumerate(resistors)]
+    lines += [f"CW_{n} {n} 0 {ff:g}f" for n, ff in sorted(caps.items()) if ff]
+    # Every other row's word transistor on this wordline loads the poly.
+    lines += [
+        f"NG{r} 0 WR{r} 0 0 {nmos} L=20n NFIN={fins}"
+        for r in range(c.bits)
+        if r != selected
+    ]
+    return WordlineNetwork(tuple(lines), selected, f"WR{selected}", c.bits, len(taps))
 
 
 def render_rom_read_deck(
@@ -198,6 +354,11 @@ def render_rom_read_deck(
                 )
     far = words - 1
     end = 1.1 + c.window_ns
+    if c.wordline_rc:
+        network = wordline_network(fins, c, nmos)
+        gate, wordline = network.selected_gate, "\n".join(network.lines) + "\n"
+    else:
+        gate, wordline = "WL", ""
     return (
         f"* NOR-ROM read, {fins}-fin words, {words} words on each bitline\n"
         f'.include "{models.resolve()}"\n.temp {c.temperature_c:g}\n'
@@ -209,10 +370,11 @@ def render_rom_read_deck(
         f"NPU BLU PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
         # The selected word is the far one, behind the whole line: programmed
         # on BLP; on BLU its drain floats, so it is not on the line at all.
-        f"NPsel {node('P', far)} WL 0 0 {nmos} L=20n NFIN={fins}\n"
+        f"NPsel {node('P', far)} {gate} 0 0 {nmos} L=20n NFIN={fins}\n"
         + "\n".join(ladder)
         + "\n"
-        f".tran {c.step_ps:g}p {end:g}n\n"
+        + wordline
+        + f".tran {c.step_ps:g}p {end:g}n\n"
         f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
         f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"
         f".measure tran t_sense TRIG v(WL) VAL={half:g} RISE=1 "
@@ -221,7 +383,9 @@ def render_rom_read_deck(
         f"TARG v(BLP) VAL={half:g} FALL=1\n"
         f".measure tran blu_sense FIND v(BLU) WHEN v(BLP)={sense:g} FALL=1\n"
         f".measure tran blu_half FIND v(BLU) WHEN v(BLP)={half:g} FALL=1\n"
-        f".measure tran blu_end FIND v(BLU) AT={end:g}n\n" + _control(osdi)
+        f".measure tran blu_end FIND v(BLU) AT={end:g}n\n"
+        f".measure tran t_wordline TRIG v(WL) VAL={half:g} RISE=1 "
+        f"TARG v({gate}) VAL={half:g} RISE=1\n" + _control(osdi)
     )
 
 
@@ -272,6 +436,13 @@ def run_rom_read(
                 RomReadResult(
                     fins=f,
                     words=depth,
+                    bits=c.bits,
+                    wordline_row=(
+                        wordline_network(f, c, f"nmos_{c.vt}").selected_row
+                        if c.wordline_rc
+                        else None
+                    ),
+                    t_wordline_s=_measure(log, "t_wordline") if c.wordline_rc else None,
                     wire_ff=_wire_ff(depth, c),
                     wire_ohm=_wire_ohm(depth, c),
                     blp_precharged_v=pre,
@@ -293,7 +464,7 @@ def run_rom_read(
             {
                 "conditions": asdict(c),
                 "model_card": str(model_card),
-                "scope": "distributed M2 RC, selected word at the far end; no poly wordline RC; one model card and corner",
+                "scope": "distributed M2 bitline RC with the selected word at its far end; M3/strap/poly wordline RC with BSIM gate loads at the slowest row; one model card and corner",
                 "results": [asdict(r) for r in results],
             },
             indent=2,
@@ -317,6 +488,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--sense-margin-v", type=float, default=0.1)
     parser.add_argument("--min-sense-split", type=float, default=0.5)
+    parser.add_argument("--bits", type=int, default=DEFAULT_BITS)
+    parser.add_argument("--strap-every", type=int, default=16)
+    parser.add_argument(
+        "--no-wordline-rc",
+        action="store_true",
+        help="drive the selected gate directly with the ideal edge",
+    )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
     parser.add_argument("--model-card", type=Path)
@@ -342,6 +520,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             sense_margin_v=args.sense_margin_v,
             min_sense_split=args.min_sense_split,
             step_ps=args.step_ps,
+            bits=args.bits,
+            strap_every=args.strap_every,
+            wordline_rc=not args.no_wordline_rc,
             window_ns=args.window_ns,
         )
         for f in args.fins:
