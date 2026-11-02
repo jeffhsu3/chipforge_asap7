@@ -186,6 +186,16 @@ fixed guard rather than a replica circuit; and it is one corner of one model
 card. The tool writes its decks, logs and `results.json` under
 `build/sram6t_read/`.
 
+### NOR-ROM bitline read, 1 fin against 2
+
+`asap7-rom-read` (`chipforge_asap7.devices.rom_read_spice`) reads one NOR-ROM
+bit row in ngspice, with BSIM-CMG 107 through OSDI. A programmed bit
+discharges a bitline loaded with `words - 1` programmed off transistors. An
+unprogrammed bit's line only droops from their leakage. The bitline is a
+distributed M2 RC ladder, and the selected word is at the far end. The
+results and their limits are in [rom.md](rom.md#read-electrically-1-fin-against-2).
+The tool writes its decks, logs and `results.json` under `build/rom_read/`.
+
 ### Looking at the results
 
 Both benches take `--plot` (with the `plot` extra installed) and draw the run

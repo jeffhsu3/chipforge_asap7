@@ -111,13 +111,92 @@ dense than 64 × 16 (not yet investigated), and 1024 × 16 uses the
 electrical-order fallback placement described in [brom.md](brom.md).
 The comparison will be fair only once the NOR-ROM has its read path.
 
+## Read electrically: 1 fin against 2
+
+`asap7-rom-read` (`chipforge_asap7.devices.rom_read_spice`) simulates one
+bit row's read in ngspice, with every word a BSIM-CMG 107 transistor. Two
+bitlines share one precharge and one wordline pulse:
+
+- **`BLP` reads a programmed bit.** The other `words - 1` words are
+  programmed too, so each is an off transistor on the line. That is the most
+  drain capacitance the selected word can have to discharge.
+- **`BLU` reads an unprogrammed bit beside the same words.** Only their
+  off-state leakage pulls it down: the most a line that should stay high can
+  droop.
+
+The bitline is a distributed M2 RC ladder, one 81 nm segment per word. It
+uses the stack's 3.03 Ω/sq over the 18 nm track (168 Ω/µm) and an assumed
+0.2 fF/µm. The selected word is the far one, read through the whole line;
+precharge (3-fin PMOS) and sensing are at word 0. Releasing the precharge
+kicks both floating lines up to 34 mV above VDD through the PMOS gate
+overlap, so the margin is counted from each line's level as the wordline
+starts to rise. Times run from the wordline's 50 % point to:
+
+- `t_sense`, when `BLP` has fallen 100 mV (a sense-amplifier read);
+- `t_half`, when `BLP` crosses VDD/2 (an inverter read).
+
+`split` is `BLU` minus `BLP` at `t_sense`. A depth fails when leakage takes
+more than half of either margin.
+
+```bash
+uv run asap7-rom-read --fins 1 2 --words 16 64 256 1024 4096 --temperature-c 125
+```
+
+TT model card, RVT, 0.7 V, 40 ps wordline slew; times in ps, levels in mV:
+
+| Fins | Words per bitline | Wire R (kΩ) | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `t_half` 125 °C | `split` 125 °C |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16 | 0.2 | 6.6 | 14.0 | 5.2 | 13.3 | 100 |
+| 1 | 64 | 0.9 | 14.0 | 28.3 | 13.2 | 28.4 | 99 |
+| 1 | 256 | 3.5 | 33.1 | 84.6 | 33.0 | 86.8 | 98 |
+| 1 | 1024 | 14.0 | 150.7 | 375.6 | 150.0 | 375.5 | 94 |
+| 1 | 4096 | 55.9 | 1245.5 | 2997.3 | 900.2 | 2278.3 | **38** |
+| 2 | 16 | 0.2 | 5.2 | 11.5 | 3.7 | 10.5 | 100 |
+| 2 | 64 | 0.9 | 11.7 | 23.0 | 10.8 | 22.8 | 99 |
+| 2 | 256 | 3.5 | 29.1 | 66.3 | 28.8 | 67.3 | 98 |
+| 2 | 1024 | 14.0 | 150.4 | 349.3 | 148.0 | 340.0 | 91 |
+| 2 | 4096 | 55.9 | 1519.9 | 3716.3 | 780.9 | 2208.1 | **11** |
+
+Every depth to 1024 words passes at both temperatures, for both fin counts.
+At 25 °C 4096 words pass too; at 125 °C both fail the sense margin, and
+2 fins fails the inverter read as well. Findings:
+
+- **Within the checked range, one fin costs little.** The ROM is
+  DRC-checked up to 512 words with the center lane, which splits each
+  bitline into two halves of 256 words. Nothing in the generator stops a
+  longer line. At 256 words, one fin is 14 % slower to sense
+  (33.1 against 29.1 ps) and 28 % slower to an inverter read (84.6 against
+  66.3 ps), for one-third less core area.
+- **Long lines are wire-limited, and there the extra fin hurts.** By 1024
+  words the 14 kΩ line, not the cell, sets the sense time; both fin counts
+  take 150 ps. At 4096 words one fin is faster (1.25 ns against 1.52 ns at
+  25 °C), because a second fin doubles every word's drain capacitance.
+- **Leakage is not the limit within the checked range.** At 125 °C,
+  1024 words keep 94 mV (1 fin) and 91 mV (2 fins) of the 100 mV split.
+  With twice the leaking fins, 2 fins droops more. At 4096 words the
+  leakage also helps discharge `BLP`, which is why that read is faster hot.
+
+What the bench does not cover:
+
+- the poly wordline's RC, strapped to M3 every 16 bit rows; the wordline is
+  an ideal 40 ps edge;
+- the V1/M1 stubs and the grounded isolation gates;
+- any process corner beyond TT, and mismatch. A single fin has no averaging,
+  so its read current varies more than two fins' does;
+- the precharge, sense and output circuits the NOR-ROM does not draw yet.
+  Their timing, and a cycle time, are not established.
+
+So one fin is electrically feasible at nominal conditions, at the depths the
+ROM is checked to. It is not yet qualified across corners or with the wordline RC.
+
 ## Minimum-area proof for this topology
 
 `chipforge_asap7.verification.rom_minimum` proves the minimum periodic core
 area **at a fixed fin count, for the existing topology**. It does not claim
 optimality over other NOR-ROM architectures or the minimum area of a complete
 macro. The two-fin default is not the smallest supported geometry: one fin
-uses one-third less core area, subject to the required read current and timing.
+uses one-third less core area, subject to the required read current and timing
+(see [the read bench](#read-electrically-1-fin-against-2)).
 
 The proof fixes a rectangular repeating tile with two word transistors sharing
 a grounded source, two separately V1-programmed drains, and a grounded isolation
