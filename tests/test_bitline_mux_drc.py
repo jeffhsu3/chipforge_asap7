@@ -20,6 +20,10 @@ from chipforge_asap7.devices import (
     build_bitline_mux_group,
     build_row_support,
 )
+from chipforge_asap7.layout.grid import GATE_PITCH
+
+# Cells sit on the 54 nm gate site (GATE.S.1), so the gap between them is too.
+GAP = 19 * GATE_PITCH  # 1026 nm
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 
@@ -50,7 +54,7 @@ def test_isolated_leaves_only_trip_the_missing_body_tap(asap7_drc, runset_residu
                 build_bitline_mux(spec, lib=library), origin=(cursor, 0)
             )
         )
-        cursor += spec.width + 1000
+        cursor += spec.width + GAP
     found = set(asap7_drc(library, top, tag="isolated"))
     assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
@@ -110,6 +114,6 @@ def test_two_row_leaves_and_their_groups_add_no_violation(
     top = library.new_cell("blmux_two_row")
     top.add(gdspy.CellReference(build_bitline_mux(spec, lib=library)))
     group = build_bitline_mux_group(spec, lib=library)
-    top.add(gdspy.CellReference(group, origin=(spec.width + 1000, 0)))
+    top.add(gdspy.CellReference(group, origin=(spec.width + GAP, 0)))
     found = set(asap7_drc(library, top, tag="two_row"))
     assert found - runset_residual(spec) == NO_TAP_IN_CELL

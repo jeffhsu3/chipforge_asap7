@@ -12,6 +12,10 @@ import gdspy
 
 from chipforge_asap7.devices import FinFETSpec, build_finfet
 from chipforge_asap7.devices.finfet import MAX_FINS, MAX_VERIFIABLE_FINS
+from chipforge_asap7.layout.grid import GATE_PITCH
+
+# Cells sit on the 54 nm gate site (GATE.S.1), so the gap between them is too.
+GAP = 9 * GATE_PITCH  # 486 nm
 
 
 def _tile(specs: list[FinFETSpec], tag: str):
@@ -23,7 +27,7 @@ def _tile(specs: list[FinFETSpec], tag: str):
     for spec in specs:
         device = build_finfet(spec, lib=library)
         top.add(gdspy.CellReference(device, origin=(cursor, 0)))
-        cursor += spec.width + 500
+        cursor += spec.width + GAP
     return library, top
 
 

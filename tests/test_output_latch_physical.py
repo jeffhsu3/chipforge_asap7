@@ -17,7 +17,11 @@ from chipforge_asap7.devices import (
     build_output_latch,
     build_row_support,
 )
+from chipforge_asap7.layout.grid import GATE_PITCH
 from chipforge_asap7.verification.lvs import render_output_latch_lvs_schematic, run_lvs
+
+# Cells sit on the 54 nm gate site (GATE.S.1), so the gap between them is too.
+GAP = 19 * GATE_PITCH  # 1026 nm
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 SPECS = [
@@ -65,7 +69,7 @@ def test_isolated_latches_only_trip_the_missing_body_tap(asap7_drc, runset_resid
                 build_output_latch(spec, lib=library), origin=(cursor, 0)
             )
         )
-        cursor += spec.width + 1000
+        cursor += spec.width + GAP
     found = set(asap7_drc(library, top, tag="isolated"))
     assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
