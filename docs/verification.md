@@ -194,7 +194,8 @@ discharges a bitline loaded with `words - 1` programmed off transistors. An
 unprogrammed bit's line only droops from their leakage. The bitline is a
 distributed M2 RC ladder, and the selected word is at the far end. The
 wordline is the drawn M3 strap, strap-row via stacks and gate poly, with
-every row's gate as a load; the read uses the slowest row. The
+every row's gate as a load; the read uses the slowest row. The decoder's
+postdecode NAND and wordline inverter drive it, drawn or load-sized. The
 results and their limits are in [rom.md](rom.md#read-electrically-1-fin-against-2).
 The tool writes its decks, logs and `results.json` under `build/rom_read/`.
 

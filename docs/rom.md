@@ -187,7 +187,7 @@ By default the bench also draws the selected word's wordline
 with a strap row every `--strap-every` rows:
 
 - an 18 nm M3 strap (168 Ω/µm) running down the array from the decoder at its
-  top edge, where the 40 ps edge is applied;
+  top edge;
 - at each strap row, a 68 Ω stack onto the poly: V2, V1, V0, 18 nm of
   16 nm LIG, and the gate-to-LIG link;
 - the gate poly, 20 nm at 7.14 Ω/sq (357 Ω/µm), continuous through every bit
@@ -200,8 +200,9 @@ to a mesh). With several strap rows that is in the bottom group, furthest
 from the decoder. It sits a third of the way up the group: the group's upper
 strap is reached through less M3. With one strap row it is the top row.
 
-At 256 words per bitline; times from the decoder output's 50 % point, in ps
-(`t_wl` is decoder output to the selected gate):
+These runs use an ideal driver (`--driver ideal`): the 40 ps edge at the top
+of the M3 strap. At 256 words per bitline; times from the decoder output's
+50 % point, in ps (`t_wl` is decoder output to the selected gate):
 
 | Bits | Strap every | Fins | `t_wl` 25 °C | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `split` 125 °C (mV) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -234,11 +235,77 @@ Every case passes both margins. Findings:
   intermediate straps (every 256 rows) the poly's full length is in the
   path: 2 fins then takes 188 ps to sense.
 
+### Decoder driver
+
+By default the decoder's last two stages drive the wordline as BSIM-CMG
+transistors (`decoder_driver`):
+
+- the postdecode NAND, with the predecoded `PA` line rising with the 40 ps
+  edge and `PB` already high;
+- the wordline inverter onto the top of the M3 strap.
+
+Every time is then measured from `PA`'s 50 % point. `t_drv` is `PA` to the
+decoder output, and `t_wl` the output to the selected gate. `--driver` picks
+the sizes, in total fins (fins per finger times fingers, NAND n/p then
+inverter n/p):
+
+- `default` is the drawn decoder, 6/6/6/6 at every width: `RomDecoderSpec`'s
+  `(3, 3)` row in two fingers;
+- `sized` is what `size_rom_decoder` (the compiler's `--auto-size`) picks
+  for the array's wordline load, at stage effort 4;
+- `ideal` is the edge alone, as in the table above.
+
+At 256 words per bitline, default straps (every 16 rows), in ps:
+
+| Bits | Fins | Driver | Fins (NAND n/p, inv n/p) | `t_drv` | `t_wl` | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C |
+| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 16 | 1 | ideal | — | — | 0.4 | 33.5 | 85.1 | 33.5 |
+| 16 | 1 | default | 6/6/6/6 | 13.4 | 0.4 | 40.3 | 91.9 | 41.2 |
+| 16 | 1 | sized | 8/4/8/8 | 12.0 | 0.3 | 38.4 | 90.0 | 38.9 |
+| 16 | 2 | ideal | — | — | 0.9 | 30.3 | 67.5 | 30.0 |
+| 16 | 2 | default | 6/6/6/6 | 14.5 | 0.9 | 40.1 | 77.4 | 40.9 |
+| 16 | 2 | sized | 8/4/10/10 | 13.5 | 0.9 | 37.7 | 74.8 | 38.0 |
+| 64 | 1 | ideal | — | — | 1.3 | 34.7 | 86.3 | 34.6 |
+| 64 | 1 | default | 6/6/6/6 | 18.2 | 1.3 | 52.6 | 104.7 | 54.2 |
+| 64 | 1 | sized | 12/6/18/18 | 14.9 | 1.2 | 44.2 | 95.7 | 44.8 |
+| 64 | 2 | ideal | — | — | 3.1 | 33.4 | 70.7 | 32.9 |
+| 64 | 2 | default | 6/6/6/6 | 21.8 | 3.3 | 59.5 | 100.2 | 61.0 |
+| 64 | 2 | sized | 16/8/28/28 | 15.4 | 2.8 | 44.4 | 81.9 | 44.7 |
+| 256 | 1 | ideal | — | — | 13.3 | 53.1 | 107.0 | 52.4 |
+| 256 | 1 | default | 6/6/6/6 | 30.5 | 15.8 | 100.4 | 164.1 | 102.5 |
+| 256 | 1 | sized | 32/16/56/56 | 14.3 | 12.1 | 65.7 | 120.4 | 65.4 |
+| 256 | 2 | ideal | — | — | 28.8 | 73.2 | 122.1 | 71.0 |
+| 256 | 2 | default | 6/6/6/6 | 37.7 | 39.9 | 136.9 | 201.0 | 136.6 |
+| 256 | 2 | sized | 56/28/102/102 | 13.8 | 28.1 | 87.1 | 136.8 | 84.7 |
+
+Every case passes both margins at both temperatures; the worst split is
+93 mV of 100 (2 fins, default driver, 256 bits, 125 °C). Findings:
+
+- **The default driver is too small for wide arrays.** Its size never
+  changes with width. At 16 bits it costs 7-10 ps. At 256 bits it nearly
+  doubles the sense time: 100.4 ps against 53.1 ideal (1 fin), and 136.9
+  against 73.2 (2 fins). Its slow edge also lengthens `t_wl`, and the
+  selected cell sees the edge late as well as slow, so the read loses more
+  than `t_drv` alone.
+- **A sized driver recovers most of it.** `size_rom_decoder` holds `t_drv`
+  at 12-15 ps for every width. At 256 bits it cuts the sense time to 65.7 ps
+  (1 fin) and 87.1 ps (2 fins), within 12-14 ps of the ideal edge. Wide
+  arrays need `--auto-size`.
+- **One fin halves the driver as well as the wordline.** The sized 1-fin
+  inverter at 256 bits is 56 fins a side and still fits the default
+  interleave of 8 (four fingers of 14 fins). The 2-fin one is 102 fins a
+  side. That only fits at interleave 16: six fingers of 17 fins, in a
+  1296 nm slot instead of 648 nm. It is still 21 ps slower to sense.
+- **With real drivers the cross-over moves to 64 bits.** Sized, 1 and 2 fins
+  sense in the same time at 64 bits (44.2 and 44.4 ps). 2 fins is ahead by
+  0.7 ps at 16 bits, and 1 fin by 21 ps at 256. 2 fins keeps the faster
+  inverter read up to 64 bits.
+
 What the bench does not cover:
 
-- the decoder's wordline driver: the edge is ideal at the top of the M3
-  strap, so a real driver's output resistance adds to `t_wl`. That resistance
-  matters more for 2 fins, with twice the load;
+- the predecoders and the PA/PB rails: `PA` is an ideal 40 ps edge;
+- the decoder's own wiring from the inverter to the top of the M3 strap,
+  across the decoder-to-array gap;
 - the other words' gates on adjacent wordlines (coupling), and the
   M3 straps' neighbours;
 - the V1/M1 stubs and the grounded isolation gates;
@@ -248,9 +315,10 @@ What the bench does not cover:
   Their timing, and a cycle time, are not established.
 
 So one fin is electrically feasible at nominal conditions, at the depths and
-widths the ROM is checked to. On wide arrays it is also the faster choice,
-because it halves the wordline load. It is not yet qualified across corners,
-or with a real decoder driver.
+widths the ROM is checked to. From 64 bits wide it is also no slower, and at
+256 bits it is clearly faster, with a driver half the size. Whatever the fin
+count, arrays wider than 16 bits should use the sized decoder. It is not yet
+qualified across corners.
 
 ## Minimum-area proof for this topology
 
