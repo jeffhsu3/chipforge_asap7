@@ -116,6 +116,7 @@ POLY_OHM_PER_UM = _STACK["Gate"].sheet_resistance_ohm / (GATE_WIDTH / 1000)
 GATE_FF_PER_FIN_ESTIMATE = 0.0417
 DEFAULT_BITS = 64
 DRIVERS = ("ideal", "default", "sized")
+RAIL_COUPLINGS = ("switching", "quiet", "off")
 
 
 def strap_stack_ohm(fins: int = 2) -> float:
@@ -169,9 +170,12 @@ class RomReadConditions:
     #: What drives each address pin, with the predecoders: ``"ideal"`` (the
     #: edge itself) or a released buffer from `ADDRESS_BUFFERS`.
     address_driver: str = "BUFx4"
-    #: Couple each PA/PB/address M4 rail to its neighbouring tracks, and
-    #: simulate the previous address's lines as the opposing aggressors.
-    rail_coupling: bool = True
+    #: The predecode rails' capacitance: ``"switching"`` couples each M4
+    #: rail to its neighbouring tracks and simulates the previous address's
+    #: lines as the opposing aggressors; ``"quiet"`` keeps those solved
+    #: capacitances with every neighbour quiet; ``"off"`` grounds the
+    #: assumed ``wire_ff_per_um`` instead.
+    rail_coupling: str = "switching"
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -201,7 +205,9 @@ class RomReadConditions:
             raise ValueError(
                 f"address_driver must be 'ideal' or one of {sorted(ADDRESS_BUFFERS)}"
             )
-        for name in ("wordline_rc", "predecode", "rail_coupling"):
+        if self.rail_coupling not in RAIL_COUPLINGS:
+            raise ValueError(f"rail_coupling must be one of {RAIL_COUPLINGS}")
+        for name in ("wordline_rc", "predecode"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a bool")
         if isinstance(self.driver, str):
@@ -538,7 +544,8 @@ def render_rom_read_deck(
             pmos=pmos,
             wire_ff_per_um=c.wire_ff_per_um,
             address_buffer=None if c.address_driver == "ideal" else c.address_driver,
-            coupling=c.rail_coupling,
+            coupling=c.rail_coupling != "off",
+            aggressors=c.rail_coupling == "switching",
         )
         pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
         # Every address bit switches; times start at the first pin's edge.
@@ -746,9 +753,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="what drives each address pin: 'ideal' or a released BUFx* cell",
     )
     parser.add_argument(
-        "--no-rail-coupling",
-        action="store_true",
-        help="ground the predecode rails' capacitance instead of coupling them",
+        "--rail-coupling",
+        choices=RAIL_COUPLINGS,
+        default="switching",
+        help="predecode rails: coupled with switching or quiet neighbours, or grounded",
     )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
@@ -781,7 +789,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             driver=args.driver,
             predecode=not args.no_predecode,
             address_driver=args.address_driver,
-            rail_coupling=not args.no_rail_coupling,
+            rail_coupling=args.rail_coupling,
             window_ns=args.window_ns,
         )
         for f in args.fins:

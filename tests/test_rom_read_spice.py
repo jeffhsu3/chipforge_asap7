@@ -290,8 +290,15 @@ def test_grounded_rails_have_no_couplers_or_aggressors():
     )
     assert net.couplers == 0 and "PA<31>" not in net.tree
     assert not any(line.startswith("CC") for line in net.lines)
-    deck = deck_for(Path("."), words=256, rail_coupling=False)
+    deck = deck_for(Path("."), words=256, rail_coupling="off")
     assert "\nCC" not in deck
+    # Quiet: the same rails' capacitance, all to ground, no aggressors.
+    quiet = predecode_network(
+        spec, 0, nmos="n", pmos="p", wire_ff_per_um=0.2, aggressors=False
+    )
+    assert quiet.couplers == 0 and "PA<31>" not in quiet.tree
+    with pytest.raises(ValueError, match="rail_coupling"):
+        RomReadConditions(rail_coupling=True)
 
 
 def test_predecoded_benches_need_a_decoder_word_count(tmp_path: Path):

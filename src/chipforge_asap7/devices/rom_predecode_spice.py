@@ -112,6 +112,7 @@ def predecode_network(
     wire_ff_per_um: float,
     address_buffer: str | None = None,
     coupling: bool = True,
+    aggressors: bool = True,
 ) -> PredecodeNetwork:
     """The address-to-NAND path of `word` in `spec`, see the module docstring.
 
@@ -124,7 +125,9 @@ def predecode_network(
     puts its share to ground.  The previous address's ``PA`` and ``PB`` trees
     are simulated as well: they fall as `word`'s rise, the opposing switching
     that coupling makes worst.  Without it, rails carry `wire_ff_per_um` to
-    ground like the stubs do.
+    ground like the stubs do.  `aggressors` False keeps the coupled
+    capacitance but holds every neighbour quiet, as an AC ground, and does not
+    simulate the previous address: the same capacitance with no crosstalk.
     """
     if not spec.predecode:
         raise ValueError("the decoder spec has no predecoders")
@@ -145,7 +148,7 @@ def predecode_network(
 
     visit(pa)
     visit(pb)
-    if coupling:
+    if coupling and aggressors:
         for line in spec.lines(previous):
             visit(line)
     on_path = {i for line in tree for i in by_line.get(line, ())}
@@ -252,7 +255,7 @@ def predecode_network(
                             continue
                         covered += hi - lo
                         ff = (hi - lo) / 1000 * RAIL_COUPLING_FF_PER_UM
-                        if other in tree:
+                        if aggressors and other in tree:
                             # Counted from both rails: take each half here.
                             near = nearest(other, pair, (lo + hi) / 2)
                             for end in ends:
