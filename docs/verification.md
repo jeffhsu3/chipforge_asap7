@@ -197,7 +197,7 @@ wordline is the drawn M3 strap, strap-row via stacks and gate poly, with
 every row's gate as a load; the read uses the slowest row. The decoder's
 postdecode NAND and wordline inverter drive it, drawn or load-sized, from
 the predecoders: every gate on the word's PA/PB trees with those nets' routed
-RC and gate loads, from ideal address-pin edges. The
+RC and gate loads, from released ASAP7 buffers on the address pins. The
 results and their limits are in [rom.md](rom.md#read-electrically-1-fin-against-2).
 The tool writes its decks, logs and `results.json` under `build/rom_read/`.
 

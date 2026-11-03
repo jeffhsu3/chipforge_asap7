@@ -325,8 +325,9 @@ For that word's `PA<0>` and `PB<0>` the netlist has:
   stub: the other words' NAND inputs and the off-path predecoders, 100 at
   512 words.
 
-The address pins are ideal 40 ps edges where the decoder labels them, at a
-rail end. Every time runs from the first pin's 50 % point. `t_pa` and `t_pb`
+In this table the address pins are ideal 40 ps edges
+(`--address-driver ideal`), at the rail end where the decoder labels them.
+Every time runs from the first pin's 50 % point. `t_pa` and `t_pb`
 are the arrivals at the word's NAND inputs, and `t_drv` runs from the later
 of them to the decoder output.
 
@@ -380,6 +381,42 @@ Sizing that decoder for speed needs a sizer that sees rail resistance and
 sizes each predecoder gate for its own net, as the BROM's routed-RC search
 does. Neither the drawn sizes nor `size_rom_decoder` are timing-optimised.
 
+### Address pin drivers
+
+By default each address pin is driven by a released ASAP7 buffer,
+`BUFx4_ASAP7_75t_R`, at the pin's rail end. Its input is on the ideal 40 ps
+edge, and every time runs from that input. `--address-driver` picks any RVT
+`BUFx*` cell, or `ideal`. `ADDRESS_BUFFERS` records each cell's input and
+output inverter fins, n and p alike, and a test checks them against the
+released CDL when it is present.
+
+At 64 bits and 256 words per bitline, 25 °C, in ps:
+
+| Decoder | Address driver | Fins (in, out) | `t_pa` | `t_pb` | `t_sense` 1 fin | `t_sense` 2 fins | `t_half` 1 fin |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| default | ideal | — | 111.6 | 130.3 | 193.2 | 200.0 | 245.3 |
+| default | BUFx2 | 2, 6 | 135.2 | 148.5 | 212.0 | 218.8 | 264.1 |
+| default | BUFx4 | 2, 12 | 133.7 | 149.5 | 212.6 | 219.5 | 264.7 |
+| default | BUFx12f | 12, 36 | 122.1 | 139.7 | 202.7 | 209.5 | 254.8 |
+| default | BUFx24 | 12, 72 | 126.1 | 144.1 | 207.0 | 213.9 | 259.1 |
+| sized | ideal | — | 256.5 | 182.6 | 302.8 | — | 354.4 |
+| sized | BUFx4 | 2, 12 | 313.7 | 229.9 | 359.8 | — | 411.4 |
+| sized | BUFx24 | 12, 72 | 282.5 | 206.7 | 328.7 | — | 380.3 |
+
+Every case keeps the full 100 mV split. Findings:
+
+- **A real pin driver adds 10-19 ps to the drawn decoder.** The best is
+  BUFx12f (+9.5 ps). BUFx4 is no better than BUFx2 (+19 ps): both share a
+  2-fin input stage, which BUFx4 asks to drive a 12-fin output. BUFx24's
+  12-fin input stage drives 72 fins, and it lands between them (+14 ps). The
+  pin buffer is the first of five stages to `PA`; a stronger one buys little
+  against the predecoders after it.
+- **The sized decoder pays 2-3x more for the same buffers.** Its large
+  predecoder inputs load the address pins: BUFx4 adds 57 ps there, and even
+  BUFx24 adds 26 ps.
+- **Nothing downstream changes.** `t_drv` and `t_wl` stay within 0.7 ps, and
+  1 fin stays 7 ps ahead of 2 fins at 64 bits.
+
 `size_rom_decoder` also stops now on a runaway: past 1024 fingers per role
 it raises an error. A 512-word, 256-bit, 2-fin decoder at interleave 16 or
 32 never converges. Its predecoder bank grows with its own size and
@@ -390,7 +427,8 @@ does not change any result.
 
 What the bench does not cover:
 
-- the address pins' drivers: they are ideal edges at a rail end;
+- anything before the address buffers: their inputs are ideal 40 ps edges,
+  with no wiring from them to the pins;
 - coupling between the PA/PB rails;
 - the decoder's own wiring from the inverter to the top of the M3 strap,
   across the decoder-to-array gap;
