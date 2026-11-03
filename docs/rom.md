@@ -301,9 +301,97 @@ Every case passes both margins at both temperatures; the worst split is
   0.7 ps at 16 bits, and 1 fin by 21 ps at 256. 2 fins keeps the faster
   inverter read up to 64 bits.
 
+The table above drives `PA` with an ideal edge and holds `PB` high
+(`--no-predecode`).
+
+### Predecoders
+
+With a decoder driver the bench simulates the predecoders as well, by
+default (`rom_predecode_spice.predecode_network`). The decoder is the one for
+a `2 * words`-word ROM with the center lane, so each lane half is the
+simulated bitline. The selected word is word 0, which ends its half's
+bitline and is the furthest word from the predecoders in the lane. The
+address steps from all ones to zero, so all nine bits fall and every
+`AN<i>` inverter is on the path.
+
+For that word's `PA<0>` and `PB<0>` the netlist has:
+
+- every predecoder gate in their decode trees, at the spec's sizes, each
+  placed copy at its own column: 16 gates at 512 words;
+- every net on those trees as the decoder routes it: its M4 segment over each
+  pair of rows (95 Ω/µm), the M3 column joining the pairs, and each pin's M3
+  stub with its V2 and V3;
+- every other gate input on those nets as a BSIM-CMG gate load at its own
+  stub: the other words' NAND inputs and the off-path predecoders, 100 at
+  512 words.
+
+The address pins are ideal 40 ps edges where the decoder labels them, at a
+rail end. Every time runs from the first pin's 50 % point. `t_pa` and `t_pb`
+are the arrivals at the word's NAND inputs, and `t_drv` runs from the later
+of them to the decoder output.
+
+At 256 words per bitline (a 512-word decoder), default straps, in ps:
+
+| Bits | Fins | Decoder | `t_pa` | `t_pb` | `t_drv` | `t_wl` | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `split` 125 °C (mV) |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 1 | default | 111.5 | 130.2 | 22.6 | 0.4 | 180.3 | 231.9 | 191.6 | 93 |
+| 16 | 1 | sized | 254.0 | 175.1 | 13.4 | 0.4 | 293.6 | 345.2 | 291.1 | 90 |
+| 16 | 2 | default | 111.5 | 130.2 | 24.1 | 0.9 | 180.3 | 217.6 | 191.6 | 91 |
+| 16 | 2 | sized | 254.0 | 175.1 | 14.9 | 0.8 | 292.9 | 330.0 | 290.1 | 86 |
+| 64 | 1 | default | 111.5 | 130.3 | 28.1 | 1.3 | 193.1 | 245.2 | 205.4 | 93 |
+| 64 | 1 | sized | 256.5 | 182.6 | 16.9 | 1.2 | 302.7 | 354.3 | 300.4 | 90 |
+| 64 | 2 | default | 111.5 | 130.3 | 31.9 | 3.3 | 199.9 | 240.6 | 212.2 | 90 |
+| 64 | 2 | sized | 259.1 | 190.2 | 18.9 | 2.8 | 307.1 | 344.6 | 304.3 | 86 |
+| 256 | 1 | default | 111.5 | 130.3 | 40.8 | 15.4 | 240.6 | 304.4 | 253.6 | 91 |
+| 256 | 1 | sized | 344.9 | 260.5 | 21.6 | 12.0 | 417.8 | 472.5 | 413.9 | 86 |
+| 256 | 2 | default | 111.5 | 130.3 | 48.2 | 39.3 | 277.0 | 341.1 | 286.8 | 86 |
+| 256 | 2 | sized | — | — | — | — | — | — | — | — |
+
+Every case that can be built passes both margins at both temperatures. The
+sized 2-fin, 256-bit decoder cannot be built: its sizing diverges at
+interleaves 16 and 32 (see below), and its cells do not fit interleave 8.
+Findings:
+
+- **The predecoders dominate the read.** With the drawn decoder, the address
+  reaches the word's NAND after 130 ps. That is two-thirds of the sense time
+  at 64 bits, against 63-70 ps for everything after it. `PA<0>` is four
+  levels deep: the `AN` inverter, two AND2 levels, then the `PA` AND2, each
+  AND2 a NAND and an inverter; `PB<0>` is three. The last gate
+  is the slowest: a 6-fin cell driving a rail loaded by 16-32 NAND inputs
+  takes 42 ps (`PA`) and 57 ps (`PB`), and the rail adds up to 30 ps more.
+  `PB<0>` is the later input.
+- **The sized decoder is slower, by 100-180 ps.** `size_rom_decoder` gives
+  every predecoder gate one size per role, set by that role's heaviest load:
+  14x8-fin NANDs and 18x12-fin inverters at 512 words, even for the internal
+  gates. Their inputs then load the address and intermediate rails, and the
+  sizer has no wire resistance to see what that costs. At 64 bits, `A<3>`
+  takes 69 ps to reach its `AN` inverter from an ideal edge, and `D3_4<0>`
+  takes 93 ps to cross its own rail to the `PA` gate. `t_pa` grows from
+  111.5 to 256.5 ps. The sized wordline driver alone still helps: `t_drv`
+  drops 9-19 ps. But keeping the drawn predecoders and sizing only the
+  postdecode NAND and the driver is not faster either: 197.8 ps at 64 bits
+  and 300.8 ps at 256 (1 fin). Its larger NAND inputs load the `PA`/`PB`
+  rails.
+- **The fin count barely matters next to the decoder.** With the drawn
+  decoder, 1 and 2 fins sense in the same 180.3 ps at 16 bits. 1 fin is
+  7 ps ahead at 64 bits and 36 ps ahead at 256.
+
+Sizing that decoder for speed needs a sizer that sees rail resistance and
+sizes each predecoder gate for its own net, as the BROM's routed-RC search
+does. Neither the drawn sizes nor `size_rom_decoder` are timing-optimised.
+
+`size_rom_decoder` also stops now on a runaway: past 1024 fingers per role
+it raises an error. A 512-word, 256-bit, 2-fin decoder at interleave 16 or
+32 never converges. Its predecoder bank grows with its own size and
+lengthens the very rails it drives, and each iteration took longer than the
+last; it ran 13 minutes before being stopped. The caching that made those
+iterations 16x cheaper (`_SlotSpec.stubs`, `NandSpec.pads` and `tie_ys`)
+does not change any result.
+
 What the bench does not cover:
 
-- the predecoders and the PA/PB rails: `PA` is an ideal 40 ps edge;
+- the address pins' drivers: they are ideal edges at a rail end;
+- coupling between the PA/PB rails;
 - the decoder's own wiring from the inverter to the top of the M3 strap,
   across the decoder-to-array gap;
 - the other words' gates on adjacent wordlines (coupling), and the
@@ -316,8 +404,9 @@ What the bench does not cover:
 
 So one fin is electrically feasible at nominal conditions, at the depths and
 widths the ROM is checked to. From 64 bits wide it is also no slower, and at
-256 bits it is clearly faster, with a driver half the size. Whatever the fin
-count, arrays wider than 16 bits should use the sized decoder. It is not yet
+256 bits it is clearly faster, with a wordline driver half the size. The
+decoder, not the cell, sets the read time: about 130 ps of predecode before
+any wordline moves. Neither of the existing sizings is fast. It is not yet
 qualified across corners.
 
 ## Minimum-area proof for this topology
