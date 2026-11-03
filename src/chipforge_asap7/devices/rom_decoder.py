@@ -226,6 +226,14 @@ class _SlotSpec:
         rail to the other.  Their PA lines differ, so the odd word's A stub
         keeps a track from the even word's.
         """
+        # A frozen spec's stubs never change, and the sizer and the router ask
+        # for them once per word: keep each parity's on the instance.
+        cache = self.__dict__.setdefault("_stub_cache", {})
+        if parity not in cache:
+            cache[parity] = self._stubs(parity)
+        return dict(cache[parity])
+
+    def _stubs(self, parity: int) -> dict[str, int]:
         taken = list(self.wordline_tracks(parity))
         if parity:
             even = self.stubs(0)

@@ -56,8 +56,10 @@ import argparse
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 from ..layout.grid import GATE_WIDTH
 from ..layout.rules import CONTACT_SIZE
@@ -83,6 +85,7 @@ __all__ = [
     "RomReadResult",
     "WordlineNetwork",
     "decoder_driver",
+    "decoder_spec",
     "render_rom_read_deck",
     "run_rom_read",
     "strap_stack_ohm",
@@ -153,6 +156,10 @@ class RomReadConditions:
     #: `size_rom_decoder` sizes them for this array), or explicit total fins
     #: ``(nand_n, nand_p, inverter_n, inverter_p)``.
     driver: str | tuple[int, int, int, int] = "default"
+    #: With a decoder driver, also simulate the predecoders from the address
+    #: pins (`predecode_network`), sized with the same decoder; else the PA
+    #: line is an ideal edge and PB is already high.
+    predecode: bool = True
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -173,8 +180,9 @@ class RomReadConditions:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if not isinstance(self.wordline_rc, bool):
-            raise TypeError("wordline_rc must be a bool")
+        for name in ("wordline_rc", "predecode"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a bool")
         if isinstance(self.driver, str):
             if self.driver not in DRIVERS:
                 raise ValueError(f"driver must be one of {DRIVERS} or four fin counts")
@@ -195,6 +203,9 @@ class RomReadResult:
     bits: int
     wordline_row: int | None
     driver_fins: tuple[int, int, int, int] | None
+    #: Address pins to the later of the word's PA and PB NAND inputs.
+    t_predecode_s: float | None
+    #: The later NAND input to the decoder output.
     t_driver_s: float | None
     t_wordline_s: float | None
     wire_ff: float
@@ -335,6 +346,45 @@ def wordline_network(fins: int, c: RomReadConditions, nmos: str) -> WordlineNetw
     return WordlineNetwork(tuple(lines), selected, f"WR{selected}", c.bits, len(taps))
 
 
+@lru_cache(maxsize=64)
+def decoder_spec(fins: int, words: int, c: RomReadConditions) -> Any:
+    """The decoder of a ROM whose lane halves are `words`-word bitlines.
+
+    A ``2 * words``-word, ``c.bits``-row array with the center lane: word 0
+    is the far end of its half's bitline and the furthest word from the
+    predecoders in the lane.  ``"sized"`` is `size_rom_decoder`'s, widening
+    the interleave when its cells do not fit; otherwise the drawn defaults.
+    """
+    from .rom_decoder import RomDecoderSpec
+    from .rom_sizing import size_rom_decoder
+
+    if words < 8 or words & (words - 1):
+        raise ValueError("the predecoded bench needs a power-of-two words >= 8")
+    array = RomArraySpec(
+        words=2 * words,
+        bits=c.bits,
+        bitcell=RomBitcellSpec(fins=fins, vt=c.vt),
+        strap_every=c.strap_every,
+    )
+    if c.driver != "sized":
+        return RomDecoderSpec(array=array)
+    errors = []
+    for interleave in (8, 16, 32):
+        if 2 * words < 2 * interleave:
+            break
+        try:
+            return size_rom_decoder(
+                RomDecoderSpec(array=array, interleave=interleave)
+            ).spec
+        except ValueError as exc:
+            errors.append(f"interleave {interleave}: {exc}")
+    raise ValueError("no interleave fits the sized decoder: " + "; ".join(errors))
+
+
+def _predecoded(c: RomReadConditions) -> bool:
+    return c.predecode and c.driver != "ideal"
+
+
 def decoder_driver(
     fins: int, words: int, c: RomReadConditions
 ) -> tuple[int, int, int, int] | None:
@@ -361,6 +411,8 @@ def decoder_driver(
             dp * spec.driver_fingers,
         )
 
+    if _predecoded(c):
+        return totals(decoder_spec(fins, words, c))
     bitcell = RomBitcellSpec(fins=fins, vt=c.vt)
     if c.driver == "default":
         return totals(RomDecoderSpec(array=RomArraySpec(bitcell=bitcell)))
@@ -383,14 +435,20 @@ def decoder_driver(
     raise ValueError("no interleave fits the sized driver: " + "; ".join(errors))
 
 
-def _driver_lines(totals: tuple[int, int, int, int], nmos: str, pmos: str) -> list[str]:
-    """PA rises into a NAND (PB held high) whose output feeds the inverter."""
+def _driver_lines(
+    totals: tuple[int, int, int, int],
+    nmos: str,
+    pmos: str,
+    pa: str = "PA",
+    pb: str = "PB",
+) -> list[str]:
+    """The word's postdecode NAND on `pa` and `pb`, feeding the inverter."""
     nn, np_, dn, dp = totals
     return [
-        f"ND1 nandout PA nmid 0 {nmos} L=20n NFIN={nn}",
-        f"ND2 nmid PB 0 0 {nmos} L=20n NFIN={nn}",
-        f"ND3 nandout PA VDD VDD {pmos} L=20n NFIN={np_}",
-        f"ND4 nandout PB VDD VDD {pmos} L=20n NFIN={np_}",
+        f"ND1 nandout {pa} nmid 0 {nmos} L=20n NFIN={nn}",
+        f"ND2 nmid {pb} 0 0 {nmos} L=20n NFIN={nn}",
+        f"ND3 nandout {pa} VDD VDD {pmos} L=20n NFIN={np_}",
+        f"ND4 nandout {pb} VDD VDD {pmos} L=20n NFIN={np_}",
         f"ND5 WL nandout 0 0 {nmos} L=20n NFIN={dn}",
         f"ND6 WL nandout VDD VDD {pmos} L=20n NFIN={dp}",
     ]
@@ -440,9 +498,37 @@ def render_rom_read_deck(
     far = words - 1
     end = 1.1 + c.window_ns
     totals = decoder_driver(fins, words, c)
+    edge = "RISE"
+    rise = f"PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})"
+    fall = f"PWL(0 {vdd:g} 1.1n {vdd:g} {1.1 + sl:g}n 0)"
+    pa_pin, pb_pin = "PA", "PB"
     if totals is None:
         start = "WL"
-        source = f"Vwl WL 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
+        source = f"Vwl WL 0 {rise}\n"
+    elif _predecoded(c):
+        from .rom_predecode_spice import predecode_network
+
+        pre = predecode_network(
+            decoder_spec(fins, words, c),
+            0,
+            nmos=nmos,
+            pmos=pmos,
+            wire_ff_per_um=c.wire_ff_per_um,
+        )
+        pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
+        # Every address bit switches; times start at the first pin's edge.
+        start, rises = pre.sources[0]
+        edge = "RISE" if rises else "FALL"
+        source = (
+            "".join(
+                f"Va{i} {node} 0 {rise if up else fall}\n"
+                for i, (node, up) in enumerate(pre.sources)
+            )
+            + "\n".join(pre.lines)
+            + "\n"
+            + "\n".join(_driver_lines(totals, nmos, pmos, pa_pin, pb_pin))
+            + "\n"
+        )
     else:
         # The predecoded PA line rises with the edge; PB is already high.
         start = "PA"
@@ -473,15 +559,19 @@ def render_rom_read_deck(
         + f".tran {c.step_ps:g}p {end:g}n\n"
         f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
         f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"
-        f".measure tran t_sense TRIG v({start}) VAL={half:g} RISE=1 "
+        f".measure tran t_sense TRIG v({start}) VAL={half:g} {edge}=1 "
         f"TARG v(BLP) VAL={sense:g} FALL=1\n"
-        f".measure tran t_half TRIG v({start}) VAL={half:g} RISE=1 "
+        f".measure tran t_half TRIG v({start}) VAL={half:g} {edge}=1 "
         f"TARG v(BLP) VAL={half:g} FALL=1\n"
         f".measure tran blu_sense FIND v(BLU) WHEN v(BLP)={sense:g} FALL=1\n"
         f".measure tran blu_half FIND v(BLU) WHEN v(BLP)={half:g} FALL=1\n"
         f".measure tran blu_end FIND v(BLU) AT={end:g}n\n"
-        f".measure tran t_driver TRIG v({start}) VAL={half:g} RISE=1 "
+        f".measure tran t_decoded TRIG v({start}) VAL={half:g} {edge}=1 "
         f"TARG v(WL) VAL={half:g} RISE=1\n"
+        f".measure tran t_pa TRIG v({start}) VAL={half:g} {edge}=1 "
+        f"TARG v({pa_pin}) VAL={half:g} RISE=1\n"
+        f".measure tran t_pb TRIG v({start}) VAL={half:g} {edge}=1 "
+        f"TARG v({pb_pin}) VAL={half:g} RISE=1\n"
         f".measure tran t_wordline TRIG v(WL) VAL={half:g} RISE=1 "
         f"TARG v({gate}) VAL={half:g} RISE=1\n" + _control(osdi)
     )
@@ -530,6 +620,17 @@ def run_rom_read(
                 else None
             )
             half = c.vdd / 2
+            t_pre = t_driver = None
+            if c.driver != "ideal":
+                decoded = _measure(log, "t_decoded")
+                arrivals = [_measure(log, n) for n in ("t_pa", "t_pb")]
+                if _predecoded(c):
+                    if None not in arrivals:
+                        t_pre = max(arrivals)
+                elif arrivals[0] is not None:
+                    t_pre = 0.0  # PA is the ideal edge itself
+                if decoded is not None and t_pre is not None:
+                    t_driver = decoded - t_pre
             results.append(
                 RomReadResult(
                     fins=f,
@@ -541,9 +642,8 @@ def run_rom_read(
                         else None
                     ),
                     driver_fins=decoder_driver(f, depth, c),
-                    t_driver_s=(
-                        _measure(log, "t_driver") if c.driver != "ideal" else None
-                    ),
+                    t_predecode_s=t_pre,
+                    t_driver_s=t_driver,
                     t_wordline_s=_measure(log, "t_wordline") if c.wordline_rc else None,
                     wire_ff=_wire_ff(depth, c),
                     wire_ohm=_wire_ohm(depth, c),
@@ -603,6 +703,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="default",
         help="wordline driver: ideal edge, drawn decoder, or size_rom_decoder",
     )
+    parser.add_argument(
+        "--no-predecode",
+        action="store_true",
+        help="drive PA with the ideal edge instead of the predecoders",
+    )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
     parser.add_argument("--model-card", type=Path)
@@ -632,6 +737,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             strap_every=args.strap_every,
             wordline_rc=not args.no_wordline_rc,
             driver=args.driver,
+            predecode=not args.no_predecode,
             window_ns=args.window_ns,
         )
         for f in args.fins:

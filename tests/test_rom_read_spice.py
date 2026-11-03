@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from chipforge_asap7.devices.rom_predecode_spice import predecode_network
 from chipforge_asap7.devices.rom_read_spice import (
     RomReadConditions,
     decoder_driver,
+    decoder_spec,
     render_rom_read_deck,
     run_rom_read,
     strap_stack_ohm,
@@ -128,7 +130,8 @@ def test_the_ideal_wordline_drives_the_gate_directly(tmp_path: Path):
 
 
 def test_the_default_driver_is_the_drawn_nand_and_inverter(tmp_path: Path):
-    deck = deck_for(tmp_path)
+    # Without the predecoders, PA is the edge and PB is held high.
+    deck = deck_for(tmp_path, predecode=False)
     drv = {d[0]: d for d in devices(deck) if d[0].startswith("ND")}
     # NAND: series NMOS from the output through PA then PB; parallel PMOS.
     assert [drv[n][1:4] for n in ("ND1", "ND2")] == [
@@ -146,23 +149,63 @@ def test_the_default_driver_is_the_drawn_nand_and_inverter(tmp_path: Path):
     assert "Vwl " not in deck
     # Every time now starts at the predecoded PA line.
     assert ".measure tran t_sense TRIG v(PA)" in deck
-    assert ".measure tran t_driver TRIG v(PA) VAL=0.35 RISE=1 TARG v(WL)" in deck
+    assert ".measure tran t_decoded TRIG v(PA) VAL=0.35 RISE=1 TARG v(WL)" in deck
 
 
 def test_the_sized_driver_grows_with_the_wordline_load():
-    sized = {
-        (fins, bits): decoder_driver(
-            fins, 256, RomReadConditions(bits=bits, driver="sized")
+    def sized(fins, bits, **kw):
+        c = RomReadConditions(bits=bits, driver="sized", **kw)
+        return decoder_driver(fins, 256, c)
+
+    # The wordline inverter's NMOS fins follow the bits and their fins.
+    for predecode in (False, True):
+        assert (
+            sized(1, 256, predecode=predecode)[2] > sized(1, 16, predecode=predecode)[2]
         )
-        for fins in (1, 2)
-        for bits in (16, 256)
-    }
-    for fins in (1, 2):
-        assert sized[fins, 256][2] > sized[fins, 16][2]  # inverter NMOS fins
-    assert sized[2, 256][2] > sized[1, 256][2]
+        assert (
+            sized(2, 64, predecode=predecode)[2] > sized(1, 64, predecode=predecode)[2]
+        )
+    # Without predecoders a minimal decoder sizes the driver, widening the
+    # interleave when it must; with them, the whole 512-word decoder sizes
+    # its predecoders too, and for 2 fins x 256 bits they never converge.
+    assert sized(2, 256, predecode=False)[2] > sized(1, 256, predecode=False)[2]
+    with pytest.raises(ValueError, match="diverges"):
+        sized(2, 256)
     assert decoder_driver(1, 64, RomReadConditions(driver="ideal")) is None
     explicit = RomReadConditions(driver=(2, 2, 4, 4))
     assert decoder_driver(1, 64, explicit) == (2, 2, 4, 4)
+
+
+def test_the_predecoders_drive_the_words_nand(tmp_path: Path):
+    deck = deck_for(tmp_path, words=256)
+    pre = predecode_network(
+        decoder_spec(1, 256, RomReadConditions()),
+        0,
+        nmos="nmos_rvt",
+        pmos="pmos_rvt",
+        wire_ff_per_um=0.2,
+    )
+    # Word 0 of the 512-word decoder: PA<0> and PB<0>, every address bit 0,
+    # so all nine fall and each AN<i> inverter is on the path.
+    assert len(pre.sources) == 9 and not any(up for _, up in pre.sources)
+    assert {f"AN<{i}>" for i in range(9)} <= set(pre.tree)
+    assert {"PA<0>", "PB<0>"} <= set(pre.tree)
+    drv = {d[0]: d for d in devices(deck) if d[0].startswith("ND")}
+    assert drv["ND1"][2] == pre.pa_pin and drv["ND2"][2] == pre.pb_pin
+    # The address pins are the edges; nothing drives PA or PB directly.
+    assert "Vpa " not in deck and "Vwl " not in deck
+    assert sum(x.startswith("Va") for x in deck.splitlines()) == 9
+    assert f".measure tran t_sense TRIG v({pre.sources[0][0]}) VAL=0.35 FALL=1" in deck
+    # Every predecoder gate on the path, and an off-path gate load per input.
+    gates = {d[0][:-1] for d in devices(deck) if d[0].startswith("NX")}
+    assert len(gates) == pre.gates and pre.loads > 0
+    assert sum(d[0].startswith("NL") for d in devices(deck)) == 2 * pre.loads
+
+
+def test_predecoded_benches_need_a_decoder_word_count(tmp_path: Path):
+    with pytest.raises(ValueError, match="power-of-two"):
+        deck_for(tmp_path, words=48)
+    assert "Vpa PA" in deck_for(tmp_path, words=48, predecode=False)
 
 
 @pytest.mark.parametrize("driver", ["strong", (1, 2, 3), (0, 1, 1, 1)])
