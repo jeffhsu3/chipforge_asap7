@@ -38,8 +38,10 @@ those nets' routed RC and gate loads, in a ``2 * words``-word decoder whose
 word 0 ends its lane half's bitline.  The V1/M1 stubs and the grounded
 isolation gates are not modelled.
 
-Measured from the first address pin's 50 % point (PA's without the
-predecoders; the decoder output's for the ideal driver), on ``BLP``:
+Each address pin is driven by a released ASAP7 buffer (``BUFx4`` by
+default) or an ideal edge.  Measured from the first address edge's 50 %
+point -- the buffer input's -- (PA's without the predecoders; the decoder
+output's for the ideal driver), on ``BLP``:
 
 * ``t_sense`` -- the line has fallen by the sense margin from its precharged
   level, which the precharge release kicks slightly above VDD (a
@@ -164,6 +166,9 @@ class RomReadConditions:
     #: pins (`predecode_network`), sized with the same decoder; else the PA
     #: line is an ideal edge and PB is already high.
     predecode: bool = True
+    #: What drives each address pin, with the predecoders: ``"ideal"`` (the
+    #: edge itself) or a released buffer from `ADDRESS_BUFFERS`.
+    address_driver: str = "BUFx4"
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -184,6 +189,15 @@ class RomReadConditions:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        from .rom_predecode_spice import ADDRESS_BUFFERS
+
+        if (
+            self.address_driver != "ideal"
+            and self.address_driver not in ADDRESS_BUFFERS
+        ):
+            raise ValueError(
+                f"address_driver must be 'ideal' or one of {sorted(ADDRESS_BUFFERS)}"
+            )
         for name in ("wordline_rc", "predecode"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a bool")
@@ -520,6 +534,7 @@ def render_rom_read_deck(
             nmos=nmos,
             pmos=pmos,
             wire_ff_per_um=c.wire_ff_per_um,
+            address_buffer=None if c.address_driver == "ideal" else c.address_driver,
         )
         pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
         # Every address bit switches; times start at the first pin's edge.
@@ -717,6 +732,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="drive PA with the ideal edge instead of the predecoders",
     )
+    parser.add_argument(
+        "--address-driver",
+        default="BUFx4",
+        help="what drives each address pin: 'ideal' or a released BUFx* cell",
+    )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
     parser.add_argument("--model-card", type=Path)
@@ -747,6 +767,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             wordline_rc=not args.no_wordline_rc,
             driver=args.driver,
             predecode=not args.no_predecode,
+            address_driver=args.address_driver,
             window_ns=args.window_ns,
         )
         for f in args.fins:

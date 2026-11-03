@@ -5,12 +5,16 @@ skips when either, the ASAP7 model card or the BSIM-CMG source is missing,
 and fails instead under ``ASAP7_REQUIRE_TOOLS=1``.
 """
 
+import re
 import shutil
 from pathlib import Path
 
 import pytest
 
-from chipforge_asap7.devices.rom_predecode_spice import predecode_network
+from chipforge_asap7.devices.rom_predecode_spice import (
+    ADDRESS_BUFFERS,
+    predecode_network,
+)
 from chipforge_asap7.devices.rom_read_spice import (
     RomReadConditions,
     decoder_driver,
@@ -184,6 +188,7 @@ def test_the_predecoders_drive_the_words_nand(tmp_path: Path):
         nmos="nmos_rvt",
         pmos="pmos_rvt",
         wire_ff_per_um=0.2,
+        address_buffer="BUFx4",
     )
     # Word 0 of the 512-word decoder: PA<0> and PB<0>, every address bit 0,
     # so all nine fall and each AN<i> inverter is on the path.
@@ -200,6 +205,43 @@ def test_the_predecoders_drive_the_words_nand(tmp_path: Path):
     gates = {d[0][:-1] for d in devices(deck) if d[0].startswith("NX")}
     assert len(gates) == pre.gates and pre.loads > 0
     assert sum(d[0].startswith("NL") for d in devices(deck)) == 2 * pre.loads
+
+
+def test_a_released_buffer_drives_each_address_pin(tmp_path: Path):
+    deck = deck_for(tmp_path, words=64)
+    stages = {}
+    for d in devices(deck):
+        if d[0].startswith("NB"):
+            stages.setdefault(d[0][:-1], []).append(d)
+    assert len(stages) == 7  # a 128-word decoder has seven address bits
+    for net, (a, b, c, d) in stages.items():
+        # BUFx4: a 2-fin input inverter into a 12-fin output inverter.
+        assert [x[-1] for x in (a, b, c, d)] == ["NFIN=2"] * 2 + ["NFIN=12"] * 2
+        assert a[2] == b[2] == f"{net[2:]}_in" and c[2] == d[2] == a[1]
+    # The edges now hit the buffer inputs, and the reads start there.
+    assert sum(x.startswith("Va") for x in deck.splitlines()) == 7
+    assert ".measure tran t_sense TRIG v(Av0_in)" in deck
+    ideal = deck_for(tmp_path, words=64, address_driver="ideal")
+    assert not any(d[0].startswith("NB") for d in devices(ideal))
+
+
+def test_the_buffer_table_is_the_released_cells():
+    cdl = Path("/home/user/asap7/asap7sc7p5t_28/CDL/LVS/asap7sc7p5t_28_R.cdl")
+    if not cdl.is_file():
+        pytest.skip("the ASAP7 standard-cell CDL is not installed")
+    text = cdl.read_text()
+    for name, (first, second) in ADDRESS_BUFFERS.items():
+        body = text.split(f".SUBCKT {name}_ASAP7_75t_R ")[1].split(".ENDS")[0]
+        fins = {
+            (m[1], m[2]): int(m[3])
+            for m in re.finditer(r"^MM\d+ (\S+) (\S+) .*nfin=(\d+)", body, re.MULTILINE)
+        }
+        assert fins == {("AN", "A"): first, ("Y", "AN"): second}, name
+
+
+def test_rejects_an_unknown_address_driver():
+    with pytest.raises(ValueError, match="address_driver"):
+        RomReadConditions(address_driver="BUFx7")
 
 
 def test_predecoded_benches_need_a_decoder_word_count(tmp_path: Path):

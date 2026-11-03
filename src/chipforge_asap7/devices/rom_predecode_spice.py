@@ -14,8 +14,10 @@ between the address pins and one word's postdecode NAND:
   NAND inputs and the other predecoder gates -- as a BSIM-CMG gate load at
   its own stub.
 
-Address pins are ideal edges at the M4 rail end where the decoder labels
-them.  The postdecode NAND, the wordline driver and everything after it are
+Each address pin enters at the M4 rail end where the decoder labels it,
+either as an ideal edge or driven by one of the released ASAP7 buffers
+(`ADDRESS_BUFFERS`), its input on the edge.  The postdecode NAND, the
+wordline driver and everything after it are
 :mod:`~chipforge_asap7.devices.rom_read_spice`'s.
 """
 
@@ -29,7 +31,24 @@ from typing import Any
 from ..layout.rules import CONTACT_SIZE, M4_WIDTH
 from ..verification.stack import STACK_CONDUCTORS
 
-__all__ = ["PredecodeNetwork", "predecode_network"]
+__all__ = ["ADDRESS_BUFFERS", "PredecodeNetwork", "predecode_network"]
+
+#: The released RVT buffers (asap7sc7p5t_28 ``BUFx*_ASAP7_75t_R``): fins of
+#: the input inverter and of the output inverter, n and p alike.
+ADDRESS_BUFFERS: dict[str, tuple[int, int]] = {
+    "BUFx2": (2, 6),
+    "BUFx3": (3, 9),
+    "BUFx4": (2, 12),
+    "BUFx4f": (4, 12),
+    "BUFx5": (3, 15),
+    "BUFx6f": (6, 18),
+    "BUFx8": (4, 24),
+    "BUFx10": (6, 30),
+    "BUFx12": (6, 36),
+    "BUFx12f": (12, 36),
+    "BUFx16f": (12, 48),
+    "BUFx24": (12, 72),
+}
 
 _STACK = {s.name: s for s in STACK_CONDUCTORS}
 M3_OHM_PER_UM = _STACK["M3"].sheet_resistance_ohm / (CONTACT_SIZE / 1000)
@@ -67,7 +86,13 @@ def _fins(cell: Any) -> tuple[int, int]:
 
 
 def predecode_network(
-    spec: Any, word: int, *, nmos: str, pmos: str, wire_ff_per_um: float
+    spec: Any,
+    word: int,
+    *,
+    nmos: str,
+    pmos: str,
+    wire_ff_per_um: float,
+    address_buffer: str | None = None,
 ) -> PredecodeNetwork:
     """The address-to-NAND path of `word` in `spec`, see the module docstring.
 
@@ -210,6 +235,25 @@ def predecode_network(
             f"NX{index}f {out} {nand} VDD VDD {pmos} L=20n NFIN={inv_p}",
         ]
     lines += [f"CQ_{node} {node} 0 {ff:g}f" for node, ff in sorted(caps.items()) if ff]
+    if address_buffer is not None:
+        if address_buffer not in ADDRESS_BUFFERS:
+            raise ValueError(
+                f"address_buffer must be one of {sorted(ADDRESS_BUFFERS)}; "
+                f"got {address_buffer!r}"
+            )
+        first, second = ADDRESS_BUFFERS[address_buffer]
+        buffered = []
+        for node, line in sources:
+            net = _name(line)
+            pin, mid = f"{net}_in", f"{net}_bufmid"
+            lines += [
+                f"NB{net}a {mid} {pin} 0 0 {nmos} L=20n NFIN={first}",
+                f"NB{net}b {mid} {pin} VDD VDD {pmos} L=20n NFIN={first}",
+                f"NB{net}c {node} {mid} 0 0 {nmos} L=20n NFIN={second}",
+                f"NB{net}d {node} {mid} VDD VDD {pmos} L=20n NFIN={second}",
+            ]
+            buffered.append((pin, line))
+        sources = buffered
     edges = tuple(
         (node, bool(word >> int(line[2:-1]) & 1)) for node, line in sorted(sources)
     )
