@@ -12,7 +12,11 @@ between the address pins and one word's postdecode NAND:
   each pin's M3 stub with its V2 and V3;
 * every gate input on those nets that is not on the path -- the other words'
   NAND inputs and the other predecoder gates -- as a BSIM-CMG gate load at
-  its own stub.
+  its own stub;
+* each M4 rail's coupling to the rails on its adjacent tracks
+  (`RAIL_COUPLING_FF_PER_UM`, from a FasterCap cross-section), with the
+  previous address's ``PA``/``PB`` trees simulated as the falling aggressors
+  and every other neighbour a quiet AC ground.
 
 Each address pin enters at the M4 rail end where the decoder labels it,
 either as an ideal edge or driven by one of the released ASAP7 buffers
@@ -28,10 +32,16 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
 
-from ..layout.rules import CONTACT_SIZE, M4_WIDTH
+from ..layout.rules import CONTACT_SIZE, M4_PITCH, M4_WIDTH
 from ..verification.stack import STACK_CONDUCTORS
 
-__all__ = ["ADDRESS_BUFFERS", "PredecodeNetwork", "predecode_network"]
+__all__ = [
+    "ADDRESS_BUFFERS",
+    "RAIL_COUPLING_FF_PER_UM",
+    "RAIL_GROUND_FF_PER_UM",
+    "PredecodeNetwork",
+    "predecode_network",
+]
 
 #: The released RVT buffers (asap7sc7p5t_28 ``BUFx*_ASAP7_75t_R``): fins of
 #: the input inverter and of the output inverter, n and p alike.
@@ -55,6 +65,13 @@ M3_OHM_PER_UM = _STACK["M3"].sheet_resistance_ohm / (CONTACT_SIZE / 1000)
 M4_OHM_PER_UM = _STACK["M4"].sheet_resistance_ohm / (M4_WIDTH / 1000)
 V2_OHM = _STACK["M2"].via_resistance_ohm
 V3_OHM = _STACK["M3"].via_resistance_ohm
+#: M4 rails on the 48 nm decoder tracks, per um, from a FasterCap 2-D solve of
+#: seven 24 x 48 nm lines in k = 2.7 over a ground plane at the M2 top (dense
+#: cell wiring below; nothing above): 0.0655 fF/um to each adjacent rail, and
+#: 0.0169 to ground plus 0.0032 to each second neighbour, counted as ground.
+#: Without the plane the coupling is 0.0673; over a solid M3, 0.0600.
+RAIL_COUPLING_FF_PER_UM = 0.0655
+RAIL_GROUND_FF_PER_UM = 0.0169 + 2 * 0.0032
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,7 @@ class PredecodeNetwork:
     tree: tuple[str, ...]
     gates: int
     loads: int
+    couplers: int = 0
 
 
 def _name(line: str) -> str:
@@ -93,15 +111,25 @@ def predecode_network(
     pmos: str,
     wire_ff_per_um: float,
     address_buffer: str | None = None,
+    coupling: bool = True,
 ) -> PredecodeNetwork:
     """The address-to-NAND path of `word` in `spec`, see the module docstring.
 
     The address starts at `word`'s complement, so every bit switches: a bit of
     `word` that is 0 falls and its ``AN`` inverter is on the path.
+
+    With `coupling`, every M4 rail section couples to the rails on the
+    adjacent tracks over their shared length (`RAIL_COUPLING_FF_PER_UM`), and
+    its ground share is `RAIL_GROUND_FF_PER_UM`; a side with no rail beside it
+    puts its share to ground.  The previous address's ``PA`` and ``PB`` trees
+    are simulated as well: they fall as `word`'s rise, the opposing switching
+    that coupling makes worst.  Without it, rails carry `wire_ff_per_um` to
+    ground like the stubs do.
     """
     if not spec.predecode:
         raise ValueError("the decoder spec has no predecoders")
     pa, pb = spec.lines(word)
+    previous = word ^ ((1 << spec.address_bits) - 1)
     by_line = defaultdict(list)
     for index, placed in enumerate(spec.predecoder):
         by_line[placed.gate.out].append(index)
@@ -117,6 +145,9 @@ def predecode_network(
 
     visit(pa)
     visit(pb)
+    if coupling:
+        for line in spec.lines(previous):
+            visit(line)
     on_path = {i for line in tree for i in by_line.get(line, ())}
 
     # Every pin on a tree net: (pair, x, pin y, what is there).
@@ -148,6 +179,7 @@ def predecode_network(
 
     pin_node: dict[tuple, str] = {}
     sources = []
+    rail_nodes: dict[tuple[str, int], list[int]] = {}
     for line in sorted(tree):
         net = _name(line)
         pairs = sorted(p for p, name in spec.segments if name == line)
@@ -162,10 +194,12 @@ def predecode_network(
             if join is not None:
                 xs.add(join)
             xs = sorted(xs)
+            rail_nodes[line, pair] = xs
             for a, b in pairwise(xs):
                 resistor(rail(pair, a), rail(pair, b), (b - a) / 1000 * M4_OHM_PER_UM)
-                wire_cap(rail(pair, a), (b - a) / 2)
-                wire_cap(rail(pair, b), (b - a) / 2)
+                if not coupling:
+                    wire_cap(rail(pair, a), (b - a) / 2)
+                    wire_cap(rail(pair, b), (b - a) / 2)
             for p, x, pin_y, what in pins[line]:
                 if p != pair:
                     continue
@@ -191,6 +225,50 @@ def predecode_network(
             # An address pin: its edge enters where the decoder labels it.
             first = pairs[0]
             sources.append((rail(first, spec.segments[first, line][1]), line))
+
+    couplers = 0
+    if coupling:
+        tracks: dict[tuple[int, int], list[tuple[int, int, str]]] = defaultdict(list)
+        for (pair, line), (y, x0, x1) in spec.segments.items():
+            tracks[pair, y].append((x0, x1, line))
+        coupled: dict[tuple[str, str], float] = defaultdict(float)
+
+        def nearest(line: str, pair: int, x: float) -> str:
+            xs = rail_nodes[line, pair]
+            return f"{_name(line)}_p{pair}_x{min(xs, key=lambda v: abs(v - x))}"
+
+        for (line, pair), xs in rail_nodes.items():
+            y = spec.segments[pair, line][0]
+            for a, b in pairwise(xs):
+                ends = (f"{_name(line)}_p{pair}_x{a}", f"{_name(line)}_p{pair}_x{b}")
+                um = (b - a) / 1000
+                for end in ends:
+                    caps[end] += um / 2 * RAIL_GROUND_FF_PER_UM
+                for dy in (-M4_PITCH, M4_PITCH):
+                    covered = 0.0
+                    for x0, x1, other in tracks.get((pair, y + dy), ()):
+                        lo, hi = max(a, x0), min(b, x1)
+                        if hi <= lo:
+                            continue
+                        covered += hi - lo
+                        ff = (hi - lo) / 1000 * RAIL_COUPLING_FF_PER_UM
+                        if other in tree:
+                            # Counted from both rails: take each half here.
+                            near = nearest(other, pair, (lo + hi) / 2)
+                            for end in ends:
+                                coupled[tuple(sorted((end, near)))] += ff / 4
+                        else:
+                            # A quiet rail: an AC ground.
+                            for end in ends:
+                                caps[end] += ff / 2
+                    # No rail beside this stretch: its share goes to ground.
+                    for end in ends:
+                        caps[end] += (
+                            (b - a - covered) / 1000 / 2 * RAIL_COUPLING_FF_PER_UM
+                        )
+        for (n1, n2), ff in sorted(coupled.items()):
+            lines.append(f"CC{couplers} {n1} {n2} {ff:g}f")
+            couplers += 1
 
     loads = 0
     post_n, post_p = _fins(spec.nand)
@@ -266,4 +344,5 @@ def predecode_network(
         tree=tuple(sorted(tree)),
         gates=len(on_path),
         loads=loads,
+        couplers=couplers,
     )

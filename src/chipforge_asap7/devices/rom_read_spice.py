@@ -169,6 +169,9 @@ class RomReadConditions:
     #: What drives each address pin, with the predecoders: ``"ideal"`` (the
     #: edge itself) or a released buffer from `ADDRESS_BUFFERS`.
     address_driver: str = "BUFx4"
+    #: Couple each PA/PB/address M4 rail to its neighbouring tracks, and
+    #: simulate the previous address's lines as the opposing aggressors.
+    rail_coupling: bool = True
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -198,7 +201,7 @@ class RomReadConditions:
             raise ValueError(
                 f"address_driver must be 'ideal' or one of {sorted(ADDRESS_BUFFERS)}"
             )
-        for name in ("wordline_rc", "predecode"):
+        for name in ("wordline_rc", "predecode", "rail_coupling"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a bool")
         if isinstance(self.driver, str):
@@ -535,6 +538,7 @@ def render_rom_read_deck(
             pmos=pmos,
             wire_ff_per_um=c.wire_ff_per_um,
             address_buffer=None if c.address_driver == "ideal" else c.address_driver,
+            coupling=c.rail_coupling,
         )
         pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
         # Every address bit switches; times start at the first pin's edge.
@@ -741,6 +745,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="BUFx4",
         help="what drives each address pin: 'ideal' or a released BUFx* cell",
     )
+    parser.add_argument(
+        "--no-rail-coupling",
+        action="store_true",
+        help="ground the predecode rails' capacitance instead of coupling them",
+    )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
     parser.add_argument("--model-card", type=Path)
@@ -772,6 +781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             driver=args.driver,
             predecode=not args.no_predecode,
             address_driver=args.address_driver,
+            rail_coupling=not args.no_rail_coupling,
             window_ns=args.window_ns,
         )
         for f in args.fins:

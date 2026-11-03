@@ -7,12 +7,14 @@ and fails instead under ``ASAP7_REQUIRE_TOOLS=1``.
 
 import re
 import shutil
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
 from chipforge_asap7.devices.rom_predecode_spice import (
     ADDRESS_BUFFERS,
+    RAIL_COUPLING_FF_PER_UM,
     predecode_network,
 )
 from chipforge_asap7.devices.rom_read_spice import (
@@ -246,6 +248,50 @@ def test_the_buffer_table_is_the_released_cells():
 def test_rejects_an_unknown_address_driver():
     with pytest.raises(ValueError, match="address_driver"):
         RomReadConditions(address_driver="BUFx7")
+
+
+def _rail(node):
+    """The net a rail node belongs to: ``PAv0_p3_x120`` -> ``PAv0``."""
+    return node.rsplit("_p", 1)[0]
+
+
+def test_adjacent_rails_couple_by_their_overlap():
+    spec = decoder_spec(1, 256, RomReadConditions(bits=64))
+    net = predecode_network(
+        spec, 0, nmos="nmos_rvt", pmos="pmos_rvt", wire_ff_per_um=0.2
+    )
+    # The previous address (all ones) falls as word 0's lines rise.
+    assert {"PA<31>", "PB<15>", "PA<0>", "PB<0>"} <= set(net.tree)
+    total = defaultdict(float)
+    for line in net.lines:
+        if line.startswith("CC"):
+            _, a, b, ff = line.split()
+            total[frozenset((_rail(a), _rail(b)))] += float(ff[:-1])
+    assert net.couplers > 0 and total
+    names = {line.replace("<", "v").replace(">", ""): line for line in net.tree}
+    for pair_of_nets, ff in total.items():
+        first, second = (names[n] for n in pair_of_nets)
+        overlap = 0
+        for (p, line), (y, x0, x1) in spec.segments.items():
+            if line != first:
+                continue
+            for dy in (-48, 48):
+                other = spec.segments.get((p, second))
+                if other and other[0] == y + dy:
+                    overlap += max(0, min(x1, other[2]) - max(x0, other[1]))
+        # Each pair is counted once in total, whichever rail it was seen from.
+        assert ff == pytest.approx(overlap / 1000 * RAIL_COUPLING_FF_PER_UM, rel=1e-4)
+
+
+def test_grounded_rails_have_no_couplers_or_aggressors():
+    spec = decoder_spec(1, 256, RomReadConditions(bits=64))
+    net = predecode_network(
+        spec, 0, nmos="n", pmos="p", wire_ff_per_um=0.2, coupling=False
+    )
+    assert net.couplers == 0 and "PA<31>" not in net.tree
+    assert not any(line.startswith("CC") for line in net.lines)
+    deck = deck_for(Path("."), words=256, rail_coupling=False)
+    assert "\nCC" not in deck
 
 
 def test_predecoded_benches_need_a_decoder_word_count(tmp_path: Path):
