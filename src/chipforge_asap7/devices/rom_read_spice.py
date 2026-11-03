@@ -577,6 +577,10 @@ def render_rom_read_deck(
         + "\n".join(ladder)
         + "\n"
         + wordline
+        # Gear: the decoder's femtosecond stub RCs on strong drivers make the
+        # trapezoidal rule ring, and ngspice then crawls (a BUFx4 deck ran an
+        # hour); Gear agrees with it within 0.1 ps where both finish.
+        + ".options method=gear\n"
         + f".tran {c.step_ps:g}p {end:g}n\n"
         f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
         f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"
