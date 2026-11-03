@@ -226,7 +226,11 @@ def test_a_released_buffer_drives_each_address_pin(tmp_path: Path):
 
 
 def test_the_buffer_table_is_the_released_cells():
-    cdl = Path("/home/user/asap7/asap7sc7p5t_28/CDL/LVS/asap7sc7p5t_28_R.cdl")
+    # The ASAP7 checkout beside this repository, as the gdscheck tests expect.
+    cdl = (
+        Path(__file__).resolve().parents[2]
+        / "asap7/asap7sc7p5t_28/CDL/LVS/asap7sc7p5t_28_R.cdl"
+    )
     if not cdl.is_file():
         pytest.skip("the ASAP7 standard-cell CDL is not installed")
     text = cdl.read_text()
