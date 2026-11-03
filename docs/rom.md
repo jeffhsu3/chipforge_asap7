@@ -417,6 +417,58 @@ Every case keeps the full 100 mV split. Findings:
 - **Nothing downstream changes.** `t_drv` and `t_wl` stay within 0.7 ps, and
   1 fin stays 7 ps ahead of 2 fins at 64 bits.
 
+### Rail coupling
+
+The predecode nets are M4 rails on adjacent 48 nm tracks, and most of their
+capacitance is to each other. A FasterCap 2-D solve of seven 24 x 48 nm M4
+lines in k = 2.7 gives, per µm:
+
+| Plane under the rails | To ground | To each adjacent rail | To each next rail | Total |
+| --- | ---: | ---: | ---: | ---: |
+| none (substrate) | 0.006 | 0.067 | 0.004 | 0.156 fF |
+| M2 top (dense cell wiring), the default | 0.017 | 0.065 | 0.003 | 0.157 fF |
+| M3 top (solid) | 0.043 | 0.060 | 0.002 | 0.170 fF |
+
+So 80-95 % of a rail's capacitance couples to its two neighbours. By default
+(`--rail-coupling switching`) every M4 rail section on a simulated net
+couples to the rails on its adjacent tracks over their shared length, at
+0.0655 fF/µm (`RAIL_COUPLING_FF_PER_UM`). Its ground share is 0.0233 fF/µm:
+the ground cap plus both next-neighbour couplings. A stretch with no rail
+beside it puts that side's share to ground. A neighbour that is not simulated
+is quiet, an AC ground. The previous address's `PA`/`PB` trees are simulated
+too: stepping from all ones to zero, they fall while the word's lines rise.
+`quiet` keeps the same capacitances but holds every neighbour still. `off`
+restores the earlier grounded rails at the assumed 0.2 fF/µm. The M3 stubs
+and joins keep 0.2 fF/µm in every mode.
+
+At 256 words per bitline, BUFx4 address drivers, in ps:
+
+| Bits | Rails | `t_pa` | `t_pb` | `t_sense` 1 fin, 25 °C | 2 fins, 25 °C | 1 fin, 125 °C | 2 fins, 125 °C | `split` 125 °C 1 / 2 fins (mV) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | off (0.2 fF/µm) | 133.7 | 149.5 | 212.6 | 219.5 | 226.5 | 233.2 | 92 / 89 |
+| 64 | quiet | 124.0 | 138.5 | 200.6 | 207.5 | — | — | — |
+| 64 | switching | 122.1 | 137.5 | 199.6 | 206.4 | 212.1 | 218.8 | 93 / 89 |
+| 256 | off (0.2 fF/µm) | 133.7 | 149.5 | 260.3 | 296.6 | 274.7 | 307.7 | 91 / 85 |
+| 256 | quiet | 124.0 | 138.5 | 248.4 | 284.6 | — | — | — |
+| 256 | switching | 122.1 | 137.5 | 247.3 | 283.6 | 260.2 | 293.4 | 91 / 86 |
+
+Every case passes both margins. Findings:
+
+- **The capacitance, not the crosstalk, moves the read.** The solved rails
+  carry about 0.155 fF/µm in all, not the assumed 0.2, and the read is
+  12 ps faster for it (quiet against off). Switching neighbours change it
+  by only a further 1 ps.
+- **What crosstalk there is helps, slightly.** Of the 9.6 fF between nets
+  that switch, 5.2 fF couples rails moving together and 4.5 fF rails moving
+  apart. The `A<i>` rails all fall together, and the `AN<i>` rails all rise
+  together. Every other neighbour belongs to a line that does not switch on
+  this step: 25.0 fF, 72 % of the rail-to-rail coupling. Another 21.9 fF of
+  rail side faces no rail at all and goes to ground.
+- **It is not the worst case for every address.** An address step that puts
+  the falling old lines beside the rising new ones on every track would
+  cost more. This step changes all nine bits, which switches the most
+  gates, but it does not search the address pairs for the worst neighbours.
+
 `size_rom_decoder` also stops now on a runaway: past 1024 fingers per role
 it raises an error. A 512-word, 256-bit, 2-fin decoder at interleave 16 or
 32 never converges. Its predecoder bank grows with its own size and
@@ -429,7 +481,8 @@ What the bench does not cover:
 
 - anything before the address buffers: their inputs are ideal 40 ps edges,
   with no wiring from them to the pins;
-- coupling between the PA/PB rails;
+- address steps other than all ones to zero, and coupling on the M3 stubs,
+  joins and wordline straps;
 - the decoder's own wiring from the inverter to the top of the M3 strap,
   across the decoder-to-array gap;
 - the other words' gates on adjacent wordlines (coupling), and the
