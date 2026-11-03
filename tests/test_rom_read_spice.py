@@ -12,6 +12,7 @@ import pytest
 
 from chipforge_asap7.devices.rom_read_spice import (
     RomReadConditions,
+    decoder_driver,
     render_rom_read_deck,
     run_rom_read,
     strap_stack_ohm,
@@ -126,6 +127,50 @@ def test_the_ideal_wordline_drives_the_gate_directly(tmp_path: Path):
     assert ".measure tran t_wordline TRIG v(WL)" in rc
 
 
+def test_the_default_driver_is_the_drawn_nand_and_inverter(tmp_path: Path):
+    deck = deck_for(tmp_path)
+    drv = {d[0]: d for d in devices(deck) if d[0].startswith("ND")}
+    # NAND: series NMOS from the output through PA then PB; parallel PMOS.
+    assert [drv[n][1:4] for n in ("ND1", "ND2")] == [
+        ["nandout", "PA", "nmid"],
+        ["nmid", "PB", "0"],
+    ]
+    assert {tuple(drv[n][1:4]) for n in ("ND3", "ND4")} == {
+        ("nandout", "PA", "VDD"),
+        ("nandout", "PB", "VDD"),
+    }
+    # Inverter onto the top of the M3 strap; two fingers of 3 fins each.
+    assert drv["ND5"][1:3] == drv["ND6"][1:3] == ["WL", "nandout"]
+    assert {d[-1] for d in drv.values()} == {"NFIN=6"}
+    assert "Vpa PA 0 PWL" in deck and "Vpb PB 0 0.7" in deck
+    assert "Vwl " not in deck
+    # Every time now starts at the predecoded PA line.
+    assert ".measure tran t_sense TRIG v(PA)" in deck
+    assert ".measure tran t_driver TRIG v(PA) VAL=0.35 RISE=1 TARG v(WL)" in deck
+
+
+def test_the_sized_driver_grows_with_the_wordline_load():
+    sized = {
+        (fins, bits): decoder_driver(
+            fins, 256, RomReadConditions(bits=bits, driver="sized")
+        )
+        for fins in (1, 2)
+        for bits in (16, 256)
+    }
+    for fins in (1, 2):
+        assert sized[fins, 256][2] > sized[fins, 16][2]  # inverter NMOS fins
+    assert sized[2, 256][2] > sized[1, 256][2]
+    assert decoder_driver(1, 64, RomReadConditions(driver="ideal")) is None
+    explicit = RomReadConditions(driver=(2, 2, 4, 4))
+    assert decoder_driver(1, 64, explicit) == (2, 2, 4, 4)
+
+
+@pytest.mark.parametrize("driver", ["strong", (1, 2, 3), (0, 1, 1, 1)])
+def test_rejects_bad_drivers(driver):
+    with pytest.raises(ValueError):
+        RomReadConditions(driver=driver)
+
+
 def test_sense_target_counts_from_the_precharged_level(tmp_path: Path):
     paths = {"models": tmp_path / "m", "osdi": tmp_path / "o", "conditions": CONDITIONS}
     first = render_rom_read_deck(1, 16, **paths)
@@ -190,6 +235,8 @@ def test_one_fin_reads_slower_than_two_and_depth_slows_both(
         output_dir=tmp_path / "run",
         fins=(1, 2),
         words=(16, 256),
+        # The ideal driver keeps this about the bitline and the wordline.
+        conditions=RomReadConditions(driver="ideal"),
     )
     assert (tmp_path / "run/results.json").is_file()
     r = {(x.fins, x.words): x for x in results}

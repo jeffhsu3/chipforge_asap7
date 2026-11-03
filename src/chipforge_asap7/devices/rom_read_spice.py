@@ -27,10 +27,15 @@ The wordline (:func:`wordline_network`) is the drawn one for a ``bits``-row
 array: an M3 strap from the decoder at the array's top edge, a V2/V1/V0/LIG
 stack onto the continuous gate poly at every strap row, and every row's word
 transistor gate on the poly as a BSIM-CMG load.  The read uses the slowest
-row.  The decoder's driver is an ideal edge at the top of the M3 strap; the
-V1/M1 stubs and the grounded isolation gates are not modelled.
+row.  The wordline's driver (:func:`decoder_driver`) is the decoder's last two
+stages as BSIM-CMG transistors: the postdecode NAND, its PA input rising with
+the edge and PB already high, and the inverter onto the top of the M3 strap,
+sized as the drawn decoder (the default), as `size_rom_decoder` sizes them,
+or ideal.  The predecoders are outside it.  The V1/M1 stubs and the grounded
+isolation gates are not modelled.
 
-Measured from the decoder output's 50 % point, on ``BLP``:
+Measured from the PA line's 50 % point (the decoder output's, for the ideal
+driver), on ``BLP``:
 
 * ``t_sense`` -- the line has fallen by the sense margin from its precharged
   level, which the precharge release kicks slightly above VDD (a
@@ -73,9 +78,11 @@ from .spice import (
 from .sram6t_read_spice import _control, _measure, _simulate
 
 __all__ = [
+    "DRIVERS",
     "RomReadConditions",
     "RomReadResult",
     "WordlineNetwork",
+    "decoder_driver",
     "render_rom_read_deck",
     "run_rom_read",
     "strap_stack_ohm",
@@ -99,6 +106,7 @@ POLY_OHM_PER_UM = _STACK["Gate"].sheet_resistance_ohm / (GATE_WIDTH / 1000)
 #: Only to rank the rows by wordline delay: the BROM model's gate load.
 GATE_FF_PER_FIN_ESTIMATE = 0.0417
 DEFAULT_BITS = 64
+DRIVERS = ("ideal", "default", "sized")
 
 
 def strap_stack_ohm(fins: int = 2) -> float:
@@ -140,6 +148,11 @@ class RomReadConditions:
     bits: int = DEFAULT_BITS
     strap_every: int = 16
     wordline_rc: bool = True
+    #: What drives the wordline: ``"ideal"`` (the edge itself), ``"default"``
+    #: (the drawn decoder's NAND and inverter), ``"sized"`` (as
+    #: `size_rom_decoder` sizes them for this array), or explicit total fins
+    #: ``(nand_n, nand_p, inverter_n, inverter_p)``.
+    driver: str | tuple[int, int, int, int] = "default"
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -162,6 +175,15 @@ class RomReadConditions:
                 raise ValueError(f"{name} must be a positive integer")
         if not isinstance(self.wordline_rc, bool):
             raise TypeError("wordline_rc must be a bool")
+        if isinstance(self.driver, str):
+            if self.driver not in DRIVERS:
+                raise ValueError(f"driver must be one of {DRIVERS} or four fin counts")
+        elif len(self.driver) != 4 or any(
+            isinstance(f, bool) or not isinstance(f, int) or f < 1 for f in self.driver
+        ):
+            raise ValueError("an explicit driver is four positive total fin counts")
+        else:
+            object.__setattr__(self, "driver", tuple(self.driver))
 
 
 @dataclass(frozen=True)
@@ -172,6 +194,8 @@ class RomReadResult:
     words: int
     bits: int
     wordline_row: int | None
+    driver_fins: tuple[int, int, int, int] | None
+    t_driver_s: float | None
     t_wordline_s: float | None
     wire_ff: float
     wire_ohm: float
@@ -311,6 +335,67 @@ def wordline_network(fins: int, c: RomReadConditions, nmos: str) -> WordlineNetw
     return WordlineNetwork(tuple(lines), selected, f"WR{selected}", c.bits, len(taps))
 
 
+def decoder_driver(
+    fins: int, words: int, c: RomReadConditions
+) -> tuple[int, int, int, int] | None:
+    """Total fins of the wordline's NAND and inverter, or None for ideal.
+
+    ``"default"`` is `RomDecoderSpec`'s drawn decoder; ``"sized"`` asks
+    `size_rom_decoder` for a ``c.bits``-row array, widening the interleave
+    when the sized cells do not fit its slots.  Totals are fins per finger times
+    fingers: each finger is a parallel device.
+    """
+    if c.driver == "ideal":
+        return None
+    if not isinstance(c.driver, str):
+        return c.driver
+    from .rom_decoder import RomDecoderSpec
+    from .rom_sizing import size_rom_decoder
+
+    def totals(spec) -> tuple[int, int, int, int]:
+        (nn, np_), (dn, dp) = spec.cell_fins[:2]
+        return (
+            nn * spec.nand_fingers,
+            np_ * spec.nand_fingers,
+            dn * spec.driver_fingers,
+            dp * spec.driver_fingers,
+        )
+
+    bitcell = RomBitcellSpec(fins=fins, vt=c.vt)
+    if c.driver == "default":
+        return totals(RomDecoderSpec(array=RomArraySpec(bitcell=bitcell)))
+    errors = []
+    for interleave in (8, 16, 32):
+        # The wordline driver's load is the bits and their fins, not the
+        # word count, so the smallest decoder this interleave takes sizes it
+        # (and sizing a wide one re-routes it on every iteration).
+        array = RomArraySpec(
+            words=2 * interleave,
+            bits=c.bits,
+            bitcell=bitcell,
+            strap_every=c.strap_every,
+        )
+        try:
+            spec = RomDecoderSpec(array=array, interleave=interleave)
+            return totals(size_rom_decoder(spec).spec)
+        except ValueError as exc:
+            errors.append(f"interleave {interleave}: {exc}")
+    raise ValueError("no interleave fits the sized driver: " + "; ".join(errors))
+
+
+def _driver_lines(totals: tuple[int, int, int, int], nmos: str, pmos: str) -> list[str]:
+    """PA rises into a NAND (PB held high) whose output feeds the inverter."""
+    nn, np_, dn, dp = totals
+    return [
+        f"ND1 nandout PA nmid 0 {nmos} L=20n NFIN={nn}",
+        f"ND2 nmid PB 0 0 {nmos} L=20n NFIN={nn}",
+        f"ND3 nandout PA VDD VDD {pmos} L=20n NFIN={np_}",
+        f"ND4 nandout PB VDD VDD {pmos} L=20n NFIN={np_}",
+        f"ND5 WL nandout 0 0 {nmos} L=20n NFIN={dn}",
+        f"ND6 WL nandout VDD VDD {pmos} L=20n NFIN={dp}",
+    ]
+
+
 def render_rom_read_deck(
     fins: int,
     words: int,
@@ -354,6 +439,17 @@ def render_rom_read_deck(
                 )
     far = words - 1
     end = 1.1 + c.window_ns
+    totals = decoder_driver(fins, words, c)
+    if totals is None:
+        start = "WL"
+        source = f"Vwl WL 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
+    else:
+        # The predecoded PA line rises with the edge; PB is already high.
+        start = "PA"
+        source = (
+            f"Vpa PA 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
+            f"Vpb PB 0 {vdd:g}\n" + "\n".join(_driver_lines(totals, nmos, pmos)) + "\n"
+        )
     if c.wordline_rc:
         network = wordline_network(fins, c, nmos)
         gate, wordline = network.selected_gate, "\n".join(network.lines) + "\n"
@@ -365,8 +461,8 @@ def render_rom_read_deck(
         f"Vsupply VDD 0 {vdd:g}\n"
         # Precharge low until 1 ns, the wordline up 0.1 ns after it releases.
         f"Vprechn PRECHN 0 PWL(0 0 1n 0 {1 + sl:g}n {vdd:g})\n"
-        f"Vwl WL 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
-        f"NPP BLP PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
+        + source
+        + f"NPP BLP PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
         f"NPU BLU PRECHN VDD VDD {pmos} L=20n NFIN={c.precharge_fins}\n"
         # The selected word is the far one, behind the whole line: programmed
         # on BLP; on BLU its drain floats, so it is not on the line at all.
@@ -377,13 +473,15 @@ def render_rom_read_deck(
         + f".tran {c.step_ps:g}p {end:g}n\n"
         f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
         f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"
-        f".measure tran t_sense TRIG v(WL) VAL={half:g} RISE=1 "
+        f".measure tran t_sense TRIG v({start}) VAL={half:g} RISE=1 "
         f"TARG v(BLP) VAL={sense:g} FALL=1\n"
-        f".measure tran t_half TRIG v(WL) VAL={half:g} RISE=1 "
+        f".measure tran t_half TRIG v({start}) VAL={half:g} RISE=1 "
         f"TARG v(BLP) VAL={half:g} FALL=1\n"
         f".measure tran blu_sense FIND v(BLU) WHEN v(BLP)={sense:g} FALL=1\n"
         f".measure tran blu_half FIND v(BLU) WHEN v(BLP)={half:g} FALL=1\n"
         f".measure tran blu_end FIND v(BLU) AT={end:g}n\n"
+        f".measure tran t_driver TRIG v({start}) VAL={half:g} RISE=1 "
+        f"TARG v(WL) VAL={half:g} RISE=1\n"
         f".measure tran t_wordline TRIG v(WL) VAL={half:g} RISE=1 "
         f"TARG v({gate}) VAL={half:g} RISE=1\n" + _control(osdi)
     )
@@ -442,6 +540,10 @@ def run_rom_read(
                         if c.wordline_rc
                         else None
                     ),
+                    driver_fins=decoder_driver(f, depth, c),
+                    t_driver_s=(
+                        _measure(log, "t_driver") if c.driver != "ideal" else None
+                    ),
                     t_wordline_s=_measure(log, "t_wordline") if c.wordline_rc else None,
                     wire_ff=_wire_ff(depth, c),
                     wire_ohm=_wire_ohm(depth, c),
@@ -495,6 +597,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="drive the selected gate directly with the ideal edge",
     )
+    parser.add_argument(
+        "--driver",
+        choices=DRIVERS,
+        default="default",
+        help="wordline driver: ideal edge, drawn decoder, or size_rom_decoder",
+    )
     parser.add_argument("--step-ps", type=float, default=1.0)
     parser.add_argument("--window-ns", type=float, default=4.0)
     parser.add_argument("--model-card", type=Path)
@@ -523,6 +631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bits=args.bits,
             strap_every=args.strap_every,
             wordline_rc=not args.no_wordline_rc,
+            driver=args.driver,
             window_ns=args.window_ns,
         )
         for f in args.fins:
