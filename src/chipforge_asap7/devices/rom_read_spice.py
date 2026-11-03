@@ -31,11 +31,15 @@ row.  The wordline's driver (:func:`decoder_driver`) is the decoder's last two
 stages as BSIM-CMG transistors: the postdecode NAND, its PA input rising with
 the edge and PB already high, and the inverter onto the top of the M3 strap,
 sized as the drawn decoder (the default), as `size_rom_decoder` sizes them,
-or ideal.  The predecoders are outside it.  The V1/M1 stubs and the grounded
+or ideal.  With a decoder driver the predecoders are simulated too
+(:func:`~chipforge_asap7.devices.rom_predecode_spice.predecode_network`):
+every gate between the address pins and the word's PA and PB lines, and
+those nets' routed RC and gate loads, in a ``2 * words``-word decoder whose
+word 0 ends its lane half's bitline.  The V1/M1 stubs and the grounded
 isolation gates are not modelled.
 
-Measured from the PA line's 50 % point (the decoder output's, for the ideal
-driver), on ``BLP``:
+Measured from the first address pin's 50 % point (PA's without the
+predecoders; the decoder output's for the ideal driver), on ``BLP``:
 
 * ``t_sense`` -- the line has fallen by the sense margin from its precharged
   level, which the precharge release kicks slightly above VDD (a
@@ -203,7 +207,9 @@ class RomReadResult:
     bits: int
     wordline_row: int | None
     driver_fins: tuple[int, int, int, int] | None
-    #: Address pins to the later of the word's PA and PB NAND inputs.
+    #: Address pins to the word's PA and PB NAND inputs, and the later one.
+    t_pa_s: float | None
+    t_pb_s: float | None
     t_predecode_s: float | None
     #: The later NAND input to the decoder output.
     t_driver_s: float | None
@@ -621,6 +627,7 @@ def run_rom_read(
             )
             half = c.vdd / 2
             t_pre = t_driver = None
+            arrivals = [None, None]
             if c.driver != "ideal":
                 decoded = _measure(log, "t_decoded")
                 arrivals = [_measure(log, n) for n in ("t_pa", "t_pb")]
@@ -642,6 +649,8 @@ def run_rom_read(
                         else None
                     ),
                     driver_fins=decoder_driver(f, depth, c),
+                    t_pa_s=arrivals[0] if _predecoded(c) else None,
+                    t_pb_s=arrivals[1] if _predecoded(c) else None,
                     t_predecode_s=t_pre,
                     t_driver_s=t_driver,
                     t_wordline_s=_measure(log, "t_wordline") if c.wordline_rc else None,
