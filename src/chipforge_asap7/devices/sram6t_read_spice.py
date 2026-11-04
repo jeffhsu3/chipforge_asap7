@@ -263,18 +263,25 @@ def _measure(log: str, name: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def _simulate(deck: Path, text: str, ngspice: str) -> str:
+def _simulate(deck: Path, text: str, ngspice: str, timeout: float | None = None) -> str:
     simulator = shutil.which(ngspice) if not Path(ngspice).is_file() else ngspice
     if simulator is None:
         raise FileNotFoundError(f"ngspice was not found: {ngspice!r}")
     deck.write_text(text)
-    completed = subprocess.run(
-        [str(simulator), "-b", deck.name],
-        cwd=deck.parent,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            [str(simulator), "-b", deck.name],
+            cwd=deck.parent,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        deck.with_suffix(".log").write_text(f"timed out after {timeout} s\n")
+        raise RuntimeError(
+            f"ngspice timed out for {deck.name} after {timeout} s"
+        ) from exc
     log = completed.stdout + completed.stderr
     deck.with_suffix(".log").write_text(log)
     if completed.returncode or "simulation(s) aborted" in log:

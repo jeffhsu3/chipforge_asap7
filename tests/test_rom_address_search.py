@@ -91,7 +91,7 @@ def test_the_search_screens_every_word_and_climbs_to_the_slowest_step(
 ):
     # A stub decoder whose delay rises with word 9 and with flipping bits 1
     # and 3 but not bit 0: the climb must drop bit 0 from the complement.
-    def fake_simulate(deck_path, text, ngspice):
+    def fake_simulate(deck_path, text, ngspice, timeout=None):
         word, previous = (int(p[1:]) for p in deck_path.stem.split("_"))
         mask = word ^ previous
         t = 100 + 20 * (word == 9) + 5 * bool(mask & 2) + 5 * bool(mask & 8)
@@ -134,7 +134,7 @@ def test_the_search_screens_every_word_and_climbs_to_the_slowest_step(
 def test_a_cut_short_search_reuses_its_finished_screens(tmp_path: Path, monkeypatch):
     runs = []
 
-    def fake_simulate(deck_path, text, ngspice):
+    def fake_simulate(deck_path, text, ngspice, timeout=None):
         runs.append(deck_path.stem)
         deck_path.write_text(text)
         log = "t_decoded = 1e-10\nt_pa = 1e-11\nt_pb = 1e-11\n"

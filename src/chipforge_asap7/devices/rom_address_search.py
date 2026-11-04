@@ -86,6 +86,7 @@ def search_address_steps(
     confirm: int = 2,
     workers: int = 3,
     ngspice: str = "ngspice",
+    screen_timeout: float = 300.0,
     log=print,
 ) -> AddressSearch:
     """Screen every word, climb the slowest, read the winners; see the module."""
@@ -125,7 +126,9 @@ def search_address_steps(
                 ):
                     text = old
                 else:
-                    text = _simulate(path, deck, ngspice)
+                    # A screen takes seconds; one that crawls (a step the
+                    # solver struggles with) is recorded, not waited on.
+                    text = _simulate(path, deck, ngspice, timeout=screen_timeout)
             except RuntimeError as exc:
                 # One unsolvable step must not end the search: record it.
                 log(f"step {previous} -> {word} failed: {exc}")
