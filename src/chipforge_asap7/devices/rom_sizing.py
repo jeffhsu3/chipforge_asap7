@@ -31,6 +31,11 @@ from .sizing import LogicalEffortModel, Stage
 __all__ = ["RomDecoderSizing", "size_rom_decoder"]
 
 
+#: Far past any converging case (78 fingers, a 1024-word predecoder), so it
+#: only stops a runaway, at its first step.
+MAX_FINGERS = 1024
+
+
 def _number(name: str, value: float, *, positive: bool = False) -> None:
     if not math.isfinite(value) or value < 0 or (positive and value == 0):
         raise ValueError(
@@ -296,6 +301,15 @@ def size_rom_decoder(
                 / (stage_effort * (inputs + 1) * model.c_fin_fF)
             )
             fins, fingers = _cell_size(max(required, old_fins[1] * old_fingers), inputs)
+            if fingers > MAX_FINGERS:
+                # A role whose own wiring grows faster than its drive -- the
+                # predecoder bank lengthens the rails it drives -- never
+                # converges, and each wider spec takes longer to build.
+                raise ValueError(
+                    f"ROM sizing diverges: the {role.replace('_', ' ')} needs "
+                    f"{fingers} fingers (limit {MAX_FINGERS}) at iteration "
+                    f"{iteration}; reduce the interleave or fanout, or bank the ROM"
+                )
             changed[f"{role}_fins"] = fins
             changed[f"{role}_fingers"] = fingers
         if all(getattr(current, name) == value for name, value in changed.items()):

@@ -35,6 +35,7 @@ has no released NAND to validate against.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Literal
 
 from ..layout.grid import FIN_WIDTH, GATE_PITCH, GATE_WIDTH
@@ -252,7 +253,7 @@ class NandSpec:
     def columns(self, flavor: str, role: str) -> list[int]:
         return [x for x, r in zip(self.sd_xs, self.column_roles(flavor)) if r == role]
 
-    @property
+    @cached_property
     def pads(self) -> tuple[tuple[Role, tuple[int, ...]], ...]:
         """Runs of consecutive same-input gates, each contacted by one LIG pad."""
         pads: list[tuple[Role, list[int]]] = []
@@ -267,7 +268,7 @@ class NandSpec:
         """The gate of each pad of `role` that carries its V0 and M1 bar."""
         return [xs[0] for r, xs in self.pads if r == role]
 
-    @property
+    @cached_property
     def tie_ys(self) -> dict[Role, int]:
         """Y of the M2 bar joining the pads of every input that has more than one."""
         ties: dict[Role, int] = {}

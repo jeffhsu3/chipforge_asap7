@@ -111,13 +111,403 @@ dense than 64 × 16 (not yet investigated), and 1024 × 16 uses the
 electrical-order fallback placement described in [brom.md](brom.md).
 The comparison will be fair only once the NOR-ROM has its read path.
 
+## Read electrically: 1 fin against 2
+
+`asap7-rom-read` (`chipforge_asap7.devices.rom_read_spice`) simulates one
+bit row's read in ngspice, with every word a BSIM-CMG 107 transistor. Two
+bitlines share one precharge and one wordline pulse:
+
+- **`BLP` reads a programmed bit.** The other `words - 1` words are
+  programmed too, so each is an off transistor on the line. That is the most
+  drain capacitance the selected word can have to discharge.
+- **`BLU` reads an unprogrammed bit beside the same words.** Only their
+  off-state leakage pulls it down: the most a line that should stay high can
+  droop.
+
+The bitline is a distributed M2 RC ladder, one 81 nm segment per word. It
+uses the stack's 3.03 Ω/sq over the 18 nm track (168 Ω/µm) and an assumed
+0.2 fF/µm. The selected word is the far one, read through the whole line;
+precharge (3-fin PMOS) and sensing are at word 0. Releasing the precharge
+kicks both floating lines up to 34 mV above VDD through the PMOS gate
+overlap, so the margin is counted from each line's level as the wordline
+starts to rise. Times run from the wordline's 50 % point to:
+
+- `t_sense`, when `BLP` has fallen 100 mV (a sense-amplifier read);
+- `t_half`, when `BLP` crosses VDD/2 (an inverter read).
+
+`split` is `BLU` minus `BLP` at `t_sense`. A depth fails when leakage takes
+more than half of either margin.
+
+```bash
+uv run asap7-rom-read --fins 1 2 --words 16 64 256 1024 4096 --temperature-c 125
+```
+
+### Bitline depth, with an ideal wordline
+
+These runs drive the selected gate directly with the 40 ps edge
+(`--no-wordline-rc`), isolating the bitline. TT model card, RVT, 0.7 V;
+times in ps, levels in mV:
+
+| Fins | Words per bitline | Wire R (kΩ) | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `t_half` 125 °C | `split` 125 °C |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16 | 0.2 | 6.6 | 14.0 | 5.2 | 13.3 | 100 |
+| 1 | 64 | 0.9 | 14.0 | 28.3 | 13.2 | 28.4 | 99 |
+| 1 | 256 | 3.5 | 33.1 | 84.6 | 33.0 | 86.8 | 98 |
+| 1 | 1024 | 14.0 | 150.7 | 375.6 | 150.0 | 375.5 | 94 |
+| 1 | 4096 | 55.9 | 1245.5 | 2997.3 | 900.2 | 2278.3 | **38** |
+| 2 | 16 | 0.2 | 5.2 | 11.5 | 3.7 | 10.5 | 100 |
+| 2 | 64 | 0.9 | 11.7 | 23.0 | 10.8 | 22.8 | 99 |
+| 2 | 256 | 3.5 | 29.1 | 66.3 | 28.8 | 67.3 | 98 |
+| 2 | 1024 | 14.0 | 150.4 | 349.3 | 148.0 | 340.0 | 91 |
+| 2 | 4096 | 55.9 | 1519.9 | 3716.3 | 780.9 | 2208.1 | **11** |
+
+Every depth to 1024 words passes at both temperatures, for both fin counts.
+At 25 °C 4096 words pass too; at 125 °C both fail the sense margin, and
+2 fins fails the inverter read as well. Findings:
+
+- **Within the checked range, one fin costs little.** The ROM is
+  DRC-checked up to 512 words with the center lane, which splits each
+  bitline into two halves of 256 words. Nothing in the generator stops a
+  longer line. At 256 words, one fin is 14 % slower to sense
+  (33.1 against 29.1 ps) and 28 % slower to an inverter read (84.6 against
+  66.3 ps), for one-third less core area.
+- **Long lines are wire-limited, and there the extra fin hurts.** By 1024
+  words the 14 kΩ line, not the cell, sets the sense time; both fin counts
+  take 150 ps. At 4096 words one fin is faster (1.25 ns against 1.52 ns at
+  25 °C), because a second fin doubles every word's drain capacitance.
+- **Leakage is not the limit within the checked range.** At 125 °C,
+  1024 words keep 94 mV (1 fin) and 91 mV (2 fins) of the 100 mV split.
+  With twice the leaking fins, 2 fins droops more. At 4096 words the
+  leakage also helps discharge `BLP`, which is why that read is faster hot.
+
+### Wordline RC
+
+By default the bench also draws the selected word's wordline
+(`wordline_network`), using `RomArraySpec`'s geometry for a `--bits`-row array
+with a strap row every `--strap-every` rows:
+
+- an 18 nm M3 strap (168 Ω/µm) running down the array from the decoder at its
+  top edge;
+- at each strap row, a 68 Ω stack onto the poly: V2, V1, V0, 18 nm of
+  16 nm LIG, and the gate-to-LIG link;
+- the gate poly, 20 nm at 7.14 Ω/sq (357 Ω/µm), continuous through every bit
+  row and strap row;
+- each row's word transistor gate as a BSIM-CMG load on the poly.
+
+Wires carry the same assumed 0.2 fF/µm as the bitline. The read uses the
+slowest row, chosen by the RC mesh's first moments (Elmore delay generalised
+to a mesh). With several strap rows that is in the bottom group, furthest
+from the decoder. It sits a third of the way up the group: the group's upper
+strap is reached through less M3. With one strap row it is the top row.
+
+These runs use an ideal driver (`--driver ideal`): the 40 ps edge at the top
+of the M3 strap. At 256 words per bitline; times from the decoder output's
+50 % point, in ps (`t_wl` is decoder output to the selected gate):
+
+| Bits | Strap every | Fins | `t_wl` 25 °C | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `split` 125 °C (mV) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 16 | 1 | 0.4 | 33.5 | 85.1 | 33.5 | 98 |
+| 16 | 16 | 2 | 0.9 | 30.3 | 67.5 | 30.0 | 98 |
+| 64 | 16 | 1 | 1.3 | 34.7 | 86.3 | 34.6 | 98 |
+| 64 | 16 | 2 | 3.1 | 33.4 | 70.7 | 32.9 | 98 |
+| 64 | 64 | 1 | 4.2 | 39.2 | 90.9 | 38.9 | 98 |
+| 64 | 64 | 2 | 10.1 | 44.2 | 83.9 | 43.3 | 97 |
+| 256 | 16 | 1 | 13.3 | 53.1 | 107.0 | 52.4 | 98 |
+| 256 | 16 | 2 | 28.8 | 73.2 | 122.1 | 71.0 | 96 |
+| 256 | 64 | 1 | 13.8 | 54.7 | 109.4 | 54.0 | 98 |
+| 256 | 64 | 2 | 30.7 | 78.0 | 129.5 | 75.3 | 96 |
+| 256 | 256 | 1 | 42.6 | 105.7 | 179.0 | 102.2 | 96 |
+| 256 | 256 | 2 | 113.9 | 188.2 | 277.4 | 175.2 | 91 |
+
+Every case passes both margins. Findings:
+
+- **Its gates make the wordline slower than its wire does.** Every bit row
+  hangs a word transistor on it, so a second fin doubles the wordline's
+  load. The 2-fin gate arrives 2-3x later than the 1-fin gate in every case.
+- **The fin trade-off flips with array width.** At 16 and 64 bits the
+  bitline still dominates, and 2 fins senses 1-3 ps sooner. With 64 bits
+  strapped every 64 rows, and in every 256-bit case, one fin is faster:
+  53.1 against 73.2 ps at 256 bits with the default straps. Only the
+  inverter read at 64 bits or fewer still favours 2 fins.
+- **At 256 bits, the M3 strap, not the poly, sets the wordline delay.**
+  Strapping every 64 rows instead of every 16 adds only 0.5 ps (1 fin) and
+  1.9 ps (2 fins); the 22 µm M3 run, about 3.8 kΩ, dominates. Without
+  intermediate straps (every 256 rows) the poly's full length is in the
+  path: 2 fins then takes 188 ps to sense.
+
+### Decoder driver
+
+By default the decoder's last two stages drive the wordline as BSIM-CMG
+transistors (`decoder_driver`):
+
+- the postdecode NAND, with the predecoded `PA` line rising with the 40 ps
+  edge and `PB` already high;
+- the wordline inverter onto the top of the M3 strap.
+
+Every time is then measured from `PA`'s 50 % point. `t_drv` is `PA` to the
+decoder output, and `t_wl` the output to the selected gate. `--driver` picks
+the sizes, in total fins (fins per finger times fingers, NAND n/p then
+inverter n/p):
+
+- `default` is the drawn decoder, 6/6/6/6 at every width: `RomDecoderSpec`'s
+  `(3, 3)` row in two fingers;
+- `sized` is what `size_rom_decoder` (the compiler's `--auto-size`) picks
+  for the array's wordline load, at stage effort 4;
+- `ideal` is the edge alone, as in the table above.
+
+At 256 words per bitline, default straps (every 16 rows), in ps:
+
+| Bits | Fins | Driver | Fins (NAND n/p, inv n/p) | `t_drv` | `t_wl` | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C |
+| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 16 | 1 | ideal | — | — | 0.4 | 33.5 | 85.1 | 33.5 |
+| 16 | 1 | default | 6/6/6/6 | 13.4 | 0.4 | 40.3 | 91.9 | 41.2 |
+| 16 | 1 | sized | 8/4/8/8 | 12.0 | 0.3 | 38.4 | 90.0 | 38.9 |
+| 16 | 2 | ideal | — | — | 0.9 | 30.3 | 67.5 | 30.0 |
+| 16 | 2 | default | 6/6/6/6 | 14.5 | 0.9 | 40.1 | 77.4 | 40.9 |
+| 16 | 2 | sized | 8/4/10/10 | 13.5 | 0.9 | 37.7 | 74.8 | 38.0 |
+| 64 | 1 | ideal | — | — | 1.3 | 34.7 | 86.3 | 34.6 |
+| 64 | 1 | default | 6/6/6/6 | 18.2 | 1.3 | 52.6 | 104.7 | 54.2 |
+| 64 | 1 | sized | 12/6/18/18 | 14.9 | 1.2 | 44.2 | 95.7 | 44.8 |
+| 64 | 2 | ideal | — | — | 3.1 | 33.4 | 70.7 | 32.9 |
+| 64 | 2 | default | 6/6/6/6 | 21.8 | 3.3 | 59.5 | 100.2 | 61.0 |
+| 64 | 2 | sized | 16/8/28/28 | 15.4 | 2.8 | 44.4 | 81.9 | 44.7 |
+| 256 | 1 | ideal | — | — | 13.3 | 53.1 | 107.0 | 52.4 |
+| 256 | 1 | default | 6/6/6/6 | 30.5 | 15.8 | 100.4 | 164.1 | 102.5 |
+| 256 | 1 | sized | 32/16/56/56 | 14.3 | 12.1 | 65.7 | 120.4 | 65.4 |
+| 256 | 2 | ideal | — | — | 28.8 | 73.2 | 122.1 | 71.0 |
+| 256 | 2 | default | 6/6/6/6 | 37.7 | 39.9 | 136.9 | 201.0 | 136.6 |
+| 256 | 2 | sized | 56/28/102/102 | 13.8 | 28.1 | 87.1 | 136.8 | 84.7 |
+
+Every case passes both margins at both temperatures; the worst split is
+93 mV of 100 (2 fins, default driver, 256 bits, 125 °C). Findings:
+
+- **The default driver is too small for wide arrays.** Its size never
+  changes with width. At 16 bits it costs 7-10 ps. At 256 bits it nearly
+  doubles the sense time: 100.4 ps against 53.1 ideal (1 fin), and 136.9
+  against 73.2 (2 fins). Its slow edge also lengthens `t_wl`, and the
+  selected cell sees the edge late as well as slow, so the read loses more
+  than `t_drv` alone.
+- **A sized driver recovers most of it.** `size_rom_decoder` holds `t_drv`
+  at 12-15 ps for every width. At 256 bits it cuts the sense time to 65.7 ps
+  (1 fin) and 87.1 ps (2 fins), within 12-14 ps of the ideal edge. Wide
+  arrays need `--auto-size`.
+- **One fin halves the driver as well as the wordline.** The sized 1-fin
+  inverter at 256 bits is 56 fins a side and still fits the default
+  interleave of 8 (four fingers of 14 fins). The 2-fin one is 102 fins a
+  side. That only fits at interleave 16: six fingers of 17 fins, in a
+  1296 nm slot instead of 648 nm. It is still 21 ps slower to sense.
+- **With real drivers the cross-over moves to 64 bits.** Sized, 1 and 2 fins
+  sense in the same time at 64 bits (44.2 and 44.4 ps). 2 fins is ahead by
+  0.7 ps at 16 bits, and 1 fin by 21 ps at 256. 2 fins keeps the faster
+  inverter read up to 64 bits.
+
+The table above drives `PA` with an ideal edge and holds `PB` high
+(`--no-predecode`).
+
+### Predecoders
+
+With a decoder driver the bench simulates the predecoders as well, by
+default (`rom_predecode_spice.predecode_network`). The decoder is the one for
+a `2 * words`-word ROM with the center lane, so each lane half is the
+simulated bitline. The selected word is word 0, which ends its half's
+bitline and is the furthest word from the predecoders in the lane. The
+address steps from all ones to zero, so all nine bits fall and every
+`AN<i>` inverter is on the path.
+
+For that word's `PA<0>` and `PB<0>` the netlist has:
+
+- every predecoder gate in their decode trees, at the spec's sizes, each
+  placed copy at its own column: 16 gates at 512 words;
+- every net on those trees as the decoder routes it: its M4 segment over each
+  pair of rows (95 Ω/µm), the M3 column joining the pairs, and each pin's M3
+  stub with its V2 and V3;
+- every other gate input on those nets as a BSIM-CMG gate load at its own
+  stub: the other words' NAND inputs and the off-path predecoders, 100 at
+  512 words.
+
+In this table the address pins are ideal 40 ps edges
+(`--address-driver ideal`), at the rail end where the decoder labels them.
+Every time runs from the first pin's 50 % point. `t_pa` and `t_pb`
+are the arrivals at the word's NAND inputs, and `t_drv` runs from the later
+of them to the decoder output.
+
+At 256 words per bitline (a 512-word decoder), default straps, in ps:
+
+| Bits | Fins | Decoder | `t_pa` | `t_pb` | `t_drv` | `t_wl` | `t_sense` 25 °C | `t_half` 25 °C | `t_sense` 125 °C | `split` 125 °C (mV) |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 1 | default | 111.5 | 130.2 | 22.6 | 0.4 | 180.3 | 231.9 | 191.6 | 93 |
+| 16 | 1 | sized | 254.0 | 175.1 | 13.4 | 0.4 | 293.6 | 345.2 | 291.1 | 90 |
+| 16 | 2 | default | 111.5 | 130.2 | 24.1 | 0.9 | 180.3 | 217.6 | 191.6 | 91 |
+| 16 | 2 | sized | 254.0 | 175.1 | 14.9 | 0.8 | 292.9 | 330.0 | 290.1 | 86 |
+| 64 | 1 | default | 111.5 | 130.3 | 28.1 | 1.3 | 193.1 | 245.2 | 205.4 | 93 |
+| 64 | 1 | sized | 256.5 | 182.6 | 16.9 | 1.2 | 302.7 | 354.3 | 300.4 | 90 |
+| 64 | 2 | default | 111.5 | 130.3 | 31.9 | 3.3 | 199.9 | 240.6 | 212.2 | 90 |
+| 64 | 2 | sized | 259.1 | 190.2 | 18.9 | 2.8 | 307.1 | 344.6 | 304.3 | 86 |
+| 256 | 1 | default | 111.5 | 130.3 | 40.8 | 15.4 | 240.6 | 304.4 | 253.6 | 91 |
+| 256 | 1 | sized | 344.9 | 260.5 | 21.6 | 12.0 | 417.8 | 472.5 | 413.9 | 86 |
+| 256 | 2 | default | 111.5 | 130.3 | 48.2 | 39.3 | 277.0 | 341.1 | 286.8 | 86 |
+| 256 | 2 | sized | — | — | — | — | — | — | — | — |
+
+Every case that can be built passes both margins at both temperatures. The
+sized 2-fin, 256-bit decoder cannot be built: its sizing diverges at
+interleaves 16 and 32 (see below), and its cells do not fit interleave 8.
+Findings:
+
+- **The predecoders dominate the read.** With the drawn decoder, the address
+  reaches the word's NAND after 130 ps. That is two-thirds of the sense time
+  at 64 bits, against 63-70 ps for everything after it. `PA<0>` is four
+  levels deep: the `AN` inverter, two AND2 levels, then the `PA` AND2, each
+  AND2 a NAND and an inverter; `PB<0>` is three. The last gate
+  is the slowest: a 6-fin cell driving a rail loaded by 16-32 NAND inputs
+  takes 42 ps (`PA`) and 57 ps (`PB`), and the rail adds up to 30 ps more.
+  `PB<0>` is the later input.
+- **The sized decoder is slower, by 100-180 ps.** `size_rom_decoder` gives
+  every predecoder gate one size per role, set by that role's heaviest load:
+  14x8-fin NANDs and 18x12-fin inverters at 512 words, even for the internal
+  gates. Their inputs then load the address and intermediate rails, and the
+  sizer has no wire resistance to see what that costs. At 64 bits, `A<3>`
+  takes 69 ps to reach its `AN` inverter from an ideal edge, and `D3_4<0>`
+  takes 93 ps to cross its own rail to the `PA` gate. `t_pa` grows from
+  111.5 to 256.5 ps. The sized wordline driver alone still helps: `t_drv`
+  drops 9-19 ps. But keeping the drawn predecoders and sizing only the
+  postdecode NAND and the driver is not faster either: 197.8 ps at 64 bits
+  and 300.8 ps at 256 (1 fin). Its larger NAND inputs load the `PA`/`PB`
+  rails.
+- **The fin count barely matters next to the decoder.** With the drawn
+  decoder, 1 and 2 fins sense in the same 180.3 ps at 16 bits. 1 fin is
+  7 ps ahead at 64 bits and 36 ps ahead at 256.
+
+Sizing that decoder for speed needs a sizer that sees rail resistance and
+sizes each predecoder gate for its own net, as the BROM's routed-RC search
+does. Neither the drawn sizes nor `size_rom_decoder` are timing-optimised.
+
+### Address pin drivers
+
+By default each address pin is driven by a released ASAP7 buffer,
+`BUFx4_ASAP7_75t_R`, at the pin's rail end. Its input is on the ideal 40 ps
+edge, and every time runs from that input. `--address-driver` picks any RVT
+`BUFx*` cell, or `ideal`. `ADDRESS_BUFFERS` records each cell's input and
+output inverter fins, n and p alike, and a test checks them against the
+released CDL when it is present.
+
+At 64 bits and 256 words per bitline, 25 °C, in ps:
+
+| Decoder | Address driver | Fins (in, out) | `t_pa` | `t_pb` | `t_sense` 1 fin | `t_sense` 2 fins | `t_half` 1 fin |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| default | ideal | — | 111.6 | 130.3 | 193.2 | 200.0 | 245.3 |
+| default | BUFx2 | 2, 6 | 135.2 | 148.5 | 212.0 | 218.8 | 264.1 |
+| default | BUFx4 | 2, 12 | 133.7 | 149.5 | 212.6 | 219.5 | 264.7 |
+| default | BUFx12f | 12, 36 | 122.1 | 139.7 | 202.7 | 209.5 | 254.8 |
+| default | BUFx24 | 12, 72 | 126.1 | 144.1 | 207.0 | 213.9 | 259.1 |
+| sized | ideal | — | 256.5 | 182.6 | 302.8 | — | 354.4 |
+| sized | BUFx4 | 2, 12 | 313.7 | 229.9 | 359.8 | — | 411.4 |
+| sized | BUFx24 | 12, 72 | 282.5 | 206.7 | 328.7 | — | 380.3 |
+
+Every case keeps the full 100 mV split. Findings:
+
+- **A real pin driver adds 10-19 ps to the drawn decoder.** The best is
+  BUFx12f (+9.5 ps). BUFx4 is no better than BUFx2 (+19 ps): both share a
+  2-fin input stage, which BUFx4 asks to drive a 12-fin output. BUFx24's
+  12-fin input stage drives 72 fins, and it lands between them (+14 ps). The
+  pin buffer is the first of five stages to `PA`; a stronger one buys little
+  against the predecoders after it.
+- **The sized decoder pays 2-3x more for the same buffers.** Its large
+  predecoder inputs load the address pins: BUFx4 adds 57 ps there, and even
+  BUFx24 adds 26 ps.
+- **Nothing downstream changes.** `t_drv` and `t_wl` stay within 0.7 ps, and
+  1 fin stays 7 ps ahead of 2 fins at 64 bits.
+
+### Rail coupling
+
+The predecode nets are M4 rails on adjacent 48 nm tracks, and most of their
+capacitance is to each other. A FasterCap 2-D solve of seven 24 x 48 nm M4
+lines in k = 2.7 gives, per µm:
+
+| Plane under the rails | To ground | To each adjacent rail | To each next rail | Total |
+| --- | ---: | ---: | ---: | ---: |
+| none (substrate) | 0.006 | 0.067 | 0.004 | 0.156 fF |
+| M2 top (dense cell wiring), the default | 0.017 | 0.065 | 0.003 | 0.157 fF |
+| M3 top (solid) | 0.043 | 0.060 | 0.002 | 0.170 fF |
+
+So 80-95 % of a rail's capacitance couples to its two neighbours. By default
+(`--rail-coupling switching`) every M4 rail section on a simulated net
+couples to the rails on its adjacent tracks over their shared length, at
+0.0655 fF/µm (`RAIL_COUPLING_FF_PER_UM`). Its ground share is 0.0233 fF/µm:
+the ground cap plus both next-neighbour couplings. A stretch with no rail
+beside it puts that side's share to ground. A neighbour that is not simulated
+is quiet, an AC ground. The previous address's `PA`/`PB` trees are simulated
+too: stepping from all ones to zero, they fall while the word's lines rise.
+`quiet` keeps the same capacitances but holds every neighbour still. `off`
+restores the earlier grounded rails at the assumed 0.2 fF/µm. The M3 stubs
+and joins keep 0.2 fF/µm in every mode.
+
+At 256 words per bitline, BUFx4 address drivers, in ps:
+
+| Bits | Rails | `t_pa` | `t_pb` | `t_sense` 1 fin, 25 °C | 2 fins, 25 °C | 1 fin, 125 °C | 2 fins, 125 °C | `split` 125 °C 1 / 2 fins (mV) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | off (0.2 fF/µm) | 133.7 | 149.5 | 212.6 | 219.5 | 226.5 | 233.2 | 92 / 89 |
+| 64 | quiet | 124.0 | 138.5 | 200.6 | 207.5 | — | — | — |
+| 64 | switching | 122.1 | 137.5 | 199.6 | 206.4 | 212.1 | 218.8 | 93 / 89 |
+| 256 | off (0.2 fF/µm) | 133.7 | 149.5 | 260.3 | 296.6 | 274.7 | 307.7 | 91 / 85 |
+| 256 | quiet | 124.0 | 138.5 | 248.4 | 284.6 | — | — | — |
+| 256 | switching | 122.1 | 137.5 | 247.3 | 283.6 | 260.2 | 293.4 | 91 / 86 |
+
+Every case passes both margins. Findings:
+
+- **The capacitance, not the crosstalk, moves the read.** The solved rails
+  carry about 0.155 fF/µm in all, not the assumed 0.2, and the read is
+  12 ps faster for it (quiet against off). Switching neighbours change it
+  by only a further 1 ps.
+- **What crosstalk there is helps, slightly.** Of the 9.6 fF between nets
+  that switch, 5.2 fF couples rails moving together and 4.5 fF rails moving
+  apart. The `A<i>` rails all fall together, and the `AN<i>` rails all rise
+  together. Every other neighbour belongs to a line that does not switch on
+  this step: 25.0 fF, 72 % of the rail-to-rail coupling. Another 21.9 fF of
+  rail side faces no rail at all and goes to ground.
+- **It is not the worst case for every address.** An address step that puts
+  the falling old lines beside the rising new ones on every track would
+  cost more. This step changes all nine bits, which switches the most
+  gates, but it does not search the address pairs for the worst neighbours.
+
+`size_rom_decoder` also stops now on a runaway: past 1024 fingers per role
+it raises an error. A 512-word, 256-bit, 2-fin decoder at interleave 16 or
+32 never converges. Its predecoder bank grows with its own size and
+lengthens the very rails it drives, and each iteration took longer than the
+last; it ran 13 minutes before being stopped. The caching that made those
+iterations 16x cheaper (`_SlotSpec.stubs`, `NandSpec.pads` and `tie_ys`)
+does not change any result.
+
+What the bench does not cover:
+
+- anything before the address buffers: their inputs are ideal 40 ps edges,
+  with no wiring from them to the pins;
+- address steps other than all ones to zero, and coupling on the M3 stubs,
+  joins and wordline straps;
+- the decoder's own wiring from the inverter to the top of the M3 strap,
+  across the decoder-to-array gap;
+- the other words' gates on adjacent wordlines (coupling), and the
+  M3 straps' neighbours;
+- the V1/M1 stubs and the grounded isolation gates;
+- any process corner beyond TT, and mismatch. A single fin has no averaging,
+  so its read current varies more than two fins' does;
+- the precharge, sense and output circuits the NOR-ROM does not draw yet.
+  Their timing, and a cycle time, are not established.
+
+So one fin is electrically feasible at nominal conditions, at the depths and
+widths the ROM is checked to. From 64 bits wide it is also no slower, and at
+256 bits it is clearly faster, with a wordline driver half the size. The
+decoder, not the cell, sets the read time: about 130 ps of predecode before
+any wordline moves. Neither of the existing sizings is fast. It is not yet
+qualified across corners.
+
 ## Minimum-area proof for this topology
 
 `chipforge_asap7.verification.rom_minimum` proves the minimum periodic core
 area **at a fixed fin count, for the existing topology**. It does not claim
 optimality over other NOR-ROM architectures or the minimum area of a complete
 macro. The two-fin default is not the smallest supported geometry: one fin
-uses one-third less core area, subject to the required read current and timing.
+uses one-third less core area, subject to the required read current and timing
+(see [the read bench](#read-electrically-1-fin-against-2)).
 
 The proof fixes a rectangular repeating tile with two word transistors sharing
 a grounded source, two separately V1-programmed drains, and a grounded isolation
