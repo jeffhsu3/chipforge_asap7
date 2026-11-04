@@ -92,6 +92,7 @@ __all__ = [
     "WordlineNetwork",
     "decoder_driver",
     "decoder_spec",
+    "render_decoder_deck",
     "render_rom_read_deck",
     "run_rom_read",
     "strap_stack_ohm",
@@ -176,6 +177,12 @@ class RomReadConditions:
     #: capacitances with every neighbour quiet; ``"off"`` grounds the
     #: assumed ``wire_ff_per_um`` instead.
     rail_coupling: str = "switching"
+    #: The address step the predecoded read takes: `previous_word` to
+    #: `word` of the ``2 * words``-word decoder.  Word 0 ends its lane half's
+    #: bitline; ``previous_word`` None is `word`'s complement, every bit
+    #: switching.  The bitline and wordline stay the far, slowest ones.
+    word: int = 0
+    previous_word: int | None = None
 
     def __post_init__(self) -> None:
         if self.vdd <= 0:
@@ -483,6 +490,105 @@ def _driver_lines(
     ]
 
 
+def _decoder_source(
+    fins: int, words: int, c: RomReadConditions
+) -> tuple[str, str, str, str, str]:
+    """Everything that drives WL: ``(netlist, start node, its edge, PA, PB)``.
+
+    The ideal edge on WL itself, the decoder's NAND and inverter from an
+    ideal PA edge, or the whole predecoded path from the address edges.
+    """
+    vdd = c.vdd
+    sl = c.slew_ps / 1000.0
+    nmos, pmos = f"nmos_{c.vt}", f"pmos_{c.vt}"
+    totals = decoder_driver(fins, words, c)
+    edge = "RISE"
+    rise = f"PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})"
+    fall = f"PWL(0 {vdd:g} 1.1n {vdd:g} {1.1 + sl:g}n 0)"
+    pa_pin, pb_pin = "PA", "PB"
+    if totals is None:
+        start = "WL"
+        source = f"Vwl WL 0 {rise}\n"
+    elif _predecoded(c):
+        from .rom_predecode_spice import predecode_network
+
+        pre = predecode_network(
+            decoder_spec(fins, words, c),
+            c.word,
+            nmos=nmos,
+            pmos=pmos,
+            wire_ff_per_um=c.wire_ff_per_um,
+            address_buffer=None if c.address_driver == "ideal" else c.address_driver,
+            coupling=c.rail_coupling != "off",
+            aggressors=c.rail_coupling == "switching",
+            previous=c.previous_word,
+        )
+        pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
+        # Every address bit switches; times start at the first pin's edge.
+        start, rises = pre.sources[0]
+        edge = "RISE" if rises else "FALL"
+        source = (
+            "".join(
+                f"Va{i} {node} 0 {rise if up else fall}\n"
+                for i, (node, up) in enumerate(pre.sources)
+            )
+            + "".join(
+                f"Vh{i} {node} 0 {vdd if high else 0:g}\n"
+                for i, (node, high) in enumerate(pre.held)
+            )
+            + "\n".join(pre.lines)
+            + "\n"
+            + "\n".join(_driver_lines(totals, nmos, pmos, pa_pin, pb_pin))
+            + "\n"
+        )
+    else:
+        # The predecoded PA line rises with the edge; PB is already high.
+        start = "PA"
+        source = (
+            f"Vpa PA 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
+            f"Vpb PB 0 {vdd:g}\n" + "\n".join(_driver_lines(totals, nmos, pmos)) + "\n"
+        )
+    return source, start, edge, pa_pin, pb_pin
+
+
+def render_decoder_deck(
+    fins: int,
+    words: int,
+    *,
+    models: Path,
+    osdi: Path,
+    conditions: RomReadConditions,
+    wordline_ff: float = 10.0,
+) -> str:
+    """The decoder alone, address edges to WL, loaded by `wordline_ff`.
+
+    The same source as `render_rom_read_deck` without the bitlines and the
+    wordline network: a screening deck for comparing address steps, which
+    differ only up to WL.
+    """
+    _validate(fins, words)
+    c = conditions
+    if c.driver == "ideal":
+        raise ValueError("the decoder deck needs a decoder driver")
+    source, start, edge, pa_pin, pb_pin = _decoder_source(fins, words, c)
+    half = c.vdd / 2
+    return (
+        f"* NOR-ROM decoder, {fins}-fin words, {words} words per bitline\n"
+        f'.include "{models.resolve()}"\n.temp {c.temperature_c:g}\n'
+        f"Vsupply VDD 0 {c.vdd:g}\n"
+        + source
+        + f"CWL WL 0 {wordline_ff:g}f\n"
+        + ".options method=gear\n"
+        + f".tran {c.step_ps:g}p 1.6n\n"
+        f".measure tran t_decoded TRIG v({start}) VAL={half:g} {edge}=1 "
+        f"TARG v(WL) VAL={half:g} RISE=1\n"
+        f".measure tran t_pa TRIG v({start}) VAL={half:g} {edge}=1 "
+        f"TARG v({pa_pin}) VAL={half:g} RISE=1\n"
+        f".measure tran t_pb TRIG v({start}) VAL={half:g} {edge}=1 "
+        f"TARG v({pb_pin}) VAL={half:g} RISE=1\n" + _control(osdi)
+    )
+
+
 def render_rom_read_deck(
     fins: int,
     words: int,
@@ -526,48 +632,7 @@ def render_rom_read_deck(
                 )
     far = words - 1
     end = 1.1 + c.window_ns
-    totals = decoder_driver(fins, words, c)
-    edge = "RISE"
-    rise = f"PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})"
-    fall = f"PWL(0 {vdd:g} 1.1n {vdd:g} {1.1 + sl:g}n 0)"
-    pa_pin, pb_pin = "PA", "PB"
-    if totals is None:
-        start = "WL"
-        source = f"Vwl WL 0 {rise}\n"
-    elif _predecoded(c):
-        from .rom_predecode_spice import predecode_network
-
-        pre = predecode_network(
-            decoder_spec(fins, words, c),
-            0,
-            nmos=nmos,
-            pmos=pmos,
-            wire_ff_per_um=c.wire_ff_per_um,
-            address_buffer=None if c.address_driver == "ideal" else c.address_driver,
-            coupling=c.rail_coupling != "off",
-            aggressors=c.rail_coupling == "switching",
-        )
-        pa_pin, pb_pin = pre.pa_pin, pre.pb_pin
-        # Every address bit switches; times start at the first pin's edge.
-        start, rises = pre.sources[0]
-        edge = "RISE" if rises else "FALL"
-        source = (
-            "".join(
-                f"Va{i} {node} 0 {rise if up else fall}\n"
-                for i, (node, up) in enumerate(pre.sources)
-            )
-            + "\n".join(pre.lines)
-            + "\n"
-            + "\n".join(_driver_lines(totals, nmos, pmos, pa_pin, pb_pin))
-            + "\n"
-        )
-    else:
-        # The predecoded PA line rises with the edge; PB is already high.
-        start = "PA"
-        source = (
-            f"Vpa PA 0 PWL(0 0 1.1n 0 {1.1 + sl:g}n {vdd:g})\n"
-            f"Vpb PB 0 {vdd:g}\n" + "\n".join(_driver_lines(totals, nmos, pmos)) + "\n"
-        )
+    source, start, edge, pa_pin, pb_pin = _decoder_source(fins, words, c)
     if c.wordline_rc:
         network = wordline_network(fins, c, nmos)
         gate, wordline = network.selected_gate, "\n".join(network.lines) + "\n"
@@ -662,8 +727,11 @@ def run_rom_read(
                 decoded = _measure(log, "t_decoded")
                 arrivals = [_measure(log, n) for n in ("t_pa", "t_pb")]
                 if _predecoded(c):
-                    if None not in arrivals:
-                        t_pre = max(arrivals)
+                    # A line the previous address shares is already high and
+                    # never rises: the later of those that do is the arrival.
+                    rising = [a for a in arrivals if a is not None]
+                    if rising:
+                        t_pre = max(rising)
                 elif arrivals[0] is not None:
                     t_pre = 0.0  # PA is the ideal edge itself
                 if decoded is not None and t_pre is not None:

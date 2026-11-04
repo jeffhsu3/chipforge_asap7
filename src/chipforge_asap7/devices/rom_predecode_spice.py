@@ -79,7 +79,7 @@ class PredecodeNetwork:
     """The netlist, its address edges, and where the word's NAND inputs land."""
 
     lines: tuple[str, ...]
-    #: ``(node, rises)`` of each address pin's ideal edge.
+    #: ``(node, rises)`` of each switching address pin's ideal edge.
     sources: tuple[tuple[str, bool], ...]
     #: The selected word's postdecode NAND A (``PA``) and B (``PB``) pins.
     pa_pin: str
@@ -90,6 +90,9 @@ class PredecodeNetwork:
     gates: int
     loads: int
     couplers: int = 0
+    #: ``(node, high)`` of each address pin that does not switch.
+    held: tuple[tuple[str, bool], ...] = ()
+    previous: int | None = None
 
 
 def _name(line: str) -> str:
@@ -113,11 +116,14 @@ def predecode_network(
     address_buffer: str | None = None,
     coupling: bool = True,
     aggressors: bool = True,
+    previous: int | None = None,
 ) -> PredecodeNetwork:
     """The address-to-NAND path of `word` in `spec`, see the module docstring.
 
-    The address starts at `word`'s complement, so every bit switches: a bit of
-    `word` that is 0 falls and its ``AN`` inverter is on the path.
+    The address steps from `previous` to `word`; by default `previous` is
+    `word`'s complement, so every bit switches: a bit of `word` that is 0
+    falls and its ``AN`` inverter is on the path.  Bits the step leaves alone
+    are held at their level (`PredecodeNetwork.held`).
 
     With `coupling`, every M4 rail section couples to the rails on the
     adjacent tracks over their shared length (`RAIL_COUPLING_FF_PER_UM`), and
@@ -132,7 +138,14 @@ def predecode_network(
     if not spec.predecode:
         raise ValueError("the decoder spec has no predecoders")
     pa, pb = spec.lines(word)
-    previous = word ^ ((1 << spec.address_bits) - 1)
+    full = (1 << spec.address_bits) - 1
+    if previous is None:
+        previous = word ^ full
+    if not (0 <= word <= full and 0 <= previous <= full) or previous == word:
+        raise ValueError(
+            f"an address step needs two different addresses in 0..{full}; "
+            f"got {previous} -> {word}"
+        )
     by_line = defaultdict(list)
     for index, placed in enumerate(spec.predecoder):
         by_line[placed.gate.out].append(index)
@@ -335,8 +348,19 @@ def predecode_network(
             ]
             buffered.append((pin, line))
         sources = buffered
+
+    def bit(line: str, address: int) -> bool:
+        return bool(address >> int(line[2:-1]) & 1)
+
     edges = tuple(
-        (node, bool(word >> int(line[2:-1]) & 1)) for node, line in sorted(sources)
+        (node, bit(line, word))
+        for node, line in sorted(sources)
+        if bit(line, word) != bit(line, previous)
+    )
+    held = tuple(
+        (node, bit(line, word))
+        for node, line in sorted(sources)
+        if bit(line, word) == bit(line, previous)
     )
     return PredecodeNetwork(
         lines=tuple(lines),
@@ -348,4 +372,6 @@ def predecode_network(
         gates=len(on_path),
         loads=loads,
         couplers=couplers,
+        held=held,
+        previous=previous,
     )
