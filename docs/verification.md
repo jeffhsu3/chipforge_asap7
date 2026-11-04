@@ -201,6 +201,9 @@ RC, rail-to-rail coupling and gate loads, from released ASAP7 buffers on
 the address pins. The
 results and their limits are in [rom.md](rom.md#read-electrically-1-fin-against-2).
 The tool writes its decks, logs and `results.json` under `build/rom_read/`.
+`asap7-rom-address-search` screens address steps with the decoder alone and
+reads the slowest through the full bench; see
+[rom.md](rom.md#worst-case-address-step).
 
 ### Looking at the results
 

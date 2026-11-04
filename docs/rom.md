@@ -469,6 +469,88 @@ Every case passes both margins. Findings:
   cost more. This step changes all nine bits, which switches the most
   gates, but it does not search the address pairs for the worst neighbours.
 
+### Worst-case address step
+
+Every table above reads word 0 from its complement. The bench can read any
+step (`RomReadConditions.word` and `previous_word`). Only the bits that
+change get edges, and the others are held at their level. The bitline and
+wordline stay the far, slowest ones. Steps differ only in their decode, up
+to WL. `asap7-rom-address-search` (`rom_address_search`) therefore screens
+them with the decoder alone (`render_decoder_deck`): the same predecoders,
+coupled rails, address buffers and wordline driver, into a lumped 10 fF WL.
+That takes about 5 s a step, against 80 s for a full read:
+
+1. every word, from its complement: 512 screens;
+2. for the four slowest, a hill climb over the bits the step flips: from all
+   nine, toggle one bit at a time and keep the slowest step, until no single
+   toggle is slower;
+3. the two slowest steps, and word 0 from its complement for reference,
+   through the full read bench.
+
+```bash
+uv run asap7-rom-address-search --fins 1 --words 256 --bits 64
+```
+
+With the drawn decoder the screen does not depend on the fin count: the
+decoder's sizes are the same for 1 and 2 fins, and the fins only change the
+wordline and bitline after it. The 2-fin screens reproduced the 1-fin ones
+to 0.1 ps, so only the full reads were repeated for 2 fins. Results at
+256 words per bitline, 64 bits, BUFx4 address drivers, switching rail
+coupling, 25 °C.
+
+Decoder screens, address edge to WL, every word from its complement:
+
+| | Decode time |
+| --- | ---: |
+| fastest step | 152.5 ps |
+| median | 174.5 ps |
+| word 0 (rank 164 of 511) | 179.4 ps |
+| slowest: word 23 | 196.4 ps |
+
+Hill climbs on the four slowest words:
+
+| Word | From its complement | Worst step | Bits flipped |
+| ---: | ---: | --- | ---: |
+| 7 | 195.9 ps | 197.8 ps, from 392 | 6 |
+| 23 | 196.4 ps | 197.4 ps, from 394 | 6 |
+| 31 | 195.4 ps | 197.0 ps, from 394 | 5 |
+| 22 | 195.7 ps | 196.9 ps, from 394 | 5 |
+
+Full reads, in ps:
+
+| Step | `t_pa` | `t_pb` | `t_sense` 1 fin | `t_half` 1 fin | `t_sense` 2 fins | `t_half` 2 fins |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 392 -> 7 | 135.2 | 155.6 | 217.9 | 270.0 | 224.7 | 265.4 |
+| 394 -> 23 | 122.8 | 155.8 | 217.5 | 269.6 | 224.3 | 265.0 |
+| 511 -> 0 (reference) | 122.1 | 137.5 | 199.5 | 251.6 | 206.4 | 247.1 |
+
+Every step keeps the full 100 mV split. Findings:
+
+- **The worst step is 18.4 ps slower than word 0's (1 fin).** It senses in
+  217.9 ps against 199.5. For 2 fins the gap is 18.3 ps, 224.7 against
+  206.4. Word 0 from its complement sits mid-pack: 163 of the 511 screened
+  words decode slower.
+- **The word's place sets the worst case, not the bits that flip.** All of
+  the slowest words share `PB<0>` (words 0-31) and sit in rows 6-7, the top
+  pair. `PB<0>`'s gate is in pair 0, and its rail reaches pairs 1-3 through
+  one M3 join column by the predecoders. A pair-3 word's `PB` climbs that
+  join and then runs about 20 µm left along pair 3's rail. Its `PB` arrives
+  at 155-156 ps, against 137.5 for word 0 in pair 0. That accounts for
+  17 ps of the 18.
+- **Which bits flip matters little.** The climbs add 1-2 ps, and all four
+  stop at 5-6 flipped bits from 392 or 394, within 1 ps of each other.
+  Flipping every bit is not the worst step, but it is within 2 ps of it.
+- **1 fin stays 6.8 ps ahead of 2 fins** at every step read, and the fin
+  count does not change which step is worst.
+
+The search screens each step once and the climb follows single-bit toggles,
+so the result is a slow step, not a proof that none is slower. Some screens
+never finished: 159 -> 352 in both runs, and 246 -> 265 and 244 -> 267 in
+the 2-fin run. ngspice crawled on them until the 300 s screen timeout, and
+the search recorded them as failed. The steps were not slow in any measured
+sense; they were left unsolved. The screen's lumped WL also hides each
+word's own wordline: the read uses the slowest row for every word.
+
 `size_rom_decoder` also stops now on a runaway: past 1024 fingers per role
 it raises an error. A 512-word, 256-bit, 2-fin decoder at interleave 16 or
 32 never converges. Its predecoder bank grows with its own size and
@@ -481,8 +563,7 @@ What the bench does not cover:
 
 - anything before the address buffers: their inputs are ideal 40 ps edges,
   with no wiring from them to the pins;
-- address steps other than all ones to zero, and coupling on the M3 stubs,
-  joins and wordline straps;
+- coupling on the M3 stubs, joins and wordline straps;
 - the decoder's own wiring from the inverter to the top of the M3 strap,
   across the decoder-to-array gap;
 - the other words' gates on adjacent wordlines (coupling), and the
