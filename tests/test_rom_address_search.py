@@ -129,3 +129,40 @@ def test_the_search_screens_every_word_and_climbs_to_the_slowest_step(
     assert worst.t_decoded_s == pytest.approx(130e-12)
     # The winner and word 0 from its complement go through the full bench.
     assert [(c.word, c.previous_word) for c in reads] == [(9, 9 ^ 0b11110), (0, 31)]
+
+
+def test_a_cut_short_search_reuses_its_finished_screens(tmp_path: Path, monkeypatch):
+    runs = []
+
+    def fake_simulate(deck_path, text, ngspice):
+        runs.append(deck_path.stem)
+        deck_path.write_text(text)
+        log = "t_decoded = 1e-10\nt_pa = 1e-11\nt_pb = 1e-11\n"
+        deck_path.with_suffix(".log").write_text(log)
+        return log
+
+    monkeypatch.setattr(search, "_simulate", fake_simulate)
+    monkeypatch.setattr(
+        search, "run_rom_read", lambda **kw: [SimpleNamespace(t_sense_s=2e-10)]
+    )
+    monkeypatch.setattr(
+        search, "asdict", lambda x: vars(x) if hasattr(x, "word") else {}
+    )
+    monkeypatch.setattr(search, "translate_asap7_model", lambda card, name: "")
+    model = tmp_path / "card.pm"
+    model.write_text("")
+    kwargs = {
+        "model_card": model,
+        "osdi": tmp_path / "o",
+        "output_dir": tmp_path / "out",
+        "words": 16,
+        "conditions": RomReadConditions(bits=16),
+        "top_words": 1,
+        "confirm": 1,
+        "workers": 1,
+        "log": lambda line: None,
+    }
+    search.search_address_steps(**kwargs)
+    first = len(runs)
+    search.search_address_steps(**kwargs)
+    assert first > 32 and len(runs) == first  # the second search ran nothing

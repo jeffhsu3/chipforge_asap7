@@ -112,8 +112,20 @@ def search_address_steps(
                 osdi=osdi,
                 conditions=replace(c, word=word, previous_word=previous),
             )
+            path = screens / f"w{word}_p{previous}.sp"
+            done = path.with_suffix(".log")
             try:
-                text = _simulate(screens / f"w{word}_p{previous}.sp", deck, ngspice)
+                # A run cut short resumes: a screen whose deck is unchanged
+                # and whose log finished reads its log instead of re-running.
+                if (
+                    path.is_file()
+                    and done.is_file()
+                    and path.read_text() == deck
+                    and "t_decoded" in (old := done.read_text())
+                ):
+                    text = old
+                else:
+                    text = _simulate(path, deck, ngspice)
             except RuntimeError as exc:
                 # One unsolvable step must not end the search: record it.
                 log(f"step {previous} -> {word} failed: {exc}")
