@@ -117,6 +117,13 @@ POLY_OHM_PER_UM = _STACK["Gate"].sheet_resistance_ohm / (GATE_WIDTH / 1000)
 GATE_FF_PER_FIN_ESTIMATE = 0.0417
 DEFAULT_BITS = 64
 DRIVERS = ("ideal", "default", "sized")
+#: Gear: the decoder's femtosecond stub RCs on strong drivers make the
+#: trapezoidal rule ring, and ngspice then crawls (a BUFx4 deck ran an hour);
+#: Gear agrees with it within 0.1 ps where both finish.  rshunt: a 1 TOhm path
+#: to ground at every node.  Without it some address steps fail their first
+#: transient step after a marginal DC solve; with it they run, and known
+#: results move by under 0.01 ps.
+SOLVER_OPTIONS = ".options method=gear rshunt=1e12\n"
 RAIL_COUPLINGS = ("switching", "quiet", "off")
 
 
@@ -578,7 +585,7 @@ def render_decoder_deck(
         f"Vsupply VDD 0 {c.vdd:g}\n"
         + source
         + f"CWL WL 0 {wordline_ff:g}f\n"
-        + ".options method=gear\n"
+        + SOLVER_OPTIONS
         + f".tran {c.step_ps:g}p 1.6n\n"
         f".measure tran t_decoded TRIG v({start}) VAL={half:g} {edge}=1 "
         f"TARG v(WL) VAL={half:g} RISE=1\n"
@@ -653,10 +660,7 @@ def render_rom_read_deck(
         + "\n".join(ladder)
         + "\n"
         + wordline
-        # Gear: the decoder's femtosecond stub RCs on strong drivers make the
-        # trapezoidal rule ring, and ngspice then crawls (a BUFx4 deck ran an
-        # hour); Gear agrees with it within 0.1 ps where both finish.
-        + ".options method=gear\n"
+        + SOLVER_OPTIONS
         + f".tran {c.step_ps:g}p {end:g}n\n"
         f".measure tran blp_pre FIND v(BLP) AT=1.1n\n"
         f".measure tran blu_pre FIND v(BLU) AT=1.1n\n"

@@ -112,7 +112,12 @@ def search_address_steps(
                 osdi=osdi,
                 conditions=replace(c, word=word, previous_word=previous),
             )
-            text = _simulate(screens / f"w{word}_p{previous}.sp", deck, ngspice)
+            try:
+                text = _simulate(screens / f"w{word}_p{previous}.sp", deck, ngspice)
+            except RuntimeError as exc:
+                # One unsolvable step must not end the search: record it.
+                log(f"step {previous} -> {word} failed: {exc}")
+                text = ""
             cache[step] = AddressStep(
                 word,
                 previous,

@@ -79,7 +79,7 @@ def test_the_decoder_deck_is_the_read_benchs_decoder(tmp_path: Path):
     assert decoder and all(x in read.splitlines() for x in decoder)
     # No bitlines and no wordline network: WL is a lumped load.
     assert "BLP" not in deck and "CWL WL 0 10f" in deck
-    assert ".options method=gear" in deck
+    assert ".options method=gear rshunt=1e12" in deck
     with pytest.raises(ValueError, match="decoder driver"):
         render_decoder_deck(
             1, 16, conditions=RomReadConditions(driver="ideal"), **paths

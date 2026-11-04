@@ -322,7 +322,7 @@ def test_sense_target_counts_from_the_precharged_level(tmp_path: Path):
     assert "FIND v(BLU) WHEN v(BLP)=0.634 FALL=1" in second
     assert "FIND v(BLU) WHEN v(BLP)=0.35 FALL=1" in second
     assert "pre_osdi" in second and second.rstrip().endswith(".end")
-    assert ".options method=gear\n.tran " in second
+    assert ".options method=gear rshunt=1e12\n.tran " in second
 
 
 def test_vt_flavour_selects_its_models(tmp_path: Path):
