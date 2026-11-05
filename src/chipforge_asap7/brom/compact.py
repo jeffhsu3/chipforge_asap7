@@ -1,11 +1,13 @@
-"""CP-SAT channel compaction for ASAP7 peripheral functional units.
+"""Channel track assignment for ASAP7 peripheral functional units.
 
 Port the GT2N constrained-routing approach, not its technology geometry.
-The optimization is exact for fixed terminal intervals, not a transistor-area
-minimum. Keep functional placement groups and all device dimensions intact.
+The result is a track minimum for fixed terminal intervals, unless CP-SAT's
+budget runs out; it is not a transistor-area minimum. Keep functional placement
+groups and all device dimensions intact.
 """
 
 from functools import lru_cache
+from random import Random
 
 
 def compact_periphery(circuit):
@@ -20,41 +22,43 @@ def compact_periphery(circuit):
     return circuit
 
 
-@lru_cache(maxsize=4096)
-def assign_tracks(intervals, end_space=0):
-    """Return optimal track indices and a clique certificate.
+#: Sweeps to try for the clique bound before falling back to CP-SAT. A stuck
+#: sweep stops early, so a problem whose bound is out of reach costs little.
+SWEEP_TRIES = 200
 
-    Intervals include the metal's right-end spacing keepout. Touching keepout
-    boundaries are legal. Interval-graph greedy coloring supplies an incumbent;
-    a simultaneously occupied clique is an independent lower bound. Physical
-    touching tips additionally require a two-track separation.
-    A matching coloring and clique certify the optimum directly; otherwise
-    CP-SAT enforces every conflict and certifies the objective deterministically.
+
+def _clearance(intervals, end_space, i, j):
+    """Tracks intervals i and j must keep apart: 0, 1, or 2 for touching tips."""
+    lo, hi = intervals[i]
+    a, b = intervals[j]
+    if end_space and (hi - end_space == a or b - end_space == lo):
+        # Real tips align in x: adjacent tracks have only 24 nm diagonal
+        # clearance, below M4.S.3's 40 nm. Leave one empty track.
+        return 2
+    return int(lo < b and a < hi)
+
+
+def _legal(intervals, end_space, tracks):
+    return all(
+        abs(tracks[i] - tracks[j]) >= _clearance(intervals, end_space, i, j)
+        for i in range(len(intervals))
+        for j in range(i)
+    )
+
+
+def _start_order(intervals):
+    return sorted(range(len(intervals)), key=lambda i: (intervals[i], i))
+
+
+def _greedy(intervals, end_space):
+    """First-fit tracks in start order.
+
+    A track is free when its last interval ends before this one starts and no
+    real tip on it or the next tracks aligns with this one's; `_clearance`
+    states the same rules pairwise.
     """
-    try:
-        from ortools.sat.python import cp_model
-    except ImportError as exc:
-        raise ImportError(
-            "compact BROM routing requires chipforge-asap7[optimize]"
-        ) from exc
-
-    if not intervals or any(a >= b for a, b in intervals):
-        raise ValueError("expected nonempty positive-length route intervals")
-
-    def clearance(i, j):
-        lo, hi = intervals[i]
-        a, b = intervals[j]
-        if end_space and (hi - end_space == a or b - end_space == lo):
-            # Real tips align in x: adjacent tracks have only 24 nm diagonal
-            # clearance, below M4.S.3's 40 nm. Leave one empty track.
-            return 2
-        return int(lo < b and a < hi)
-
-    # Greedy coloring in start order: a track is free when its last interval
-    # ends before this one starts and no real tip on it or the next tracks
-    # aligns with this one's; `clearance` states the same rules pairwise.
     hint, last_end, starts, tips = {}, {}, {}, {}
-    for i in sorted(range(len(intervals)), key=lambda i: (intervals[i], i)):
+    for i in _start_order(intervals):
         lo, hi = intervals[i]
         for t in range(2 * len(intervals)):
             if lo < last_end.get(t, lo):
@@ -69,23 +73,70 @@ def assign_tracks(intervals, end_space=0):
             starts.setdefault(t, set()).add(lo)
             tips.setdefault(t, set()).add(hi - end_space)
             break
-    upper = max(hint.values()) + 1
-    witness = max(
+    return [hint[i] for i in range(len(intervals))]
+
+
+def _clique(intervals):
+    """The most intervals live at one x, a lower bound on the track count."""
+    return max(
         (
             tuple(j for j, (lo, hi) in enumerate(intervals) if lo <= a < hi)
             for a, _ in intervals
         ),
         key=len,
     )
-    if upper == len(witness):
-        # A legal coloring meeting an independent clique bound is already
-        # an exact certificate; avoid an unnecessary symmetric SAT search.
-        return tuple(hint[i] for i in range(len(intervals))), witness
+
+
+def _sweep(intervals, end_space, count, rng):
+    """One pass in start order into ``count`` tracks; None if it gets stuck.
+
+    Mostly takes the free track that filled up last, which keeps the longer
+    gaps open, and otherwise a random one so that retries differ.
+    """
+    last_end = [None] * count
+    tracks, tips = [None] * len(intervals), {}
+    for i in _start_order(intervals):
+        lo, hi = intervals[i]
+        banned = {x for t in tips.get(lo, ()) for x in (t - 1, t, t + 1)}
+        free = [
+            t
+            for t in range(count)
+            if t not in banned and (last_end[t] is None or last_end[t] <= lo)
+        ]
+        if not free:
+            return None
+        rng.shuffle(free)
+        if rng.random() < 0.8:
+            free.sort(key=lambda t: -1 if last_end[t] is None else last_end[t])
+            tracks[i] = free[-1]
+        else:
+            tracks[i] = free[0]
+        last_end[tracks[i]] = hi
+        tips.setdefault(hi - end_space, []).append(tracks[i])
+    return tracks
+
+
+def solve_tracks(intervals, end_space=0):
+    """Fewest tracks by CP-SAT, seeded with the greedy result.
+
+    Exact unless its deterministic budget runs out, which leaves a legal
+    channel that may not be minimal.
+    """
+    try:
+        from ortools.sat.python import cp_model
+    except ImportError as exc:
+        raise ImportError(
+            "compact BROM routing requires chipforge-asap7[optimize]"
+        ) from exc
+
+    hint = _greedy(intervals, end_space)
+    upper = max(hint) + 1
+    witness = _clique(intervals)
     model = cp_model.CpModel()
     tracks = [model.new_int_var(0, upper - 1, f"t{i}") for i in range(len(intervals))]
     for i in range(len(intervals)):
         for j in range(i):
-            gap = clearance(i, j)
+            gap = _clearance(intervals, end_space, i, j)
             if gap == 1:
                 model.add(tracks[i] != tracks[j])
             elif gap == 2:
@@ -108,3 +159,30 @@ def assign_tracks(intervals, end_space=0):
             f"peripheral channel optimization: {solver.status_name(status)}"
         )
     return tuple(solver.value(t) for t in tracks), witness
+
+
+@lru_cache(maxsize=4096)
+def assign_tracks(intervals, end_space=0):
+    """Return track indices and the clique that bounds their count.
+
+    Intervals include the metal's right-end spacing keepout. Touching keepout
+    boundaries are legal. Physical touching tips additionally require a
+    two-track separation.
+
+    Any assignment that uses as many tracks as the clique has intervals is
+    optimal, whatever produced it. So try greedy first-fit, then seeded sweeps
+    for that bound. CP-SAT only runs when both miss, since the tip rule can put
+    the true minimum above the bound and only a solver can show that.
+    """
+    if not intervals or any(a >= b for a, b in intervals):
+        raise ValueError("expected nonempty positive-length route intervals")
+    witness = _clique(intervals)
+    hint = _greedy(intervals, end_space)
+    if max(hint) + 1 == len(witness):
+        return tuple(hint), witness
+    rng = Random(0)
+    for _ in range(SWEEP_TRIES):
+        tracks = _sweep(intervals, end_space, len(witness), rng)
+        if tracks is not None and _legal(intervals, end_space, tracks):
+            return tuple(tracks), witness
+    return solve_tracks(intervals, end_space)

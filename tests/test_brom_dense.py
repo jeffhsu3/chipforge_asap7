@@ -88,6 +88,9 @@ SHAPES = [
     (16, 4, 4),
     (64, 16, 4),
     pytest.param(1024, 16, 4, marks=pytest.mark.slow),
+    # The word slice shapes, whose track problems reach the CP-SAT fallback.
+    pytest.param(64, 30, 4, marks=pytest.mark.slow),
+    pytest.param(256, 30, 1, marks=pytest.mark.slow),
 ]
 
 

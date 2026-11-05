@@ -1,5 +1,13 @@
 """ASAP7 blocked-ROM compiler with a compact periodic selector array."""
 
+import os
+
+# The BLAS reads these when NumPy first loads, which the imports below trigger.
+# Compiles run side by side (one per word slice), and a thread pool in each made
+# the placement solve hundreds of times slower. Set them to override.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 from .compact import compact_periphery
 from .compiler import (
     BromSpec,

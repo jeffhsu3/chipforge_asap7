@@ -5,6 +5,10 @@ one also carries sizing, a keeper and the registered output.
 """
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +21,37 @@ def compile_words(tmp_path, *flags):
     out = tmp_path / "out"
     main([str(words), "--bits", "2", *flags, "--out", str(out)])
     return out, json.loads((out / "manifest.json").read_text())
+
+
+BLAS_PROBE = """
+import os, chipforge_asap7.brom
+print(os.environ["OPENBLAS_NUM_THREADS"], len(os.listdir("/proc/self/task")))
+"""
+
+
+def blas_probe(**overrides):
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "OMP_NUM_THREADS")
+    }
+    done = subprocess.run(
+        [sys.executable, "-c", BLAS_PROBE],
+        env=env | overrides,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    setting, threads = done.stdout.split()
+    return setting, int(threads)
+
+
+@pytest.mark.skipif(not Path("/proc/self/task").exists(), reason="needs Linux /proc")
+def test_import_pins_blas_to_one_thread_unless_overridden():
+    # A thread count, not just the variable: it proves the pin beat NumPy's load.
+    assert blas_probe() == ("1", 1)
+    setting, threads = blas_probe(OPENBLAS_NUM_THREADS="4")
+    assert setting == "4" and threads >= 4
 
 
 def test_external_phases(tmp_path):
