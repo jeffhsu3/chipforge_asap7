@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
+from hashlib import sha256
 from pathlib import Path
 
-from ..layout.layers import require_gdspy
+from ..layout.layers import LAYERS, require_gdspy
 from ..verification.drc import drc_counts, run_gdscheck
 from ..verification.lvs import run_lvs
 from ..verification.lvs_report import summarize_lvsdb
@@ -29,9 +30,31 @@ from . import (
     size_control_distribution,
     size_wire_rc_distribution,
 )
+from .abstract import PROGRAMMING_LAYERS, abstract_name, frozen_geometry_sha256
 from .dense_macro import dense_macro_layout
 from .periphery import periphery_plan
 from .views import macro_lef, macro_verilog
+
+
+def _write_abstract(out: Path, circuit, top, lib) -> dict:
+    """Write the stable-named LEF and GDS, and return the manifest's record."""
+    name = abstract_name(circuit.name)
+    lef = macro_lef(circuit, top, name=name)
+    (out / "abstract.lef").write_text(lef)
+    lib.rename_cell(top, name)
+    lib.write_gds(str(out / "abstract.gds"))
+    lib.rename_cell(top, circuit.name)
+    return {
+        "cell": name,
+        "lef": "abstract.lef",
+        "gds": "abstract.gds",
+        "lef_sha256": sha256(lef.encode()).hexdigest(),
+        "frozen_geometry_sha256": frozen_geometry_sha256(top),
+        "programming_layers": {
+            layer: [LAYERS[layer]["layer"], LAYERS[layer]["datatype"]]
+            for layer in PROGRAMMING_LAYERS
+        },
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -269,6 +292,7 @@ def main(argv: list[str] | None = None) -> None:
             (args.out / "macro.lef").write_text(macro_lef(circuit, top))
             (args.out / "macro.v").write_text(macro_verilog(circuit, spec, words))
             record["lef"], record["verilog"] = "macro.lef", "macro.v"
+            report["abstract"] = _write_abstract(args.out, circuit, top, lib)
         report["artifacts"][role] = record
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         if args.drc:

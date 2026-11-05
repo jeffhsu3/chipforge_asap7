@@ -77,6 +77,40 @@ programming, and each peripheral transistor cell (`brom_<device>_<hash>`) by
 a hash of its drawn shapes, so a device drawn differently by another compiler
 version gets a different name rather than silently replacing this one.
 
+### Shared abstract
+
+Programming only moves V2 and V3 cuts, so a flow can place and route one
+abstract and swap each unit's programmed macro in afterwards. Each build also
+writes `abstract.lef` and `abstract.gds`, the same macro under its name without
+the programming digest (`brom_selftimed_64x32_m1_f2_rvt_dense_posedge_g4_e1`).
+The manifest's `abstract` record holds that name, the LEF's hash, a hash of all
+other geometry and labels (`frozen_geometry_sha256`), and the GDS layers that
+may differ (`programming_layers`). A swap must refuse an image whose record
+doesn't match. The sizing options add a suffix to the name (`_dist4`, `_wirerc`),
+but the name alone proves nothing about the geometry, so compare the hashes too.
+The tests XOR the written GDS files of two images to check this independently of
+the hashes. Timing still varies with contents, so a shared timing model has to
+cover the worst image.
+
+### Wide words
+
+Split a word much wider than 32 bits across several macros that share A, CLK and
+RESETN. A single registered 148-bit macro does not route (tried at 16x148 m1 and
+64x148 m4; 1024x148 m4 also fails). Cell density per bit is the same as at 32 bits,
+but bitlines sit at 108 nm pitch in two half-arrays with the replica columns
+beyond them, so data cells must spread across the whole bank to fit. Each bit's
+offset from its bitline grows with the width, so wire demand grows with its square
+while track capacity grows linearly. Row and placement changes reduced the
+congestion but did not clear it.
+
+| Shape | Area of one macro | Five macros (150 bits) |
+|---|---|---|
+| 64x30 m1 | 321 um² | 1,603 um² |
+| 64x30 m4 | 791 um² | 3,956 um² |
+| 256x30 m1 | 2,337 um² | 11,684 um² |
+
+All three are registered and self-timed, and pass DRC and LVS with random words.
+
 ## Circuit and programming
 
 Each block encodes four words. For output column `c`, its selector index is

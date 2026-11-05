@@ -82,6 +82,8 @@ SHAPES = [
     (4, 1, 1),
     (4, 4, 1),
     (4, 16, 1),
+    # Three columns a side: the lane's two VSS drops once landed 24 nm apart.
+    (16, 6, 1),
     (16, 9, 1),
     (16, 4, 4),
     (64, 16, 4),

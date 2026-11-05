@@ -201,6 +201,11 @@ def build_dense_macro(c, spec=None):
     def side_transform(origin, mirror):
         return lambda x: origin - x if mirror else origin + x
 
+    def lattice(x):
+        """A lane supply drop's x. Every drop onto a supply track shares this
+        48 nm lattice, so any two either coincide or clear M3 and V3 spacing."""
+        return ceil_grid(x - 12, 48) + 12
+
     # The block-0 lane of each side fixes where its G rails and lifts lie.
     lanes0 = {
         side: build_dense_lane(
@@ -233,10 +238,10 @@ def build_dense_macro(c, spec=None):
                     )
             for net, dx in (("VDD", 96), ("VSS", 240)):
                 out = transform(lane.width + dx)
-                spans[net].append(ceil_grid(out - 12, 48) + 12)
+                spans[net].append(lattice(out))
             for col in range(hi - lo):
                 spans[f"BL<{lo + col}>"].append(transform(ax + 108 * col + 81))
-            spans["VSS"].append(transform(lane0.width + 240))
+            spans["VSS"].append(lattice(transform(lane0.width + 240)))
         if c.replica:
             ox = replica_x(bank_width)
             for b, row in enumerate(c.replica.selector.mapping):
@@ -582,7 +587,7 @@ def build_dense_macro(c, spec=None):
                 square(top, "V2", px, ry)
                 py = ry + 12
                 box(top, "M3", px - 9, ry - 17, px + 9, py + 17)
-                join(net, px, py, local_x=ceil_grid(out - 12, 48) + 12)
+                join(net, px, py, local_x=lattice(out))
         for col in range(columns):
             x = transform(ax + 108 * col + 81)
             y = base - 36 - 96 * (col % 2)
@@ -595,7 +600,7 @@ def build_dense_macro(c, spec=None):
         # The selector's own substrate rail is above its last block.
         x = transform(ax)
         sy = base + spec.blocks * 432 + 81
-        target = transform(lane0.width + 240)
+        target = lattice(transform(lane0.width + 240))
         box(top, "M2", min(x, target) - 19, sy - 9, max(x, target) + 19, sy + 9)
         square(top, "V2", target, sy)
         py = base + spec.blocks * 432 + 108

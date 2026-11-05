@@ -53,15 +53,16 @@ def _rects(top: Any, layer: str) -> list[tuple[float, float, float, float]]:
     return sorted(rects)
 
 
-def macro_lef(circuit: Any, top: Any) -> str:
+def macro_lef(circuit: Any, top: Any, name: str | None = None) -> str:
     """LEF 5.8 abstract of `top`, the cell `build_macro(circuit)` returned.
 
     Coordinates move so the boundary's lower-left corner is the LEF origin;
     ``FOREIGN`` gives where the GDS origin then sits. Each pin is the metal
     shape under its label: an M5 column reaching the bottom edge, or an M4
     bar reaching a side. M1-M3 are blocked over the whole footprint, M4-M6
-    only where they are drawn.
+    only where they are drawn. `name` overrides the macro's name in the LEF.
     """
+    name = name or circuit.name
     (x0, y0), (x1, y1) = top.get_bounding_box()
     from .dense_macro import dense_macro_layout
 
@@ -108,15 +109,15 @@ def macro_lef(circuit: Any, top: Any) -> str:
             'BUSBITCHARS "[]" ;',
             'DIVIDERCHAR "/" ;',
             "",
-            f"MACRO {circuit.name}",
+            f"MACRO {name}",
             "  CLASS BLOCK ;",
-            f"  FOREIGN {circuit.name} {_um(-x0)} {_um(-y0)} ;",
+            f"  FOREIGN {name} {_um(-x0)} {_um(-y0)} ;",
             "  ORIGIN 0 0 ;",
             f"  SIZE {_um(x1 - x0)} BY {_um(y1 - y0)} ;",
             "  SYMMETRY X Y ;",
             *pins,
             *obs,
-            f"END {circuit.name}",
+            f"END {name}",
             "",
             "END LIBRARY",
             "",
