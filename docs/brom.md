@@ -305,7 +305,8 @@ and the register's both-rail clock interlock are preserved.
 The former discrete-device peripheral layout has been removed. Dense CMOS is
 the default for `build_macro` and `build_periphery`; `--compact-periphery` and
 `compact_periphery()` remain deprecated no-ops. `build_periphery` rejects a
-macro circuit. `macro_plan` returns the actual dense physical-plan dictionary;
+macro circuit. `dense_macro_layout` returns the cell and the actual dense
+physical-plan dictionary;
 `periphery_plan` returns the dense bank and its ports, units, routes and metal
 checkpoints. Callers should no longer use old device-row pitches or bus offsets.
 

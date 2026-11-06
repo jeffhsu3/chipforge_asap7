@@ -115,7 +115,19 @@ def prepare_dense_macro(c, spec):
     return c
 
 
-def _strip(c, excluded):
+def bank_circuit(c):
+    """The bottom bank: every device but the selector arrays and CGEN lanes."""
+    if c.array is None:
+        raise ValueError("requires a macro_circuit")
+    excluded = set(c.array.device_names)
+    if c.replica:
+        excluded.update(c.replica.selector.device_names)
+    excluded.update(
+        n
+        for role, ns in c.placement_groups
+        if role.startswith(("cgen_", "left_cgen_"))
+        for n in ns
+    )
     remaining = [d for d in c.devices if d.name not in excluded]
     used = {n for d in remaining for n in d.nodes}
     boundary = {n for d in c.devices if d.name in excluded for n in d.nodes} & used
@@ -167,16 +179,7 @@ def build_dense_macro(c, spec=None):
     center = half_width + 216 if left else 0
     right_origin = ceil_grid(center + middle, 432)
     footprint = right_origin + half_width
-    excluded = set(c.array.device_names)
-    if c.replica:
-        excluded.update(c.replica.selector.device_names)
-    excluded.update(
-        n
-        for role, ns in c.placement_groups
-        if role.startswith(("cgen_", "left_cgen_"))
-        for n in ns
-    )
-    bank_c = _strip(c, excluded)
+    bank_c = bank_circuit(c)
     sides = [
         (side, lo, hi, origin, mirror)
         for side, lo, hi, origin, mirror in (
@@ -856,6 +859,17 @@ def dense_macro_layout(c):
     result = deepcopy(top)
     result.name = c.name
     return result, meta
+
+
+def build_macro(circuit, *, lib=None):
+    """The macro's GDS cell, with its routes checked; optionally added to lib."""
+    top, plan = dense_macro_layout(circuit)
+    verify_dense_routes(top, plan["checkpoints"])
+    if lib is not None:
+        if lib.unit != 1e-9:
+            raise ValueError("BROM layout requires lib.unit=1e-9")
+        lib.add(top)
+    return top
 
 
 def selector_routes(plan, mapping, transform, ox, oy, candidate, bitline):
