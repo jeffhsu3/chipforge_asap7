@@ -14,7 +14,9 @@ or, when that row is full, a *jog*: a column near the cell rises to a row
 with room, an M4 segment there reaches the anchored column, which rises on
 from that row. An anchor that finds no free column in its range, or no row
 for its run, falls back to a header track. A *bottom* port's column runs
-down to the bank's lower edge, where its pin lies.
+down to the bank's lower edge, where its pin lies. A *right* bottom port's
+column is its rightmost group's, so a supply pin sits at the row ends, where
+a power-grid strap entering from the right edge can reach it.
 
 Every M5 and M6 end lies on a 48 nm lattice. Tip stagger, parallel run and
 same-track gaps are then multiples of 48 nm (ASAP7 M5/M6.S.2, S.4 and S.5
@@ -174,6 +176,7 @@ def route_bank(
     spans=(),
     edges=None,
     blocked=(),
+    right=(),
 ):
     """Plan from (net, row, x, y) accesses; return None if the bank cannot route.
 
@@ -183,6 +186,7 @@ def route_bank(
     whose track runs on to the nearer bank edge (every port when None) and
     ``blocked`` the x positions an anchored column may not take. Anchored
     columns of different kinds never sit on adjacent lattice slots.
+    ``right`` names the bottom ports whose column is their rightmost group's.
 
     A row whose escapes need more than its eight M4 tracks is relieved first
     by moving the run of the anchored port with the widest escape crossing
@@ -302,6 +306,7 @@ def route_bank(
             None if edges is None else frozenset(edges),
             frozenset(blocked),
             jogs,
+            frozenset(right) & frozenset(bottom),
         )
         if result is None or "overfull" not in result:
             return result
@@ -337,6 +342,7 @@ def _route(
     edges,
     blocked,
     jogs,
+    right=frozenset(),
 ):
     by_net = defaultdict(list)
     for net, row, x, y in points:
@@ -380,14 +386,23 @@ def _route(
         if net in rising:
             # The highest group's column rises to the header; a bus joins
             # the rest. Lower groups never block the rows above them.
+            # Groups are in x order; a right port takes the rightmost.
             risers[net] = max(
-                members, key=lambda i: (max(r for r, _, _ in groups[i][1]), -i)
+                members,
+                key=lambda i: (
+                    max(r for r, _, _ in groups[i][1]),
+                    i if net in right else -i,
+                ),
             )
         else:
             # A column that only descends to a bottom pin starts from the
             # lowest group.
             risers[net] = min(
-                members, key=lambda i: (min(r for r, _, _ in groups[i][1]), i)
+                members,
+                key=lambda i: (
+                    min(r for r, _, _ in groups[i][1]),
+                    -i if net in right else i,
+                ),
             )
     rows = {i: [r for r, _, _ in groups[i][1]] for ms in by_group.values() for i in ms}
     targets = {

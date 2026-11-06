@@ -116,6 +116,8 @@ def _route_plan(
         spans=tuple(sorted((n, tuple(xs)) for n, xs in spans.items() if xs)),
         edges=tuple(sorted(edges)),
         blocked=tuple(sorted(blocked)),
+        # Supply pins sit at the row ends, beside each row's tap drops.
+        right=tuple(sorted({"VDD", "VSS"} & set(bottom))),
     )
 
 

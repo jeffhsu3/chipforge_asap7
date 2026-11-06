@@ -298,6 +298,32 @@ def test_macro_splits_devices_between_array_and_periphery():
     assert {p.text for p in top.labels} == set(c.pins)
 
 
+@pytest.mark.parametrize("depth,bits", [(16, 8), (64, 32)])
+def test_supply_pins_are_reachable_from_the_right_edge(depth, bits):
+    """A host's M6 power straps can only meet a supply pin by running in from
+    an edge. Each pin sits at the row ends, where only supply buses lie to
+    its right over its height; a pin boxed in by signal M6 left PDN open."""
+    from chipforge_asap7.brom import self_timed_macro_circuit
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
+    c = self_timed_macro_circuit(BromSpec(depth, bits), [0] * depth)
+    _, plan = dense_macro_layout(c)
+    for net in ("VDD", "VSS"):
+        metal, x, _ = plan["ports"][net]
+        assert metal == "M5"
+        top = max(
+            max(a[1], b[1])
+            for n, layer, a, b in plan["routes"]
+            if n == net and layer == "M5" and a[0] == b[0] == x
+        )
+        beside = {
+            n
+            for n, layer, a, b in plan["routes"]
+            if layer == "M6" and max(a[0], b[0]) > x and min(a[1], b[1]) <= top
+        }
+        assert beside <= {"VDD", "VSS"}, (net, beside)
+
+
 @pytest.mark.parametrize("port_name", ["LC<0,2>", "C<0,8>", "BL<0>", "VSS"])
 def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_klayout):
     from chipforge_asap7.brom.dense_macro import (
