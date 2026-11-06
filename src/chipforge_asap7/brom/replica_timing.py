@@ -97,7 +97,7 @@ def render_replica_bench(
         signals += [f"SAMPLED<{i}>" for i in range(spec.bits)]
         signals += [net for net in c.output_register["clock_nets"] if net != "CLK"]
     signals += [
-        f"RBL<{spec.columns - 1}>",
+        "RBL",
         f"RC<{spec.blocks + replica.extra_blocks - 1},15>",
     ]
     initial = {

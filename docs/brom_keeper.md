@@ -26,7 +26,7 @@ and DOUT rises, the keeper switches off. All keeper bodies connect to VDD.
 The default enabled configuration uses **two series one-fin PMOS devices**.
 Series devices provide weaker drive than a single minimum-fin PMOS. Increasing
 the fin count strengthens the keeper; increasing the series count generally
-weakens it, but the actual delay/current must be measured. Every replica
+weakens it, but the actual delay/current must be measured. The replica
 bitline receives the same topology, fin count and threshold flavor as the data
 bitlines. Its existing extra selector block remains part of the replica load.
 The keeper does not change selector sizing or the CP-SAT geometry proof.

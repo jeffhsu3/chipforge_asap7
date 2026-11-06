@@ -38,8 +38,8 @@ The final stage uses enough parallel base inverters to meet the fanout target.
 Earlier stages taper down toward the original driver. An even number of
 inverting stages preserves polarity. The original logic gate remains present
 and drives the first stage; downstream consumers use the final stage. The
-replica participates in the same load calculation, including its fully loaded
-candidate and duplicated phase loads. Array transistors and programming cuts
+replica participates in the same load calculation, including its candidate's
+worst-case half-width gate load and duplicated phase loads. Array transistors and programming cuts
 are unchanged.
 
 Each parallel copy uses the existing single-finger peripheral device layout

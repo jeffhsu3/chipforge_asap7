@@ -92,7 +92,7 @@ def prepare_dense_macro(c, spec):
     if c.distribution is not None:
         raise ValueError("dense floorplan must be selected before control sizing")
     c.dense_spec = spec
-    left = (spec.bits // 2) * spec.ways
+    left = spec.left_columns
     c.dense_left_columns = left
     if left:
         for b in range(spec.blocks):
@@ -186,9 +186,14 @@ def build_dense_macro(c, spec=None):
         if lo != hi
     ]
 
+    # The replica strip: dummy-load columns, then the observed bitline.
+    replica_columns = len(c.replica.selector.mapping[0]) if c.replica else 0
+    replica_bitlines = [
+        c.replica.port_nets[f"BL<{col}>"] for col in range(replica_columns)
+    ]
     replica_origin = ceil_grid(right_origin + lane0.width + 540, 432)
     bank_footprint = (
-        ceil_grid(replica_origin + 108 * spec.columns + 324, 432)
+        ceil_grid(replica_origin + 108 * replica_columns + 324, 432)
         if c.replica
         else footprint
     )
@@ -244,15 +249,17 @@ def build_dense_macro(c, spec=None):
             spans["VSS"].append(lattice(transform(lane0.width + 240)))
         if c.replica:
             ox = replica_x(bank_width)
-            for b, row in enumerate(c.replica.selector.mapping):
-                for k in set(row):
-                    net = c.replica.port_nets[f"C<{b},{k}>"]
-                    spans[net].append(
-                        ox - 132 if net != "VSS" else ox + 108 * spec.columns + 228
-                    )
-            for col in range(spec.columns):
-                spans[f"RBL<{col}>"].append(ox + 108 * col + 81)
-            spans["VSS"].append(ox + 108 * spec.columns + 228)
+            nets = {
+                c.replica.port_nets[f"C<{b},{k}>"]
+                for b, row in enumerate(c.replica.selector.mapping)
+                for k in row
+            }
+            for net in sorted(nets - {"VSS"}):
+                spans[net].append(ox - 132)
+            for col, net in enumerate(replica_bitlines):
+                if net != "VSS":
+                    spans[net].append(ox + 108 * col + 81)
+            spans["VSS"].append(ox + 108 * replica_columns + 228)
         return spans
 
     def array_base(header_top, height):
@@ -297,9 +304,10 @@ def build_dense_macro(c, spec=None):
         windows = dict(anchors)
         if c.replica and bank_width <= bank_footprint:
             ox = replica_x(bank_width)
-            for col in range(spec.columns):
-                x = ox + 108 * col + 81
-                windows[f"RBL<{col}>"] = (x - 24, x + 24, None)
+            for col, net in enumerate(replica_bitlines):
+                if net != "VSS":
+                    x = ox + 108 * col + 81
+                    windows[net] = (x - 24, x + 24, None)
         return windows
 
     bank = build_dense_bank(
@@ -659,6 +667,8 @@ def build_dense_macro(c, spec=None):
         array.name += "_dense_replica"
         ox = replica_x(bank.width)
         oy = base
+        right_edge = ox + 108 * replica_columns
+        sy = oy + len(inst.mapping) * 432 + 81
         top.add(gdspy.CellReference(array, (ox, oy)))
         routes += selector_routes(
             inst.plan,
@@ -667,24 +677,21 @@ def build_dense_macro(c, spec=None):
             ox,
             oy,
             lambda b, k: c.replica.port_nets[f"C<{b},{k}>"],
-            lambda col: f"RBL<{col}>",
+            lambda col: replica_bitlines[col],
         )
+        driven = defaultdict(list)
         for b, row in enumerate(inst.mapping):
             for k in sorted(set(row)):
                 layer, dy = inst.plan.tracks[k]
                 net = c.replica.port_nets[f"C<{b},{k}>"]
                 y = oy + b * 432 + dy
                 checkpoints.append((net, layer, ox, y))
-                x = ox - 132 if net != "VSS" else ox + 108 * spec.columns + 228
+                if net != "VSS":
+                    driven[net].append((b, layer, y))
+                    continue
+                x = right_edge + 228
                 if layer == "M2":
-                    box(
-                        top,
-                        "M2",
-                        min(ox - 24, x - 19),
-                        y - 9,
-                        max(ox + 108 * spec.columns + 24, x + 19),
-                        y + 9,
-                    )
+                    box(top, "M2", ox - 24, y - 9, x + 19, y + 9)
                     square(top, "V2", x, y)
                     py = oy + b * 432 + 60
                     box(top, "M3", x - 9, min(y, py) - 17, x + 9, max(y, py) + 17)
@@ -698,15 +705,54 @@ def build_dense_macro(c, spec=None):
                     m4(top, x, ox, y)
                     routes.append((net, "M4", (x, y), (ox, y)))
                     join(net, x, y, source="M4", local_x=x)
-        for col in range(spec.columns):
+        # A driven candidate's dummy-load rows share one riser on the strip's
+        # near side, so the observed gate in the last block is at its far end.
+        x = ox - 132
+        for net, rows in driven.items():
+            for b, layer, y in rows:
+                if layer == "M2":
+                    box(top, "M2", x - 19, y - 9, right_edge + 24, y + 9)
+                    square(top, "V2", x, y)
+                    routes += [
+                        (net, "M2", (x, y), (ox - 24, y)),
+                        (net, "V2", (x, y), (x, y)),
+                    ]
+                else:
+                    m4(top, x, ox, y)
+                    routes.append((net, "M4", (x, y), (ox, y)))
+            b, layer, y = rows[0]
+            py = oy + b * 432 + 60 if layer == "M2" else y
+            top_y = rows[-1][2]
+            if top_y != py:
+                box(top, "M3", x - 9, min(py, top_y) - 17, x + 9, top_y + 17)
+                routes.append((net, "M3", (x, py), (x, top_y)))
+            for i, (b, layer, y) in enumerate(rows):
+                # The join below places the lowest M4 row's via itself.
+                if layer == "M4" and i:
+                    v3(top, x, y)
+                    routes.append((net, "V3", (x, y), (x, y)))
+            if layer == "M2":
+                join(net, x, py)
+            else:
+                join(net, x, py, source="M4", local_x=x)
+        for col, net in enumerate(replica_bitlines):
             x = ox + 108 * col + 81
+            if net == "VSS":
+                # A dummy-load bitline ties up to the selector's substrate rail.
+                box(top, "M3", x - 9, oy + len(inst.mapping) * 432 - 14, x + 9, sy + 17)
+                square(top, "V2", x, sy)
+                routes += [
+                    (net, "M3", (x, oy + len(inst.mapping) * 432), (x, sy)),
+                    (net, "V2", (x, sy), (x, sy)),
+                ]
+                checkpoints.append((net, "M3", x, oy + 216))
+                continue
             py = oy - 36 - 96 * (col % 2)
             box(top, "M3", x - 9, py - 17, x + 9, oy + 14)
-            routes.append((f"RBL<{col}>", "M3", (x, py), (x, oy + 14)))
-            join(f"RBL<{col}>", x, py)
-            checkpoints.append((f"RBL<{col}>", "M3", x, oy + 216))
-        sy = oy + len(inst.mapping) * 432 + 81
-        x = ox + 108 * spec.columns + 228
+            routes.append((net, "M3", (x, py), (x, oy + 14)))
+            join(net, x, py)
+            checkpoints.append((net, "M3", x, oy + 216))
+        x = right_edge + 228
         box(top, "M2", ox - 24, sy - 9, x + 19, sy + 9)
         square(top, "V2", x, sy)
         py = sy + 27

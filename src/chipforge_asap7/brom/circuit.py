@@ -33,6 +33,9 @@ class ReplicaInstance:
     port_nets: dict[str, str]
     guard_pairs: int
     extra_blocks: int
+    # Grounded-drain selectors on the replica candidate besides the observed
+    # one; the mapping's last column is the observed bitline.
+    dummy_loads: int
 
 
 def logic_unit(fn):

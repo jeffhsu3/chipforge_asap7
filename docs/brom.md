@@ -97,7 +97,7 @@ cover the worst image.
 Split a word much wider than 32 bits across several macros that share A, CLK and
 RESETN. A single registered 148-bit macro does not route (tried at 16x148 m1 and
 64x148 m4; 1024x148 m4 also fails). Cell density per bit is the same as at 32 bits,
-but bitlines sit at 108 nm pitch in two half-arrays with the replica columns
+but bitlines sit at 108 nm pitch in two half-arrays with the replica strip
 beyond them, so data cells must spread across the whole bank to fit. Each bit's
 offset from its bitline grows with the width, so wire demand grows with its square
 while track capacity grows linearly. Row and placement changes reduced the
@@ -292,8 +292,8 @@ first M4 and M6 tracks as well: outer cells take the tightest M4 track that
 reaches them, inner ones an M6 track reached by a jog on the first M4 track
 and an M5 stub. The two outermost cells no track reaches (one M6 and one M4)
 keep their header tracks. Supply connections cross the array on free M4
-boundary tracks. The independent replica occupies the far edge and retains
-its own candidate loading, bitlines, readouts and guards.
+boundary tracks. The independent replica strip occupies the far edge with its
+own candidate, dummy candidate loads, observed bitline, readout and guards.
 
 The four-way output mux is now two AOI22 gates and a NAND2 (20T versus 42T).
 Its complete 256-entry truth table is tested, including non-one-hot selects.

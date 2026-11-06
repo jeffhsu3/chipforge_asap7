@@ -20,14 +20,27 @@ experiments. Omitting both options retains the external three-phase interface.
 ## Circuit and geometry
 
 The replica uses the same compact 108 × 432 nm selector geometry, fin count,
-threshold flavor and isolation devices as the data array. Its full column count
-matches the data array's candidate fanout. It has one extra four-word block by
-default, adding intrinsic bitline loading. All columns discharge through one
-live selector in the final block, driven by candidate 15. Other candidate gates
-are grounded. Every replica column has its own precharger and inverter.
+threshold flavor and isolation devices as the data array. One observed bitline,
+`RBL`, spans the data array's blocks plus one extra four-word block by default,
+adding intrinsic bitline loading. It discharges through one live selector in
+the final block, driven by candidate 15 (`RC<last,15>`); its other selectors
+are grounded. It has its own precharger and inverter.
+
+The replica candidate carries as many selector gates as one real candidate can:
+`spec.half_columns`, the wider half's column count, since each half has its own
+candidate drivers. That is the worst case, a half whose every column selects
+the same candidate. Besides the observed gate these are `dummy_loads`
+(`half_columns - 1`) selectors whose drains are tied to VSS, filling dummy
+columns from the last block down. A dummy switching on with its drain and
+source tied stays in the linear region, so its gate charge is at least that of
+a real selector discharging a bitline. One riser on the strip's near side joins
+the dummy rows, so the observed gate sits at the candidate's far end. The
+dummy bitlines tie to the selector's substrate rail and have no readouts. For a
+256×30 mux1 macro that is 14 dummies in one column: the replica strip is two
+selector columns wide, where it used to be thirty, all discharging.
 
 The replicated control path includes evaluation, block selection and all sixteen
-candidate AND gates. The last column feeds a matching mux path for mux4 macros,
+candidate AND gates. `RBL` feeds a matching mux path for mux4 macros,
 a real output-latch input load, and four CMOS buffer pairs before READ_READY.
 This is transistor-generated completion, with no behavioral delay source.
 CANDIDATE_BUSY includes pending intermediate control stages and a guarded
@@ -50,8 +63,8 @@ remain separate from the unlabeled embedded cores.
 padding and delay counts (defaults 1 and 4). Changing either requires renewed
 timing checks. The current single-tap-row reach limits the combined replica
 depth to 69 blocks, leaving at most 68 data blocks with the default padding.
-The full-width replica has substantial area overhead; it is a conservative
-starting implementation, not an area-optimized replica column.
+The dummy loads match the real worst case in gate count and drive the same
+candidate wire; they are not qualified against extracted coupling.
 
 ## Electrical validation
 

@@ -67,6 +67,16 @@ class BromSpec:
         return self.bits * self.ways
 
     @property
+    def left_columns(self) -> int:
+        """Columns in the dense floorplan's left half; its own candidates."""
+        return (self.bits // 2) * self.ways
+
+    @property
+    def half_columns(self) -> int:
+        """Most selector gates one candidate driver can carry in either half."""
+        return max(self.left_columns, self.columns - self.left_columns)
+
+    @property
     def address_bits(self) -> int:
         return (self.depth - 1).bit_length()
 

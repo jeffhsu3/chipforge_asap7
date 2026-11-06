@@ -16,34 +16,52 @@ from chipforge_asap7.brom.layout import (
 )
 
 
-@pytest.mark.parametrize("ways,depth", [(1, 8), (4, 32)])
-def test_replica_loads_and_public_interface(ways, depth):
-    spec = BromSpec(depth, 2, ways=ways)
+@pytest.mark.parametrize(
+    "ways,depth,bits,dummy_columns", [(1, 8, 2, 0), (4, 32, 2, 1), (1, 8, 32, 5)]
+)
+def test_replica_loads_and_public_interface(ways, depth, bits, dummy_columns):
+    spec = BromSpec(depth, bits, ways=ways)
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(depth)])
     assert set(c.pins) == {
         *(f"A[{i}]" for i in range(spec.address_bits)),
         "CLK",
         "RESETN",
-        "Q[0]",
-        "Q[1]",
+        *(f"Q[{i}]" for i in range(bits)),
         "VDD",
         "VSS",
     }
     replica = c.replica
-    assert len(replica.selector.mapping) == spec.blocks + 1
-    assert all(len(row) == spec.columns for row in replica.selector.mapping)
-    assert set(replica.selector.mapping[-1]) == {15}
-    assert all(set(row) == {0} for row in replica.selector.mapping[:-1])
+    rows = spec.blocks + 1
+    mapping = replica.selector.mapping
+    assert len(mapping) == rows
+    assert all(len(row) == dummy_columns + 1 for row in mapping)
+    # The observed bitline has one live selector, in the last block.
+    assert [row[-1] for row in mapping] == [0] * (rows - 1) + [15]
+    assert replica.port_nets[f"BL<{dummy_columns}>"] == "RBL"
+    assert replica.dummy_loads == spec.half_columns - 1
     devs = [d for d in c.devices if d.name in replica.selector.device_names]
-    for col in range(spec.columns):
-        column = [d for d in devs if d.nodes[0] == f"RBL<{col}>"]
-        assert len(column) == 2 * (spec.blocks + 1)
-        assert sum(d.nodes[1] != "VSS" for d in column) == 1
+    observed = [d for d in devs if d.nodes[0] == "RBL"]
+    assert len(observed) == 2 * rows
+    candidate = f"RC<{rows - 1},15>"
+    assert [d.nodes[1] for d in observed if d.nodes[1] != "VSS"] == [candidate]
+    # The replica candidate carries as many gates as one real half's
+    # candidate can; the rest of its load is grounded-drain dummies.
+    gates = [d for d in devs if d.nodes[1] == candidate]
+    assert len(gates) == spec.half_columns
+    assert all(d.nodes[0] == "VSS" for d in gates if d.nodes[0] != "RBL")
+    drains = {"RBL", "VSS"} if dummy_columns else {"RBL"}
+    assert {d.nodes[0] for d in devs} == drains
+    # Dummies fill the top blocks, so the strip is no wider than needed.
+    if dummy_columns:
+        assert set(mapping[-1]) == {15}
+    readouts = [n for n, _ in c.placement_groups if n.startswith("replica_readout")]
+    assert readouts == ["replica_readout"]
     assert {d.name for d in macro_periphery(c).devices}.isdisjoint(
         replica.selector.device_names | c.array.device_names
     )
     plan = macro_plan(c)
     assert plan["arrays"] and plan["array_y_nm"] > 0
+    verify_macro_routes(c, build_macro(c))
 
 
 @pytest.mark.parametrize(
@@ -69,9 +87,7 @@ def test_disconnected_replica_bitline_is_rejected():
     from chipforge_asap7.brom.dense_macro import dense_macro_layout
 
     _, plan = dense_macro_layout(c)
-    _, _, (x, y), _ = next(
-        r for r in plan["routes"] if r[0] == "RBL<0>" and r[1] == "V4"
-    )
+    _, _, (x, y), _ = next(r for r in plan["routes"] if r[0] == "RBL" and r[1] == "V4")
     count = []
 
     def remove(points, layer, datatype):

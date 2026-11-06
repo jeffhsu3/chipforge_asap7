@@ -96,7 +96,9 @@ def test_self_timed_with_sizing_keeper_and_register(tmp_path):
     assert r["controller"] == "replica_feedback"
     assert r["replica_integrated"] and not r["timing_qualified"]
     assert not r["replica"]["feedback_timing_qualified"]
-    assert r["replica"]["columns"] == 2 and r["replica"]["blocks"] == 2
+    # Each half of a 2-bit macro has one column: no dummy loads are needed.
+    assert r["replica"]["columns"] == 1 and r["replica"]["blocks"] == 2
+    assert r["replica"]["candidate_gates"] == 1 and r["replica"]["dummy_loads"] == 0
     assert "READ_READY" not in r["pins"]
     assert r["control_distribution"]["nets"]
     assert not r["control_distribution"]["wire_rc_included"]

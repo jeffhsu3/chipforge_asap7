@@ -40,16 +40,26 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
             "replica exceeds single tap row reach; reduce depth or extra_blocks"
         )
     last = blocks - 1
+    # One observed bitline, the full array height plus extra blocks. Its
+    # candidate carries as many selector gates as a real candidate can in one
+    # half: the observed gate in the last block, the rest dummies. A dummy
+    # drains to VSS, so it is only gate load; switching on with its drain and
+    # source tied keeps it in the linear region, at least the gate charge of a
+    # real selector discharging a bitline. The dummies fill dummy columns from
+    # the last block down, so the replica stays a narrow strip.
+    dummies = spec.half_columns - 1
+    width = -(-dummies // blocks)
+    loads = {(last - i // width, i % width) for i in range(dummies)}
+    loads.add((last, width))
     mapping = tuple(
-        tuple(15 if b == last else 0 for _ in range(spec.columns))
+        tuple(15 if (b, col) in loads else 0 for col in range(width + 1))
         for b in range(blocks)
     )
-    aliases = {
-        f"C<{b},{k}>": f"RC<{b},{k}>" if b == last else "VSS"
-        for b in range(blocks)
-        for k in range(16)
-    }
-    aliases.update({f"BL<{col}>": f"RBL<{col}>" for col in range(spec.columns)})
+    candidate = f"RC<{last},15>"
+    aliases = {f"C<{b},{k}>": "VSS" for b in range(blocks) for k in range(16)}
+    aliases.update({f"C<{b},15>": candidate for b, _ in loads})
+    aliases.update({f"BL<{col}>": "VSS" for col in range(width)})
+    aliases[f"BL<{width}>"] = "RBL"
     aliases["VSS"] = "VSS"
 
     def gate(kind, *nets):
@@ -64,7 +74,7 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
             source = target
 
     # Match EVAL -> evaluate -> block SEL -> candidate, including the full
-    # sixteen-AND SEL load. Every replica column selects candidate 15.
+    # sixteen-AND SEL load. Only candidate 15 has gates.
     evaluate, sel = c.node(), c.node()
     gate("and2", "EVAL", "PRECHN", evaluate)
     gate("and2", "VDD", evaluate, sel)
@@ -73,21 +83,21 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
     devices = set()
     for b, row in enumerate(mapping):
         for col, k in enumerate(row):
-            c.fet(False, f"RBL<{col}>", aliases[f"C<{b},{k}>"], "VSS")
+            drain = aliases[f"BL<{col}>"]
+            c.fet(False, drain, aliases[f"C<{b},{k}>"], "VSS")
             devices.add(c.devices[-1].name)
-            c.fet(False, f"RBL<{col}>", "VSS", "VSS")
+            c.fet(False, drain, "VSS", "VSS")
             devices.add(c.devices[-1].name)
-    for col in range(spec.columns):
-        start = len(c.devices)
-        add_readout(
-            c,
-            f"RBL<{col}>",
-            f"RDOUT<{col}>",
-            keeper_fins=spec.keeper_fins,
-            keeper_stack=spec.keeper_stack,
-        )
-        c.group_since(f"replica_readout_{col}", start)
-    data = f"RDOUT<{spec.columns - 1}>"
+    start = len(c.devices)
+    add_readout(
+        c,
+        "RBL",
+        "RDOUT",
+        keeper_fins=spec.keeper_fins,
+        keeper_stack=spec.keeper_stack,
+    )
+    c.group_since("replica_readout", start)
+    data = "RDOUT"
     if spec.ways == 4:
         muxed = c.node()
         c.mux4([data, "VSS", "VSS", "VSS"], ["VDD", "VSS", "VSS", "VSS"], muxed)
@@ -103,7 +113,6 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
     gate("and2", "EVAL", "RVALID", "READ_READY")
     # Fast assertion, guarded release. The direct EVAL term covers startup
     # before the loaded candidate has risen; the candidate tail covers return.
-    candidate = f"RC<{last},15>"
     tail = c.node()
     delay(candidate, tail, replica.guard_pairs)
     pending = "EVAL"
@@ -129,6 +138,7 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
         aliases,
         replica.guard_pairs,
         replica.extra_blocks,
+        dummies,
     )
 
 

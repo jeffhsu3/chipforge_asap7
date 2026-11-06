@@ -35,7 +35,7 @@ def dense_units(circuit, *, exclude=()):
     groups = [
         (n, m)
         for n, m in circuit.placement_groups
-        if n.startswith(("readout_", "replica_readout_"))
+        if n.startswith(("readout_", "replica_readout"))
     ]
     groups += [
         (f"{kind}_{i}", members)

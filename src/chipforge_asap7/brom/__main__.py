@@ -218,7 +218,9 @@ def main(argv: list[str] | None = None) -> None:
         "replica": (
             {
                 "blocks": len(macro.replica.selector.mapping),
-                "columns": spec.columns,
+                "columns": len(macro.replica.selector.mapping[0]),
+                "candidate_gates": macro.replica.dummy_loads + 1,
+                "dummy_loads": macro.replica.dummy_loads,
                 "guard_pairs": macro.replica.guard_pairs,
                 "extra_blocks": macro.replica.extra_blocks,
                 "candidate": 15,
