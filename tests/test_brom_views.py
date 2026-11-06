@@ -24,6 +24,7 @@ from chipforge_asap7.brom import (
     size_wire_rc_distribution,
 )
 from chipforge_asap7.brom.views import macro_lef, macro_verilog
+from chipforge_asap7.layout.layers import LAYERS
 
 SHAPES = {
     "phases": macro_circuit,
@@ -105,6 +106,38 @@ def test_klayout_reads_the_lef(tmp_path):
     assert (cell.bbox().width(), cell.bbox().height()) == (x1 - x0, y1 - y0)
     layers = {layout.get_info(i).name for i in layout.layer_indexes()}
     assert {"M5.PIN", "M1.OBS", "M4.OBS", "M5.OBS"} <= layers
+
+
+def test_placed_gds_lands_on_the_lef_footprint(tmp_path):
+    """A host's DEF places the LEF; its GDS assembly (KLayout here, as in the
+    L-Unit flow) must put the macro's geometry on that footprint. The GDS
+    boundary starts below y = 0, so FOREIGN's sign matters."""
+    kdb = pytest.importorskip("klayout.db")
+    spec = BromSpec(4, 1)
+    c = macro_circuit(spec, words_for(spec))
+    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    top = build_macro(c, lib=lib)
+    (x0, y0), (x1, y1) = top.get_bounding_box()
+    assert y0 < 0
+    (tmp_path / "macro.lef").write_text(macro_lef(c, top))
+    lib.write_gds(str(tmp_path / "macro.gds"))
+    at = (10000, 20000)
+    (tmp_path / "host.def").write_text(
+        "VERSION 5.8 ;\nDESIGN host ;\nUNITS DISTANCE MICRONS 1000 ;\n"
+        f"DIEAREA ( 0 0 ) ( 200000 200000 ) ;\nCOMPONENTS 1 ;\n"
+        f"- u0 {c.name} + FIXED ( {at[0]} {at[1]} ) N ;\nEND COMPONENTS\n"
+        "END DESIGN\n"
+    )
+    options = kdb.LoadLayoutOptions()
+    options.lefdef_config.lef_files = [str(tmp_path / "macro.lef")]
+    options.lefdef_config.macro_layout_files = [str(tmp_path / "macro.gds")]
+    options.lefdef_config.read_lef_with_def = False
+    layout = kdb.Layout()
+    layout.read(str(tmp_path / "host.def"), options)
+    boundary = layout.layer(LAYERS["BOUNDARY"]["layer"], LAYERS["BOUNDARY"]["datatype"])
+    placed = layout.top_cell().bbox_per_layer(boundary)
+    assert (placed.left, placed.bottom) == at
+    assert (placed.width(), placed.height()) == (x1 - x0, y1 - y0)
 
 
 def test_verilog_rejects_other_words():

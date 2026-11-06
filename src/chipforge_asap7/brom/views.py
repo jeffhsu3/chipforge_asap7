@@ -56,8 +56,10 @@ def _rects(top: Any, layer: str) -> list[tuple[float, float, float, float]]:
 def macro_lef(circuit: Any, top: Any, name: str | None = None) -> str:
     """LEF 5.8 abstract of `top`, the cell `build_macro(circuit)` returned.
 
-    Coordinates move so the boundary's lower-left corner is the LEF origin;
-    ``FOREIGN`` gives where the GDS origin then sits. Each pin is the metal
+    Coordinates move so the boundary's lower-left corner is the LEF origin.
+    ``FOREIGN``'s point is, per the LEF spec, that origin in the GDS cell's
+    coordinates, so a placer puts the GDS origin at the LEF origin minus it
+    (as KLayout's DEF reader does). Each pin is the metal
     shape under its label: an M5 column reaching the bottom edge, or an M4
     bar reaching a side. M1-M3 are blocked over the whole footprint, M4-M6
     only where they are drawn. `name` overrides the macro's name in the LEF.
@@ -111,7 +113,7 @@ def macro_lef(circuit: Any, top: Any, name: str | None = None) -> str:
             "",
             f"MACRO {name}",
             "  CLASS BLOCK ;",
-            f"  FOREIGN {name} {_um(-x0)} {_um(-y0)} ;",
+            f"  FOREIGN {name} {_um(x0)} {_um(y0)} ;",
             "  ORIGIN 0 0 ;",
             f"  SIZE {_um(x1 - x0)} BY {_um(y1 - y0)} ;",
             "  SYMMETRY X Y ;",
