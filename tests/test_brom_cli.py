@@ -70,7 +70,34 @@ def test_external_phases(tmp_path):
         assert (out / artifact["gds"]).is_file()
         assert (out / artifact["cdl"]).is_file()
         assert (out / f"{role}.lvs.spice").is_file()
+        certificates = artifact["routing_certificates"]
+        if role == "cgen":
+            assert not certificates  # Fixed lane routing has no channel solve.
+        else:
+            assert certificates
+        for cert in certificates:
+            assert cert["track_count"] == max(cert["tracks"]) + 1
+            assert (
+                len(cert["clique_witness"])
+                <= cert["lower_bound"]
+                <= cert["track_count"]
+            )
+            assert cert["optimal"] == (cert["lower_bound"] == cert["track_count"])
+            assert cert["method"] in ("greedy", "sweep", "cp_sat")
+            assert cert["solver_status"] in (None, "OPTIMAL", "FEASIBLE", "UNKNOWN")
     macro = r["artifacts"]["macro"]
+    physical = r["physical_plan"]
+    assert macro["routing_certificates"] == physical["routing_certificates"]
+    assert {c["channel"] for c in macro["routing_certificates"]} == {"row", "header"}
+    # Every certificate describes wires in the emitted plan, with the right
+    # keepout removed and each track translated into its actual M4 height.
+    routes = {(n, layer, tuple(a), tuple(b)) for n, layer, a, b in physical["routes"]}
+    for cert in macro["routing_certificates"]:
+        for net, track, (a, b) in zip(
+            cert["nets"], cert["tracks"], cert["intervals_nm"]
+        ):
+            y = cert["track_y_nm"] + cert["pitch_nm"] * track
+            assert (net, cert["layer"], (a, y), (b - cert["end_space_nm"], y)) in routes
     assert (out / macro["lef"]).read_text().startswith("VERSION 5.8")
     assert f"module {macro['cell']} " in (out / macro["verilog"]).read_text()
 

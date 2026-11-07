@@ -25,11 +25,8 @@ def measure(c):
     bounds = top.get_bounding_box()
     width, height = map(float, bounds[1] - bounds[0])
     physical = dense_macro_layout(c)[1] if c.array else None
-    certificates = (
-        physical["placement_certificates"]
-        if physical
-        else periphery_plan(c).certificates
-    )
+    plan = periphery_plan(c) if physical is None else None
+    certificates = physical["placement_certificates"] if physical else plan.certificates
     result = {
         "width_nm": width,
         "height_nm": height,
@@ -37,6 +34,9 @@ def measure(c):
         "transistors": len(c.devices),
         "geometry_digest": geometry_digest(top),
         "placement_certificates": certificates,
+        "routing_certificates": physical["routing_certificates"]
+        if physical
+        else plan.routing_certificates,
     }
     if c.array:
         result["physical_sha256"] = dense_macro_layout(c)[1]["physical_sha256"]

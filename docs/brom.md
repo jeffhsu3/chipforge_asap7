@@ -94,22 +94,93 @@ cover the worst image.
 
 ### Wide words
 
-Split a word much wider than 32 bits across several macros that share A, CLK and
-RESETN. A single registered 148-bit macro does not route (tried at 16x148 m1 and
-64x148 m4; 1024x148 m4 also fails). Cell density per bit is the same as at 32 bits,
-but bitlines sit at 108 nm pitch in two half-arrays with the replica strip
-beyond them, so data cells must spread across the whole bank to fit. Each bit's
-offset from its bitline grows with the width, so wire demand grows with its square
-while track capacity grows linearly. Row and placement changes reduced the
-congestion but did not clear it.
+Words with at least 64 output bits use local bit tiles before trying flat
+placement. Each tile holds one bit's sampling receiver, latch and output
+register per row. Mux1 includes
+the readout in that run; mux4 aligns its readouts with the physical bitlines in
+four interleaved rows above the tiles. The completion and control logic follows
+the actual x and y positions of the receiving cells. This trades additional
+cell rows for shorter local data connections.
 
-| Shape | Area of one macro | Five macros (150 bits) |
+Single registered, self-timed 148-bit macros now route and pass DRC and LVS
+with random words (two fins, RVT, no keeper):
+
+| Shape | Width × height | Area |
 |---|---|---|
-| 64x30 m1 | 321 um² | 1,603 um² |
-| 64x30 m4 | 791 um² | 3,956 um² |
-| 256x30 m1 | 2,337 um² | 11,684 um² |
+| 16x148 m1 | 33.264 × 19.187 µm | 638.236 µm² |
+| 64x148 m4 | 85.968 × 9.683 µm | 832.428 µm² |
+| 1024x148 m4 | 83.376 × 40.787 µm | 3400.657 µm² |
+| 1088x148 m4 | 83.376 × 46.835 µm | 3904.915 µm² |
 
-All three are registered and self-timed, and pass DRC and LVS with random words.
+At equal bank widths and row counts, mean terminal half-perimeter wire length
+over `DOUT`, `SAMPLED` and `REG_DATA` nets falls from 10.431 to 0.630 µm for
+16x148 m1, and from 7.990 to 3.460 µm for 64x148 m4. These are placement
+estimates, not routed lengths or timing measurements. Build manifests and the
+comparison are under `build/brom_placement`, including a plot in
+`placement_comparison.png`. The tradeoff is a taller peripheral bank,
+particularly for mux1; timing has not been characterized for these layouts.
+
+For the deeper decoder, the compiler also tries vertically spread decoder
+stages and joint placement/routing repair. It selects the most congested
+region, then uses CP-SAT to change cell x positions, M5 columns and M6 bus
+tracks together. Each bit's local datapath stays together. The model keeps
+cell order and rows, body-tap gaps, M5 vertical extents and net grouping;
+fixed geometry outside the region remains an obstacle. It minimizes the
+sum of required M4 channel capacities, with eight tracks per row as the
+target. Full-bank track assignment, including corner spacing, must pass
+before the compiler accepts the candidate.
+
+More precisely, let `I[n,r](x,c)` be a net group's horizontal interval in
+row `r`, spanning its cell pins and M5 column after grid rounding and end
+clearance. Within the selected window the model solves
+`minimize Σr C[r]`, subject to `Σn 1[t in I[n,r](x,c)] <= C[r]` at every
+horizontal grid position `t`, and `C[r] >= 8`. Legal cell spacing, tap gaps,
+M5 separation and M6 bus spacing constrain the same variables. Reaching
+`8 × number_of_modeled_rows` proves the overlap-capacity objective has
+reached its lower bound; the separate track assignment checks the remaining
+M4 corner rules.
+
+The 1024x148 m4 build repaired seven regions. All seven solves reached their
+local capacity lower bounds, and the resulting macro passed full DRC and
+transistor LVS (205,838 matched devices). Its artifacts are under
+`build/brom_joint/1024x148_m4`. The 1088x148 m4 build uses 34 cell rows and
+five repairs, also reaching every local capacity lower bound and passing
+DRC and LVS (217,858 matched devices). Its artifacts are under
+`build/brom_joint/1088x148_m4`. Both builds pass DRC and LVS for all six
+exported circuits; `build/brom_joint/qualification_summary.json` collects
+their results and physical hashes.
+
+Starting from the tiled 24-row placement, joint repair reduces peak M4
+overlap from 11 to 8 and removes all overlap overflow, without adding rows
+or width. The sum of local horizontal M4 spans rises from 2.451 to 2.524 mm
+(about 3%); that is the wire length tradeoff for resolving congestion in
+this candidate. The comparison is plotted in
+`build/brom_joint/1024_congestion.png`, with its data alongside it.
+
+The physical manifest's `joint_optimization` records report each window,
+movement limit, solver status, capacity objective and lower bound. An
+`OPTIMAL` result proves that restricted capacity objective only; it does not
+prove minimum macro area, height or wire length. `UNKNOWN` leaves the original
+candidate intact, and a failed bounded search does not prove the macro
+unroutable. These reports are excluded from physical identity hashes.
+
+- [ ] **TODO: Parameterized placement and routing templates.** Generalize bit
+  tiles, decoder placement, row sizing, tap gaps and reserved routing tracks
+  across depth, word width, mux ratio and cell geometry. Define the supported
+  family, derive its routing-capacity bounds, and validate a broad size sweep
+  with complete routing, DRC and LVS. Keep the joint solver in the compiler as
+  a fallback while these guarantees are incomplete or a template does not apply.
+
+Larger depths also have a separate array constraint: selector and replica
+devices must remain within 30 µm of the single body-tap row. At mux4, the
+current array permits at most 69 blocks, or 1104 words; the default self-timed
+replica adds one block, limiting that configuration to 1088 words. A 2048-word
+macro requires additional array tap rows or an internally banked array before
+placement optimization can apply. Timing remains unqualified.
+
+The earlier failures used flat placement and do not establish a fundamental
+148-bit limit or unavoidable quadratic wiring demand. Words can also be split
+across several macros sharing A, CLK and RESETN when that suits integration.
 
 ## Circuit and programming
 
@@ -192,6 +263,18 @@ individually tapped transistor tiles. Placement certificates distinguish a
 proved gate-slot bound from routing width and overall macro area: this is
 **not a global minimum-area proof**.
 
+M4 row and header channels first try greedy assignment and seeded sweeps
+against the interval-clique lower bound, then fall back to CP-SAT. If CP-SAT
+stops before finding an incumbent (`UNKNOWN`), the compiler keeps its validated
+greedy route. Each artifact's `routing_certificates` records the fixed intervals,
+net order, tracks, clique witness, track count, lower bound, assignment method
+(`greedy`, `sweep`, or `cp_sat`), and raw `solver_status` (null for the fast paths).
+`optimal` is true only when the track count meets the lower bound, which combines
+the clique and any stronger solver bound. A feasible route above that bound
+remains explicitly unproved. These certificates also appear in the macro's
+`physical_plan` and the area report; fixed CGEN lane routing has no channel
+certificates. Proof metadata is excluded from the physical geometry identity.
+
 The two selector halves flank a central CGEN spine. Each 432 nm block has
 sixteen dense AND2 cells per half. Complete mux groups stay on one side,
 including odd output widths. Independent left/right candidate drivers are
@@ -229,8 +312,14 @@ and keeps the one that puts the arrays lowest: fins and M4 tracks lie on
 absolute 27 and 48 nm grids, so the arrays start on a multiple of 432 nm, one
 track pitch above the highest header track and the join stubs below the
 array. A row count that does not route is retried with its cells spread
-toward uniform density. If nothing routes inside the array
-footprint, the bank falls back to electrical-order rows: at each width it
+toward uniform density. Words with at least 64 output bits try local bit tiles
+first; smaller banks try tiles after the flat placements fail. The tiles use
+the actual readout, mux, receiver and register cell widths, reserve body-tap
+gaps, and place the remaining control cells around fixed data pins in both
+dimensions. Failed tiles also try vertically spread decoder stages and a
+bounded joint cell/column/bus search, with full-bank routing checked after
+each local repair. If these placements do not route inside the array footprint, the bank
+falls back to electrical-order rows: at each width it
 tries rows filled to 100%, 75% and 50%, with the cells spread across the
 width, before widening by 10%. Standalone banks always use electrical order.
 

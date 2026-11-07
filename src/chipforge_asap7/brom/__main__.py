@@ -275,10 +275,14 @@ def main(argv: list[str] | None = None) -> None:
         reference = args.out / f"{role}.lvs.spice"
         reference.write_text(circuit.lvs_reference())
         bounds = top.get_bounding_box()
+        plan = periphery_plan(circuit) if role != "macro" else None
         record = {
             "placement_certificates": physical["placement_certificates"]
             if role == "macro"
-            else periphery_plan(circuit).certificates,
+            else plan.certificates,
+            "routing_certificates": physical["routing_certificates"]
+            if role == "macro"
+            else plan.routing_certificates,
             "cell": circuit.name,
             "transistors": len(circuit.devices),
             "gds": gds.name,

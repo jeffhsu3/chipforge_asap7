@@ -95,14 +95,17 @@ def unit_gap(a, b):
     return edge_gap(a.plan.edges[1], b.plan.edges[0], share=a.vt == b.vt)
 
 
-def _legalize(blocks, widths, targets, segments, climb, gap, wall, sink=None):
+def _legalize(
+    blocks, widths, targets, segments, climb, gap, wall, sink=None, *, row_targets=None
+):
     """Abacus: blocks in target order, each into its cheapest segment.
 
     ``climb[k]`` is the cost per row below the top row for block k, whose port
     columns rise through every row above it; ``sink[k]`` the cost per row
     above the bottom row, for columns that descend to a bottom pin. ``gap(j,
     k)`` is the (join, free) spacer between blocks j and k; ``wall(k)`` the
-    spacer block k needs at the start of a row.
+    spacer block k needs at the start of a row. With ``row_targets``, score
+    both row displacement and every block shifted by a cluster merge.
     """
     sink = sink or [0] * len(blocks)
     top = max(row for row, _, _ in segments)
@@ -148,6 +151,19 @@ def _legalize(blocks, widths, targets, segments, climb, gap, wall, sink=None):
             row = segments[s][0]
             cost = abs(x - targets[block]) + climb[block] * (top - row)
             cost += sink[block] * row
+            if row_targets is not None:
+                before = sum(
+                    abs(cx + off - targets[j])
+                    for cx, _, _, _, entries in state[s]
+                    for j, off in entries
+                )
+                after = sum(
+                    abs(cx + off - targets[j])
+                    for cx, _, _, _, entries in trial
+                    for j, off in entries
+                )
+                cost += after - before - abs(x - targets[block])
+                cost += 432 * abs(row - row_targets[block])
             if best is None or cost < best[0]:
                 best = (cost, s)
         if best is None:

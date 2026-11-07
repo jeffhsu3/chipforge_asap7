@@ -775,6 +775,8 @@ def build_dense_macro(c, spec=None):
     box(top, "BOUNDARY", *bounds[0], *bounds[1])
     return top, {
         "certificates": certificates,
+        "routing_certificates": bank.routing_certificates,
+        "joint_optimization": bank.joint_optimization,
         "ports": ports,
         "arrays": arrays,
         "bottom_units": bank.units,
@@ -845,6 +847,8 @@ def dense_macro_layout(c):
         top, meta = build_dense_macro(c)
         canonicalize_cells(top)
         certificates = meta.pop("certificates")
+        routing_certificates = meta.pop("routing_certificates")
+        joint_optimization = meta.pop("joint_optimization")
         meta["schema"] = "brom_dense_physical_v1"
         geometry = sha256()
         for layer, polygons in sorted(top.get_polygons(by_spec=True).items()):
@@ -854,6 +858,8 @@ def dense_macro_layout(c):
         meta["geometry_sha256"] = geometry.hexdigest()
         meta["physical_sha256"] = sha256(repr((key, meta)).encode()).hexdigest()
         meta["placement_certificates"] = certificates
+        meta["routing_certificates"] = routing_certificates
+        meta["joint_optimization"] = joint_optimization
         c._dense_layout = (key, top, meta)
     _, top, meta = c._dense_layout
     result = deepcopy(top)

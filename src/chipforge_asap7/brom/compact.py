@@ -6,7 +6,9 @@ budget runs out; it is not a transistor-area minimum. Keep functional placement
 groups and all device dimensions intact.
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
+from math import ceil
 from random import Random
 
 
@@ -25,6 +27,52 @@ def compact_periphery(circuit):
 #: Sweeps to try for the clique bound before falling back to CP-SAT. A stuck
 #: sweep stops early, so a problem whose bound is out of reach costs little.
 SWEEP_TRIES = 200
+
+
+@dataclass(frozen=True)
+class TrackAssignment:
+    """Legal tracks and the evidence bounding their minimum channel height.
+
+    Preserve the original ``(tracks, witness)`` sequence interface. The solver
+    status is None for the fast paths; ``optimal`` also recognizes their clique
+    proofs and a greedy fallback that meets a solver-proved lower bound.
+    """
+
+    tracks: tuple[int, ...]
+    witness: tuple[int, ...]
+    lower_bound: int
+    method: str
+    solver_status: str | None = None
+
+    def __iter__(self):
+        return iter((self.tracks, self.witness))
+
+    def __getitem__(self, key):
+        return (self.tracks, self.witness)[key]
+
+    def __len__(self):
+        return 2
+
+    @property
+    def track_count(self):
+        return max(self.tracks) + 1
+
+    @property
+    def optimal(self):
+        return self.track_count == self.lower_bound
+
+    def certificate(self, intervals, end_space):
+        return {
+            "intervals_nm": intervals,
+            "end_space_nm": end_space,
+            "tracks": self.tracks,
+            "clique_witness": self.witness,
+            "track_count": self.track_count,
+            "lower_bound": self.lower_bound,
+            "optimal": self.optimal,
+            "method": self.method,
+            "solver_status": self.solver_status,
+        }
 
 
 def _clearance(intervals, end_space, i, j):
@@ -119,8 +167,8 @@ def _sweep(intervals, end_space, count, rng):
 def solve_tracks(intervals, end_space=0):
     """Fewest tracks by CP-SAT, seeded with the greedy result.
 
-    Exact unless its deterministic budget runs out, which leaves a legal
-    channel that may not be minimal.
+    Return a TrackAssignment. If the budget runs out before an incumbent is
+    found, retain the validated greedy route and any solver lower bound.
     """
     try:
         from ortools.sat.python import cp_model
@@ -154,16 +202,29 @@ def solve_tracks(intervals, end_space=0):
     solver.parameters.max_deterministic_time = 30
     solver.parameters.max_time_in_seconds = 600
     status = solver.solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE, cp_model.UNKNOWN):
         raise RuntimeError(
             f"peripheral channel optimization: {solver.status_name(status)}"
         )
-    return tuple(solver.value(t) for t in tracks), witness
+    lower_bound = max(len(witness), ceil(solver.best_objective_bound))
+    if status == cp_model.UNKNOWN:
+        if not _legal(intervals, end_space, hint):
+            raise RuntimeError("peripheral channel optimization: illegal greedy route")
+        return TrackAssignment(
+            tuple(hint), witness, lower_bound, "greedy", solver.status_name(status)
+        )
+    return TrackAssignment(
+        tuple(solver.value(t) for t in tracks),
+        witness,
+        lower_bound,
+        "cp_sat",
+        solver.status_name(status),
+    )
 
 
 @lru_cache(maxsize=4096)
 def assign_tracks(intervals, end_space=0):
-    """Return track indices and the clique that bounds their count.
+    """Return a TrackAssignment with track indices and optimality evidence.
 
     Intervals include the metal's right-end spacing keepout. Touching keepout
     boundaries are legal. Physical touching tips additionally require a
@@ -179,10 +240,10 @@ def assign_tracks(intervals, end_space=0):
     witness = _clique(intervals)
     hint = _greedy(intervals, end_space)
     if max(hint) + 1 == len(witness):
-        return tuple(hint), witness
+        return TrackAssignment(tuple(hint), witness, len(witness), "greedy")
     rng = Random(0)
     for _ in range(SWEEP_TRIES):
         tracks = _sweep(intervals, end_space, len(witness), rng)
         if tracks is not None and _legal(intervals, end_space, tracks):
-            return tuple(tracks), witness
+            return TrackAssignment(tuple(tracks), witness, len(witness), "sweep")
     return solve_tracks(intervals, end_space)

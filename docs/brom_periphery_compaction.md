@@ -67,12 +67,15 @@ could spend 100 s and stop at its budget one track short.
 CP-SAT runs only when both miss, because corner spacing can require more tracks
 than the clique bound and only a solver can show that. It uses one worker, a
 fixed seed and a deterministic budget. If the budget runs out it keeps the best
-legal assignment, which may not be minimal. The `slow` test
+legal assignment, which may not be minimal; `UNKNOWN` retains the validated
+greedy route when no solver incumbent exists. The `slow` test
 `test_tracks_match_cp_sat_on_a_real_build` compares the result with CP-SAT on a
 real build; run it periodically with `pytest --runslow tests/test_brom_compact.py`.
 
-The manifest records each row's intervals, track assignment, solver status,
-objective/bound and clique witness, for the macro and every standalone unit.
+The current compiler's `routing_certificates` record each emitted M4 row and
+header's intervals, track assignment, method, raw solver status, track count,
+lower bound, optimality flag and clique witness, for the macro and standalone
+banks. Fixed CGEN lane routing has no channel certificates.
 These are channel-width certificates, **not proofs of globally minimum
 transistor layout or macro area**. Device ordering, diffusion sharing and
 alternative floorplans remain outside this search.
