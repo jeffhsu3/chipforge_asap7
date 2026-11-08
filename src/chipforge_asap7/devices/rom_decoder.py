@@ -1445,6 +1445,11 @@ class RomDecoderSpec:
         return y0 + local if row % 2 == 0 else y0 + self.row_height - local
 
     @property
+    def macro_name(self) -> str:
+        """``build_rom``'s default name: this shape's, whatever its contents."""
+        return f"rom_{self.cell_name.removeprefix('rom_decoder_')}"
+
+    @property
     def cell_name(self) -> str:
         tag = ""
         identity = (
@@ -1854,7 +1859,7 @@ def build_rom(
     if spec.control:
         sites += [(w, spec.replica_bit) for w in range(spec.array.words)]
     decoder = build_rom_decoder(spec, lib=lib)
-    cell = _new_cell(lib, name or f"rom_{spec.cell_name.removeprefix('rom_decoder_')}")
+    cell = _new_cell(lib, name or spec.macro_name)
     if spec.lane:
         n, half = spec.half.words, spec.half
         for side, (x, label, edge) in enumerate(
@@ -1863,7 +1868,7 @@ def build_rom(
             array = build_rom_array(
                 half,
                 [(w - side * n, b) for w, b in sites if (w >= n) == side],
-                name=f"{spec.cells.cell_name}_{('left', 'right')[side]}",
+                name=f"{cell.name}_{('left', 'right')[side]}",
                 lib=lib,
                 bitline=label,
                 bitline_side=edge,  # type: ignore[arg-type]
@@ -2113,17 +2118,42 @@ def main(argv: list[str] | None = None) -> None:
                 "Also write the macro's LEF, Verilog and estimated Liberty to "
                 "this directory; needs --edge_pins.",
             ),
+            Option(
+                "words",
+                Path | None,
+                None,
+                "JSON array of unsigned word values to program; replaces --pattern. "
+                "A 1 is a programmed bit, and reads back as 1.",
+            ),
+            Option(
+                "package",
+                Path | None,
+                None,
+                "Write the whole macro to this directory: GDS, CDL, views, the "
+                "stable-named abstract and manifest.json; needs --edge_pins and "
+                "replaces --out, --cdl and --views.",
+            ),
+            Option("drc", bool, False, "Run gdscheck on the packaged macro."),
+            Option("lvs", bool, False, "Run LVS of the packaged macro on its CDL."),
         ),
     )
     spec: RomDecoderSpec = args.spec
     sizing = None
     search = None
+    sites: list[tuple[int, int]] | None = None
     size_options = (
         {"wl_load_fF": args.wl_load_ff, "stage_effort": args.stage_effort}
         if args.auto_size or args.wl_load_ff is not None
         else None
     )
     try:
+        if args.package is None and (args.drc or args.lvs):
+            raise ValueError("--drc and --lvs check a macro written by --package")
+        if args.package is not None:
+            if args.out is not None or args.cdl is not None or args.views is not None:
+                raise ValueError("--package replaces --out, --cdl and --views")
+            if not spec.edge_pins:
+                raise ValueError("--package writes a placeable macro: add --edge_pins")
         if args.search or args.pack:
             from .rom_search import (
                 RomShapeSearch,
@@ -2167,25 +2197,43 @@ def main(argv: list[str] | None = None) -> None:
 
             sizing = size_rom_decoder(spec, **size_options)
             spec = sizing.spec
-    except ValueError as exc:
+        if args.words is not None:
+            import json
+
+            from .rom_package import sites_from_words
+
+            sites = sites_from_words(json.loads(args.words.read_text()), spec)
+    except (OSError, TypeError, ValueError) as exc:
         import sys
 
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     array = spec.array
     every = [(w, b) for w in range(array.words) for b in range(array.bits)]
-    sites = {
-        "none": [],
-        "all": every,
-        "checker": [(w, b) for w, b in every if (w + b) % 2],
-    }[args.pattern]
-    cell, out = write_gds(lambda lib: build_rom(spec, sites, lib=lib), args.out)
-    print(f"✓ {cell.name} -> {out}")
+    if sites is None:
+        sites = {
+            "none": [],
+            "all": every,
+            "checker": [(w, b) for w, b in every if (w + b) % 2],
+        }[args.pattern]
+    failed = False
+    if args.package is not None:
+        from .rom_package import rom_image_name, write_rom_package
+
+        failed = write_rom_package(
+            spec, sites, args.package, drc=args.drc, lvs=args.lvs
+        )
+        top_name, out = rom_image_name(spec, sites), args.package / "macro.gds"
+        print(f"✓ {top_name} -> {args.package / 'manifest.json'}")
+    else:
+        cell, out = write_gds(lambda lib: build_rom(spec, sites, lib=lib), args.out)
+        top_name = cell.name
+        print(f"✓ {top_name} -> {out}")
     if args.cdl is not None:
         from .rom_netlist import rom_macro_cdl, rom_macro_ports
 
         args.cdl.parent.mkdir(parents=True, exist_ok=True)
-        args.cdl.write_text(rom_macro_cdl(spec, sites, name=cell.name))
+        args.cdl.write_text(rom_macro_cdl(spec, sites, name=top_name))
         print(f"  CDL -> {args.cdl}: pins {' '.join(rom_macro_ports(spec))}")
     if args.views is not None:
         from .rom_views import rom_macro_views
@@ -2200,7 +2248,7 @@ def main(argv: list[str] | None = None) -> None:
         report_path = args.search_report or out.with_suffix(".search.json")
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report = search.report()
-        report["gds"] = {"path": str(out), "cell": cell.name}
+        report["gds"] = {"path": str(out), "cell": top_name}
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         print(
             f"  search: {len(search.candidates)} feasible shapes, {len(search.rejected)} rejected; "
@@ -2226,6 +2274,8 @@ def main(argv: list[str] | None = None) -> None:
             f"0..{spec.half.words - 1} | {spec.half.words}..{array.words - 1}; "
             f"bitlines BLL<b> | BLR<b>"
         )
+    if failed:
+        raise SystemExit("ROM physical checks failed; see manifest.json and reports")
 
 
 if __name__ == "__main__":  # pragma: no cover

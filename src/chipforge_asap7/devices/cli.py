@@ -135,11 +135,14 @@ def parse_spec(
     return args
 
 
-def write_gds(build: Callable[[Any], Any], out: Path | None) -> tuple[Any, Path]:
+def write_gds(
+    build: Callable[[Any], Any], out: Path | None, *, timestamp: Any = None
+) -> tuple[Any, Path]:
     """Build a cell into a fresh nanometre library and write it; return ``(cell, path)``.
 
     `build` takes the library and returns the top cell.  Without `out` the file
-    is named after that cell, in the current directory.
+    is named after that cell, in the current directory.  `timestamp` is the
+    file's date, by default now.
     """
     gdspy = require_gdspy()
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
@@ -152,5 +155,5 @@ def write_gds(build: Callable[[Any], Any], out: Path | None) -> tuple[Any, Path]
         gdspy.current_library = previous
     path = out or Path(f"{cell.name}.gds")
     path.parent.mkdir(parents=True, exist_ok=True)
-    library.write_gds(str(path))
+    library.write_gds(str(path), timestamp=timestamp)
     return cell, path
