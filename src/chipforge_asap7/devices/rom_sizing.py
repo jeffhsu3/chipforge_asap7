@@ -318,7 +318,13 @@ def size_rom_decoder(
         stages["pre_driver"] = _stage(
             "pre_driver", current.pre_slot.inverter, 1, loads[2], model
         )
-        gates = network(current.address_bits, current.pa_bits, current.row_bits)
+        gates = network(
+            current.address_bits,
+            current.pa_bits,
+            current.row_bits,
+            current.enable_line,
+            address=current.address_line,
+        )
 
         def time(line: str) -> float:
             if line not in arrival:

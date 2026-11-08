@@ -91,10 +91,23 @@ def validate_placement(
             raise ValueError("predecoder columns must be contiguous and fill both rows")
 
 
-def network(address_bits: int, pa_bits: int, row_bits: int) -> dict[str, Gate]:
+def network(
+    address_bits: int,
+    pa_bits: int,
+    row_bits: int,
+    enable: str | None = None,
+    address: str = "A",
+) -> dict[str, Gate]:
     """Every predecoder gate by the line it drives, inputs ``A<i>`` first.
 
     `pa_bits` low bits make ``PA``, the rest ``PB``; neither may be empty.
+    With `enable`, the top address bit's two literals are ANDed with that
+    line (``EA<n>`` and ``EAN<n>``) before they reach the ``PB`` tree: every
+    ``PB`` line has one of them, so no ``PB`` line, and no wordline, rises
+    while `enable` is low.  A one-bit ``PB`` group takes `enable` in its own
+    AND2 instead of the buffer's second input.  `address` names the
+    address lines, ``A<i>`` and their complements ``AN<i>`` by default; the
+    latched lines are ``AL<i>`` and ``ALN<i>``.
     """
     if not 0 < pa_bits < address_bits:
         raise ValueError(
@@ -105,17 +118,30 @@ def network(address_bits: int, pa_bits: int, row_bits: int) -> dict[str, Gate]:
 
     def literal(bit: int, value: int) -> str:
         if value:
-            return f"A<{bit}>"
-        name = f"AN<{bit}>"
-        gates.setdefault(name, Gate(name, (f"A<{bit}>",)))
+            return f"{address}<{bit}>"
+        name = f"{address}N<{bit}>"
+        gates.setdefault(name, Gate(name, (f"{address}<{bit}>",)))
+        return name
+
+    top = address_bits - 1
+
+    def gated(bit: int, value: int) -> str:
+        lit = literal(bit, value)
+        if enable is None or bit != top:
+            return lit
+        name = f"E{lit}"
+        gates.setdefault(name, Gate(name, (lit, enable)))
         return name
 
     def decode(lo: int, hi: int, value: int, name: str = "", split: int = 0) -> str:
         """The line for bits ``lo..hi-1`` equal to `value`."""
         if hi - lo == 1:
             if not name:
-                return literal(lo, value)
-            ins: tuple[str, ...] = (literal(lo, value),) * 2
+                return gated(lo, value)
+            if enable is not None and lo == top:
+                ins: tuple[str, ...] = (literal(lo, value), enable)
+            else:
+                ins = (literal(lo, value),) * 2
         else:
             mid = split or lo + (hi - lo) // 2
             low = decode(lo, mid, value & ((1 << (mid - lo)) - 1))

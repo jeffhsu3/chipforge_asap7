@@ -123,7 +123,13 @@ def optimize_rom_packing(
     baseline = _evaluate(spec, sizing)
     if not spec.predecode:
         return RomPackingResult(baseline, baseline, 1)
-    gates = network(spec.address_bits, spec.pa_bits, spec.row_bits)
+    gates = network(
+        spec.address_bits,
+        spec.pa_bits,
+        spec.row_bits,
+        spec.enable_line,
+        address=spec.address_line,
+    )
     fanout = Counter(line for gate in gates.values() for line in set(gate.ins))
     groups: list[list[str]] = [[] for _ in range(spec.pairs)]
     seen = set()

@@ -57,6 +57,9 @@ from .rom_bitcell import (
     build_rom_tap,
 )
 from .rom_decoder import RomDecoderSpec, build_rom, build_rom_decoder
+from .rom_lane import RomLaneSpec, build_rom_lane
+from .rom_control import RomControlSpec, build_rom_control_row
+from .rom_latch import RomAddressLatchRowSpec, build_rom_address_latch_row
 from .rom_search import (
     RomCandidate,
     RomMetrics,
@@ -66,6 +69,7 @@ from .rom_search import (
     rom_metrics,
     search_rom_shapes,
 )
+from .rom_sense import RomSenseRowSpec, build_rom_sense_row
 from .rom_sizing import RomDecoderSizing, size_rom_decoder
 from .row import RowBand, RowStack
 from .row_support import (
@@ -122,13 +126,17 @@ __all__ = [
     "NandSpec",
     "OutputLatch270Spec",
     "OutputLatchSpec",
+    "RomAddressLatchRowSpec",
+    "RomControlSpec",
     "RomArraySpec",
     "RomBitcellSpec",
     "RomCandidate",
     "RomDecoderSizing",
     "RomDecoderSpec",
+    "RomLaneSpec",
     "RomMetrics",
     "RomPackingResult",
+    "RomSenseRowSpec",
     "RomShapeSearch",
     "RowBand",
     "RowStack",
@@ -158,9 +166,13 @@ __all__ = [
     "build_output_latch",
     "build_output_latch_270",
     "build_rom",
+    "build_rom_address_latch_row",
+    "build_rom_control_row",
     "build_rom_array",
     "build_rom_bitcell",
     "build_rom_decoder",
+    "build_rom_lane",
+    "build_rom_sense_row",
     "build_rom_strap",
     "build_rom_tap",
     "build_row_support",

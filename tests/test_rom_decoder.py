@@ -379,6 +379,288 @@ def test_each_address_raises_its_own_wordline(tmp_path, words, interleave, lane)
         }, address
 
 
+def _settle(devices, net, inputs, held):
+    """`_switch_level` with charge: a net no source reaches keeps its `held` value.
+
+    The sources are VDD, VSS and the driven inputs.  The on transistors join
+    nets into groups (a source does not join the groups it drives); a group
+    takes the value of the sources it reaches.  One that reaches neither
+    keeps the charge its nets held, shared: one value if they held the same
+    one, unknown otherwise.  One that reaches both is a fight, unknown too:
+    a latch's two gates overlap for the inverter delay of its clock, as they
+    do in silicon.  A fight still standing once the nets settle is a short.
+    """
+    source = {net["VDD"]: 1, net["VSS"]: 0, **inputs}
+    nets = {t for d in devices for t in (*d["terminals"], d["gate"])} | set(held)
+    value = {**held, **source}
+    for _ in range(256):  # a self-timed read is a long chain of gates
+        parent: dict = {}
+
+        def find(n, parent=parent):
+            parent.setdefault(n, n)
+            while parent[n] != n:
+                parent[n] = parent[parent[n]]
+                n = parent[n]
+            return n
+
+        on = [
+            d["terminals"]
+            for d in devices
+            if (g := value.get(d["gate"])) is not None and g == (0 if d["pmos"] else 1)
+        ]
+        for a, b in on:
+            if a not in source and b not in source:
+                parent[find(a)] = find(b)
+        reach: dict = {}
+        for a, b in on:
+            for n, other in ((a, b), (b, a)):
+                if other in source and n not in source:
+                    reach.setdefault(find(n), set()).add(source[other])
+        charge: dict = {}
+        for n in nets - source.keys():
+            charge.setdefault(find(n), set()).add(held.get(n))
+        new = dict(source)
+        fights = set()
+        for n in nets - source.keys():
+            root = find(n)
+            levels = reach.get(root)
+            if levels is None:
+                levels = charge[root] - {None}
+            elif len(levels) > 1:
+                fights.add(root)
+            new[n] = next(iter(levels)) if len(levels) == 1 else None
+        if new == value:
+            assert not fights, "VDD shorted to VSS"
+            return value
+        value = new
+    raise AssertionError("the netlist did not settle")
+
+
+def test_a_read_puts_each_programmed_bit_on_its_leaf(tmp_path):
+    """Switch-level reads of the extracted ROM with its EVAL gate and sense lane.
+
+    Precharge with PRECHN and EVAL low: every bitline rises and no wordline
+    does.  Then PRECHN high and EVAL high: the addressed word's programmed
+    bits discharge their bitline, in that word's half only, the other
+    bitlines hold their charge, and each ``D<b>`` reads the bit.  With EVAL
+    held low nothing discharges and every ``D<b>`` stays 0.
+    """
+    words, bits = 16, 4
+    spec = _spec(words, bits, 2, enable=True, sense=True)
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+    for address in range(words):
+        pins = {net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)}
+        pre = _settle(
+            devices, net, {**supplies, **pins, net["PRECHN"]: 0, net["EVAL"]: 0}, {}
+        )
+        assert all(pre[net[f"WL<{w}>"]] == 0 for w in range(words)), address
+        assert all(
+            pre[net[f"{h}<{b}>"]] == 1 for h in ("BLL", "BLR") for b in range(bits)
+        )
+        assert all(pre[net[f"D<{b}>"]] == 0 for b in range(bits))
+        for enable in (0, 1):
+            read = _settle(
+                devices,
+                net,
+                {**supplies, **pins, net["PRECHN"]: 1, net["EVAL"]: enable},
+                pre,
+            )
+            levels = [read[net[f"WL<{w}>"]] for w in range(words)]
+            assert levels == [enable * int(w == address) for w in range(words)]
+            data = [read[net[f"D<{b}>"]] for b in range(bits)]
+            assert data == [enable * int((address, b) in sites) for b in range(bits)]
+            side = "BLR" if address >= words // 2 else "BLL"
+            for h in ("BLL", "BLR"):
+                for b in range(bits):
+                    low = enable and h == side and (address, b) in sites
+                    assert read[net[f"{h}<{b}>"]] == int(not low), (address, h, b)
+
+
+def test_the_address_latches_hold_through_the_read(tmp_path):
+    """Switch-level reads through the address latches.
+
+    The address is loaded while PRECHN is low, the latches close when it
+    rises, and only then do the pins move to another address and EVAL rise:
+    the word read is the loaded one, from every address to its complement.
+    """
+    words, bits = 16, 4
+    spec = _spec(words, bits, 2, enable=True, sense=True, latch=True)
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    assert not any(k.startswith("AL<") for k in net)  # the decoder's lines are internal
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+    mask = words - 1
+
+    def pins(address):
+        return {net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)}
+
+    for address in range(words):
+        other = address ^ mask
+        steps = [
+            {**pins(address), net["PRECHN"]: 0, net["EVAL"]: 0},
+            {**pins(address), net["PRECHN"]: 1, net["EVAL"]: 0},
+            {**pins(other), net["PRECHN"]: 1, net["EVAL"]: 0},
+            {**pins(other), net["PRECHN"]: 1, net["EVAL"]: 1},
+        ]
+        value: dict = {}
+        for inputs in steps:
+            value = _settle(devices, net, {**supplies, **inputs}, value)
+        levels = [value[net[f"WL<{w}>"]] for w in range(words)]
+        assert levels == [int(w == address) for w in range(words)], address
+        data = [value[net[f"D<{b}>"]] for b in range(bits)]
+        assert data == [int((address, b) in sites) for b in range(bits)], address
+
+
+def test_the_sample_latches_hold_the_word_through_the_next_precharge(tmp_path):
+    """Switch-level reads through the sample latches.
+
+    Each read precharges, evaluates, opens SAMPLE and closes it, and then
+    precharges again: D<b> falls back to 0 but Q<b> keeps the word.  The next
+    address's evaluation, with SAMPLE low, leaves Q alone too; only opening
+    SAMPLE brings its word in.
+    """
+    words, bits = 16, 6  # four bits' array is one 513 nm row high, with no rail to spare
+    spec = _spec(words, bits, 2, enable=True, sense=True, sample=True)
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+
+    def word(address):
+        return [int((address, b) in sites) for b in range(bits)]
+
+    def pins(address, prechn, sample):
+        return {
+            **supplies,
+            **{net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)},
+            net["PRECHN"]: prechn,
+            net["EVAL"]: prechn,
+            net["SAMPLE"]: sample,
+        }
+
+    value: dict = {}
+    for address in [*range(words), 0]:
+        held = [value.get(net[f"Q<{b}>"]) for b in range(bits)]
+        for prechn, sample in ((0, 0), (1, 0)):
+            value = _settle(devices, net, pins(address, prechn, sample), value)
+            if address or held[0] is not None:
+                assert [value[net[f"Q<{b}>"]] for b in range(bits)] == held
+        assert [value[net[f"D<{b}>"]] for b in range(bits)] == word(address)
+        for prechn, sample in ((1, 1), (1, 0), (0, 0)):
+            value = _settle(devices, net, pins(address, prechn, sample), value)
+            assert [value[net[f"Q<{b}>"]] for b in range(bits)] == word(address)
+        assert all(value[net[f"D<{b}>"]] == 0 for b in range(bits)), address
+    # Left open through the precharge, the latches follow D down to 0.
+    value = _settle(devices, net, pins(1, 0, 1), value)
+    assert all(value[net[f"Q<{b}>"]] == 0 for b in range(bits))
+
+
+def test_a_self_timed_read_samples_each_word(tmp_path):
+    """Switch-level reads of the extracted ROM driven by CLK, RESETN and the
+    address alone.
+
+    CLK high precharges and loads the address; CLK low reads: the controller
+    lifts PRECHN, fires EVAL, waits for the replica's READY and opens
+    SAMPLE, and Q<b> is the word.  Back to CLK high, Q keeps it through the
+    precharge while the next address loads.  With RESETN low nothing reads.
+    """
+    words, bits = 16, 6
+    spec = _spec(
+        words, bits, 2, enable=True, sense=True, latch=True, sample=True, control=True
+    )
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    assert {"CLK", "RESETN", "READY", "EVAL", "SAMPLE"} <= net.keys()
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+
+    def word(address):
+        return [int((address, b) in sites) for b in range(bits)]
+
+    def pins(address, clk, resetn=1):
+        return {
+            **supplies,
+            **{net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)},
+            net["CLK"]: clk,
+            net["RESETN"]: resetn,
+        }
+
+    def q(value):
+        return [value[net[f"Q<{b}>"]] for b in range(bits)]
+
+    value = _settle(devices, net, pins(0, 1), {})
+    assert [value[net[n]] for n in ("PRECHN", "EVAL", "SAMPLE", "READY")] == [0] * 4
+    for address in [*range(words), 3]:
+        value = _settle(devices, net, pins(address, 0), value)
+        assert [value[net[n]] for n in ("PRECHN", "EVAL", "SAMPLE", "READY")] == [1] * 4
+        assert q(value) == word(address), address
+        value = _settle(devices, net, pins(address ^ 5, 1), value)
+        assert [value[net[n]] for n in ("PRECHN", "EVAL", "SAMPLE", "READY")] == [0] * 4
+        assert q(value) == word(address), address
+    # In reset CLK low reads nothing: no wordline, and Q keeps the last word.
+    value = _settle(devices, net, pins(9, 1), value)
+    value = _settle(devices, net, pins(9, 0, resetn=0), value)
+    assert value[net["EVAL"]] == 0 and value[net["SAMPLE"]] == 0
+    assert all(value[net[f"WL<{w}>"]] == 0 for w in range(words))
+    assert q(value) == word(3)
+
+
+def test_control_needs_the_whole_read_path():
+    with pytest.raises(ValueError, match="control needs enable, latch and sample"):
+        _spec(16, 6, 2, enable=True, sense=True, latch=True, control=True)
+    spec = _spec(
+        16, 6, 2, enable=True, sense=True, latch=True, sample=True, control=True
+    )
+    assert spec.cells.bits == 7 and spec.replica_bit == 6
+    assert spec.sense_lane.d_net(6) == "READY"
+    tracks = spec.latch_tracks
+    assert tracks["SAMPLE"] < tracks["READY"] < min(
+        tracks[line] for line in spec.channel_lines
+    )
+    assert "EVAL" in spec.joins
+
+
+def test_sample_needs_the_sense_lane():
+    with pytest.raises(ValueError, match="sample needs sense"):
+        _spec(16, 4, 2, sample=True)
+    spec = _spec(16, 6, 2, sense=True, sample=True)
+    assert spec.sense_lane.sample
+    assert spec.cell_name.endswith("_s_q")
+
+
+def test_latch_needs_the_sense_lane_and_grows_the_gap():
+    with pytest.raises(ValueError, match="latch needs sense"):
+        _spec(16, 4, 2, enable=True, latch=True)
+    plain = _spec(16, 4, 2, enable=True, sense=True)
+    latched = _spec(16, 4, 2, enable=True, sense=True, latch=True)
+    assert latched.gap > plain.gap
+    assert latched.address_line == "AL"
+    assert latched.right_x >= latched.latch_ends[1] + GATE_PITCH
+    assert set(latched.latch_tracks) == {f"AL<{i}>" for i in range(latched.address_bits)}
+    assert {f"AL<{i}>" for i in range(latched.address_bits)} <= latched.joins.keys()
+
+
+def test_enable_gates_the_top_pb_literals():
+    gates = network(6, 4, 3, enable="EVAL")
+    assert gates["EAN<5>"].ins == ("AN<5>", "EVAL")
+    assert gates["EA<5>"].ins == ("A<5>", "EVAL")
+    pb = [g for name, g in gates.items() if name.startswith("PB<")]
+    assert len(pb) == 4 and all({"EA<5>", "EAN<5>"} & set(g.ins) for g in pb)
+    # A one-bit PB group takes EVAL in its own AND2.
+    one = network(5, 4, 3, enable="EVAL")
+    assert one["PB<0>"].ins == ("AN<4>", "EVAL")
+    with pytest.raises(ValueError, match="enable needs predecode"):
+        _spec(16, predecode=False, lane=False, enable=True)
+
+
 def test_independent_sizes_keep_common_rails_and_have_distinct_cell_names():
     base = _spec()
     sized = replace(
