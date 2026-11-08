@@ -377,6 +377,11 @@ class RomDecoderSpec:
             the ``SAMPLE`` pin is high, with each bit's output on ``Q<b>``
             (`chipforge_asap7.devices.rom_sense`).  Needs the sense lane,
             whose rows grow to fit.
+        register: make ``Q`` a rising-edge register output: a register
+            latch after each sample latch, open while ``SAMPLE`` is low, so
+            that ``Q<b>`` takes the word as ``SAMPLE`` falls and holds it
+            for a cycle.  With ``control`` that is just after ``CLK`` rises,
+            one cycle after the address was latched.  Needs sample.
         control: time each read itself from ``CLK`` and ``RESETN``: the
             controller (`chipforge_asap7.devices.rom_control`) stands at the
             end of the address-latch row and drives ``PRECHN``, ``EVAL`` and
@@ -405,6 +410,7 @@ class RomDecoderSpec:
     latch: bool = False
     sense: bool = False
     sample: bool = False
+    register: bool = False
     control: bool = False
     control_fingers: int = 4
 
@@ -443,6 +449,10 @@ class RomDecoderSpec:
             raise ValueError(
                 "the controller drives EVAL, the address latches' PRECHN and the "
                 "sample latches' SAMPLE: control needs enable, latch and sample"
+            )
+        if self.register and not self.sample:
+            raise ValueError(
+                "the register latches follow the sample latches: register needs sample"
             )
         if self.sample and not self.sense:
             raise ValueError(
@@ -1019,7 +1029,9 @@ class RomDecoderSpec:
             # VDD stripe: its lowest M3 clears the strap's top.
             top = self.cells.height
             stripe = top + (M4_TRACK_OFFSET - top) % M4_PITCH
-            need = stripe + V3_CAP + LATCH_STRAP_CLEAR - self.latch_row.levels["n"] + PAD
+            need = (
+                stripe + V3_CAP + LATCH_STRAP_CLEAR - self.latch_row.levels["n"] + PAD
+            )
             if need > y:
                 # Off the VSS bar, its VSS rail's strap pad clears the bar's M2.
                 need = max(need, top + TOP_CLEAR)
@@ -1163,7 +1175,11 @@ class RomDecoderSpec:
     def _lane(self, right_x: int | None = None) -> RomLaneSpec:
         """The sense lane, at `right_x` or at its narrowest."""
         return RomLaneSpec(
-            self.half, right_x=right_x, sample=self.sample, replica=self.control
+            self.half,
+            right_x=right_x,
+            sample=self.sample,
+            register=self.register,
+            replica=self.control,
         )
 
     def wordline_x(self, word: int) -> int:
@@ -1329,6 +1345,7 @@ class RomDecoderSpec:
             f"{'' if self.lane else '_edge'}{'_e' if self.enable else ''}"
             f"{'_l' if self.latch else ''}"
             f"{'_s' if self.sense else ''}{'_q' if self.sample else ''}"
+            f"{'r' if self.register else ''}"
             f"{f'_c{self.control_fingers}' if self.control else ''}{tag}"
         )
 

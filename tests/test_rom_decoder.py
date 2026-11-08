@@ -386,7 +386,10 @@ def _settle(devices, net, inputs, held):
     nets into groups (a source does not join the groups it drives); a group
     takes the value of the sources it reaches.  One that reaches neither
     keeps the charge its nets held, shared: one value if they held the same
-    one, unknown otherwise.  One that reaches both is a fight, unknown too:
+    one, unknown otherwise.  If none of them held a value, it keeps what it
+    had a moment ago instead.  A latch that closes on a value it never held
+    before this step otherwise loses it: under a synchronous update the
+    value and an unknown chase each other round its two inverters forever.  One that reaches both is a fight, unknown too:
     a latch's two gates overlap for the inverter delay of its clock, as they
     do in silicon.  A fight still standing once the nets settle is a short.
     """
@@ -417,15 +420,17 @@ def _settle(devices, net, inputs, held):
                 if other in source and n not in source:
                     reach.setdefault(find(n), set()).add(source[other])
         charge: dict = {}
+        recent: dict = {}
         for n in nets - source.keys():
             charge.setdefault(find(n), set()).add(held.get(n))
+            recent.setdefault(find(n), set()).add(value.get(n))
         new = dict(source)
         fights = set()
         for n in nets - source.keys():
             root = find(n)
             levels = reach.get(root)
             if levels is None:
-                levels = charge[root] - {None}
+                levels = (charge[root] - {None}) or (recent[root] - {None})
             elif len(levels) > 1:
                 fights.add(root)
             new[n] = next(iter(levels)) if len(levels) == 1 else None
@@ -525,7 +530,10 @@ def test_the_sample_latches_hold_the_word_through_the_next_precharge(tmp_path):
     address's evaluation, with SAMPLE low, leaves Q alone too; only opening
     SAMPLE brings its word in.
     """
-    words, bits = 16, 6  # four bits' array is one 513 nm row high, with no rail to spare
+    words, bits = (
+        16,
+        6,
+    )  # four bits' array is one 513 nm row high, with no rail to spare
     spec = _spec(words, bits, 2, enable=True, sense=True, sample=True)
     sites = {
         (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
@@ -613,6 +621,72 @@ def test_a_self_timed_read_samples_each_word(tmp_path):
     assert q(value) == word(3)
 
 
+def test_a_registered_read_changes_q_only_as_clk_rises(tmp_path):
+    """The self-timed read with the output register, at switch level.
+
+    While CLK is low the read runs and is sampled as before, but Q still
+    shows the word read in the cycle before.  Q takes the new word only when
+    CLK rises and SAMPLE falls, and holds it through the next read.  In reset
+    nothing reads and Q keeps the last word.
+    """
+    words, bits = 16, 6
+    spec = _spec(
+        words,
+        bits,
+        2,
+        enable=True,
+        sense=True,
+        latch=True,
+        sample=True,
+        register=True,
+        control=True,
+    )
+    assert "_qr_c4" in spec.cell_name
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+
+    def word(address):
+        return [int((address, b) in sites) for b in range(bits)]
+
+    def pins(address, clk, resetn=1):
+        return {
+            **supplies,
+            **{net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)},
+            net["CLK"]: clk,
+            net["RESETN"]: resetn,
+        }
+
+    def q(value):
+        return [value[net[f"Q<{b}>"]] for b in range(bits)]
+
+    value = _settle(devices, net, pins(0, 1), {})
+    previous = None
+    addresses = [*range(words), 3]
+    for address in addresses:
+        value = _settle(devices, net, pins(address, 0), value)
+        assert [value[net[n]] for n in ("PRECHN", "EVAL", "SAMPLE", "READY")] == [1] * 4
+        if previous is not None:
+            assert q(value) == word(previous), address  # the read is not out yet
+        value = _settle(devices, net, pins(address ^ 5, 1), value)
+        assert value[net["SAMPLE"]] == 0
+        assert q(value) == word(address), address
+        previous = address
+    # Two words that differ, so that a leak would show.
+    assert word(addresses[-2]) != word(addresses[-1])
+    value = _settle(devices, net, pins(9, 0, resetn=0), value)
+    assert value[net["SAMPLE"]] == 0 and q(value) == word(3)
+    value = _settle(devices, net, pins(9, 1, resetn=0), value)
+    assert q(value) == word(3)
+
+
+def test_register_needs_the_sample_latches():
+    with pytest.raises(ValueError, match="register needs sample"):
+        _spec(16, 6, 2, sense=True, register=True)
+
+
 def test_control_needs_the_whole_read_path():
     with pytest.raises(ValueError, match="control needs enable, latch and sample"):
         _spec(16, 6, 2, enable=True, sense=True, latch=True, control=True)
@@ -622,8 +696,10 @@ def test_control_needs_the_whole_read_path():
     assert spec.cells.bits == 7 and spec.replica_bit == 6
     assert spec.sense_lane.d_net(6) == "READY"
     tracks = spec.latch_tracks
-    assert tracks["SAMPLE"] < tracks["READY"] < min(
-        tracks[line] for line in spec.channel_lines
+    assert (
+        tracks["SAMPLE"]
+        < tracks["READY"]
+        < min(tracks[line] for line in spec.channel_lines)
     )
     assert "EVAL" in spec.joins
 
@@ -644,7 +720,9 @@ def test_latch_needs_the_sense_lane_and_grows_the_gap():
     assert latched.gap > plain.gap
     assert latched.address_line == "AL"
     assert latched.right_x >= latched.latch_ends[1] + GATE_PITCH
-    assert set(latched.latch_tracks) == {f"AL<{i}>" for i in range(latched.address_bits)}
+    assert set(latched.latch_tracks) == {
+        f"AL<{i}>" for i in range(latched.address_bits)
+    }
     assert {f"AL<{i}>" for i in range(latched.address_bits)} <= latched.joins.keys()
 
 

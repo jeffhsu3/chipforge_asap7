@@ -45,12 +45,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
     },
     "16x6_self_timed": {"words": 16, "bits": 6, "control": True},
     "64x32_self_timed": {"words": 64, "bits": 32, "control": True},
+    "16x6_registered": {"words": 16, "bits": 6, "control": True, "register": True},
+    "64x32_registered": {"words": 64, "bits": 32, "control": True, "register": True},
 }
 
 
 def _spec(words: int, bits: int, control: bool = False, **flags: Any) -> RomDecoderSpec:
     if control:
         flags = {
+            "register": flags.get("register", False),
             "sense": True,
             "enable": True,
             "latch": True,

@@ -190,7 +190,7 @@ def _lane(spec: RomDecoderSpec) -> list[str]:
     devices = lane.devices()
     nets = {n for d in devices for n in d[1:4]}
     series = {n for n in nets if re.fullmatch(r"X\d+", n)}
-    local = {n for n in nets if re.fullmatch(r"(LX|LY)\d+|SAMPLEB_R\d+", n)}
+    local = {n for n in nets if re.fullmatch(r"(LX|LY|LQ|RX|RY)\d+|SAMPLEB_R\d+", n)}
     return _rows(devices, rs.bands, "S_", {}, local, series)
 
 

@@ -28,6 +28,8 @@ SPECS = [
     RomSenseRowSpec(sample=True),
     RomSenseRowSpec(leaves=3, sample=True),
     RomSenseRowSpec(leaves=2, sample=True, vt="lvt"),
+    RomSenseRowSpec(register=True, sample=True),
+    RomSenseRowSpec(leaves=3, sample=True, register=True),
 ]
 
 
@@ -68,11 +70,13 @@ def test_terminated_row_is_clean(spec, asap7_drc):
     assert asap7_drc(library, top, tag="terminated") == []
 
 
-@pytest.mark.parametrize("sample", [False, True])
+@pytest.mark.parametrize(
+    "sample", [False, True, "register"], ids=["leaves", "sampled", "registered"]
+)
 def test_mirrored_rows_stack_cleanly(asap7_drc, sample):
     """Rows flipped about their shared rail, as the lane stacks them."""
     library = _library()
-    spec = RomSenseRowSpec(leaves=3, sample=sample)
+    spec = RomSenseRowSpec(leaves=3, sample=bool(sample), register=sample == "register")
     row = build_rom_sense_row(spec, lib=library)
     top = library.new_cell("rom_sense_stacked")
     for r in range(4):
@@ -132,6 +136,29 @@ def test_sample_feedback_from_the_wrong_side_fails(tmp_path: Path, require_klayo
         )
     )
     assert "MNF0_f0 LX0 SAMPLEB D<0>" in reference.read_text()
+    assert not run_lvs(
+        gds, reference, tmp_path / "lvs", cell_name=spec.cell_name, tie_bodies=True
+    ).matched
+
+
+def test_register_needs_the_sample_latch():
+    with pytest.raises(ValueError, match="register needs sample"):
+        RomSenseRowSpec(register=True)
+
+
+def test_register_on_the_sample_latchs_clock_fails(tmp_path: Path, require_klayout):
+    """A reference whose register latch passes on SAMPLE high, like the
+    sample latch, must not match: the two would be transparent together."""
+    spec = RomSenseRowSpec(leaves=2, sample=True, register=True)
+    library = _library()
+    build_rom_sense_row(spec, lib=library)
+    gds = tmp_path / "row.gds"
+    library.write_gds(str(gds))
+    reference = tmp_path / "reference.spice"
+    text = spec.lvs_reference()
+    wrong = text.replace("MRNT0_f0 LQ0 SAMPLEB RX0", "MRNT0_f0 LQ0 SAMPLE RX0")
+    assert wrong != text
+    reference.write_text(wrong)
     assert not run_lvs(
         gds, reference, tmp_path / "lvs", cell_name=spec.cell_name, tie_bodies=True
     ).matched

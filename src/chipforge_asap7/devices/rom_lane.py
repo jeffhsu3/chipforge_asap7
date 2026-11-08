@@ -29,7 +29,8 @@ bits sets the leaves per row, and every row is padded to the same width.
 With ``sample`` each leaf has a sample latch beside it, and the rows are
 taller (`chipforge_asap7.devices.rom_sense`); ``SAMPLE`` is a second
 full-height M3 column beside ``PRECHN``'s, and each bit's latch output is
-``Q<b>``.
+``Q<b>``.  With ``register`` too, a register latch follows each sample latch
+and ``Q<b>`` changes only as ``SAMPLE`` falls.
 
 With ``replica`` the half's last bit is the replica bit, programmed in every
 word, whose leaf output is the controller's ``READY``
@@ -101,8 +102,9 @@ class RomLaneSpec:
             `right_x`.
         right_x: x of the right half.  ``None`` is the narrowest lane,
             `min_right_x`.
-        n_fins, p_fins, band_height, vt, sample: the leaves' devices and
-            rows, and their sample latches (see `RomSenseRowSpec`).
+        n_fins, p_fins, band_height, vt, sample, register: the leaves'
+            devices and rows, their sample latches and register latches
+            (see `RomSenseRowSpec`).
         replica: the half's last bit is the replica bit; its leaf's ``D`` is
             ``READY``.
     """
@@ -114,6 +116,7 @@ class RomLaneSpec:
     band_height: tuple[int, int] | None = None
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     sample: bool = False
+    register: bool = False
     replica: bool = False
 
     def __post_init__(self) -> None:
@@ -141,6 +144,7 @@ class RomLaneSpec:
             band_height=self.band_height,
             vt=self.vt,
             sample=self.sample,
+            register=self.register,
         )
 
     @cached_property
@@ -383,7 +387,7 @@ class RomLaneSpec:
     def cell_name(self) -> str:
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         return (
-            f"rom_lane{'_q' if self.sample else ''}"
+            f"rom_lane{'_q' if self.sample else ''}{'r' if self.register else ''}"
             f"_{self.half.cell_name.removeprefix('rom_array_')}"
             f"_x{self.x_right}_{self.n_fins}n{self.p_fins}p"
             f"_h{self.band_height[0]}x{self.band_height[1]}{vt_tag}"
@@ -409,6 +413,9 @@ class RomLaneSpec:
                     "X0": f"X{b}",
                     "LX0": f"LX{b}",
                     "LY0": f"LY{b}",
+                    "LQ0": f"LQ{b}",
+                    "RX0": f"RX{b}",
+                    "RY0": f"RY{b}",
                     "SAMPLEB": f"SAMPLEB_R{p.row}",
                 }
                 out.append(

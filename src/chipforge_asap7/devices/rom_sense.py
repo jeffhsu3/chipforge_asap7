@@ -44,6 +44,19 @@ latch's own ``Q``, ``Y`` and ``X`` cross the leaf, under its bitline ties.
 That needs a 513 nm row of 4-fin bands, the default when ``sample`` is set.
 (``D`` cannot take the n via row instead: a V1 on a track that ends beside
 the next column's standing landing faces it at 28 nm, M2.S.5.)
+
+``register=True`` makes ``Q`` a rising-edge register output.  A second latch
+follows each sample latch, the same circuit with its clocks swapped:
+transparent while ``SAMPLE`` is low, holding while it is high.  The sample
+latch becomes the master of a flip-flop on ``SAMPLE``'s falling edge, which
+the controller makes just after ``CLK`` rises and only once the read has
+been sampled, so ``Q`` takes the new word then and holds it for the whole
+next cycle.  The sample latch's output becomes ``LQ<k>``.  The register
+latch's l0 column carries a jog that takes ``LQ`` from its ``Q`` track down
+to ``D`` and up to ``DP``, and the two latches take ``Y`` and ``X`` on
+opposite levels.  Each latch's ``Y`` runs its full width, so on one level the
+two tracks would end 20 nm apart; on opposite levels every pair of ends on a
+level is 47 nm apart.  The slice is 20 columns.
 """
 
 from __future__ import annotations
@@ -78,6 +91,7 @@ from .rowcell import (
 
 __all__ = [
     "LEAF_COLUMNS",
+    "REGISTER_SLICE_COLUMNS",
     "SAMPLE_SLICE_COLUMNS",
     "RomSenseRowSpec",
     "build_rom_sense_row",
@@ -89,6 +103,8 @@ LEAF_COLUMNS = 6
 SAMPLE_LATCH_COLUMNS = 7
 #: A leaf, its gap and its sample latch.
 SAMPLE_SLICE_COLUMNS = LEAF_COLUMNS + SAMPLE_LATCH_COLUMNS
+#: With ``register``, the register latch straight after the sample latch.
+REGISTER_SLICE_COLUMNS = SAMPLE_SLICE_COLUMNS + SAMPLE_LATCH_COLUMNS
 #: Before the first sample slice: PRECHN's M3, SAMPLE's, SAMPLEB's inverter
 #: (two columns) and a gap.
 SAMPLE_LEAD_COLUMNS = 5
@@ -128,6 +144,8 @@ class RomSenseRowSpec:
             (16 bits and a strap row), or with ``sample`` a 513 nm row.
         vt: threshold flavor of every device.
         sample: put a sample latch beside each leaf, with a ``Q`` pin.
+        register: follow each sample latch with a register latch, so that
+            ``Q`` changes only as ``SAMPLE`` falls.  Needs ``sample``.
     """
 
     leaves: int = 1
@@ -136,6 +154,7 @@ class RomSenseRowSpec:
     band_height: tuple[int, int] | None = None
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     sample: bool = False
+    register: bool = False
 
     def __post_init__(self) -> None:
         n_fins, p_fins, band_height = ROW_DEFAULTS[bool(self.sample)]
@@ -151,6 +170,8 @@ class RomSenseRowSpec:
             raise TypeError(f"leaves must be an integer, got {self.leaves!r}")
         if self.leaves < 1:
             raise ValueError(f"leaves must be >= 1, got {self.leaves}")
+        if self.register and not self.sample:
+            raise ValueError("register needs sample: it follows the sample latch")
         n, p = self.bands["n"], self.bands["p"]
         y_n, y_p = via_y(n), via_y(p)
         seam = self.stack.seam_y(0)
@@ -204,7 +225,8 @@ class RomSenseRowSpec:
     def cell_name(self) -> str:
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         return (
-            f"rom_sense{'_q' if self.sample else ''}_x{self.leaves}"
+            f"rom_sense{'_q' if self.sample else ''}{'r' if self.register else ''}"
+            f"_x{self.leaves}"
             f"_{self.n_fins}n{self.p_fins}p"
             f"_h{self.band_height[0]}x{self.band_height[1]}{vt_tag}"
         )
@@ -218,12 +240,14 @@ class RomSenseRowSpec:
     @property
     def pitch(self) -> int:
         """Columns from one leaf to the next."""
+        if self.register:
+            return REGISTER_SLICE_COLUMNS
         return SAMPLE_SLICE_COLUMNS if self.sample else LEAF_COLUMNS
 
     @property
     def columns(self) -> int:
         """The lead, then the slices, with no gap after the last."""
-        last = SAMPLE_SLICE_COLUMNS if self.sample else LEAF_COLUMNS - 1
+        last = self.pitch if self.sample else LEAF_COLUMNS - 1
         return self.lead + self.pitch * (self.leaves - 1) + last
 
     @property
@@ -248,6 +272,12 @@ class RomSenseRowSpec:
         """X of gate `gate` (0 to 5) of `leaf`'s sample latch."""
         return self.latch_x(leaf, gate) + GATE_PITCH // 2
 
+    def register_x(self, leaf: int, column: int) -> int:
+        """X of column `column` (0 to 6) of `leaf`'s register latch."""
+        if not self.register:
+            raise ValueError("this row has no register latches (register=False)")
+        return self.leaf_x(leaf, SAMPLE_SLICE_COLUMNS + column)
+
     def gate_x(self, leaf: int, gate: int) -> int:
         """X of gate `gate` (0 to 3) of `leaf`, between its columns `gate` and `gate + 1`."""
         return self.leaf_x(leaf, gate) + GATE_PITCH // 2
@@ -264,7 +294,9 @@ class RomSenseRowSpec:
         return self.column_x[1]
 
     def q_x(self, leaf: int) -> int:
-        """X of `leaf`'s ``Q`` M3 column: its latch's l2."""
+        """X of `leaf`'s ``Q`` M3 column: the l2 of its last latch."""
+        if self.register:
+            return self.register_x(leaf, 2)
         return self.latch_x(leaf, 2)
 
     @property
@@ -324,9 +356,10 @@ class RomSenseRowSpec:
         )
 
     def leaf_devices(self, k: int) -> tuple[tuple[str, str, str, str, str, int], ...]:
-        """Leaf `k`'s transistors and its sample latch's: nets ``BLL<k>``,
-        ``BLR<k>``, ``D<k>``, ``Q<k>``, the NAND2's series node ``X<k>`` and
-        the latch's nodes ``LX<k>``/``LY<k>``, all suffixed ``k``."""
+        """Leaf `k`'s transistors and its latches': nets ``BLL<k>``,
+        ``BLR<k>``, ``D<k>``, ``Q<k>``, the NAND2's series node ``X<k>``, the
+        sample latch's nodes ``LX<k>``/``LY<k>`` and, with ``register``, its
+        output ``LQ<k>`` and the register latch's ``RX<k>``/``RY<k>``."""
         n, p = self.n_fins, self.p_fins
         bll, blr, d, x = f"BLL<{k}>", f"BLR<{k}>", f"D<{k}>", f"X{k}"
         devices = [
@@ -338,17 +371,15 @@ class RomSenseRowSpec:
             (f"MNB{k}", d, blr, x, "n", n),
         ]
         if self.sample:
-            q, lx, ly = f"Q<{k}>", f"LX{k}", f"LY{k}"
-            devices += [
-                (f"MPI{k}", ly, lx, "VDD", "p", p),
-                (f"MPO{k}", q, ly, "VDD", "p", p),
-                (f"MPF{k}", q, "SAMPLE", lx, "p", p),
-                (f"MPT{k}", lx, "SAMPLEB", d, "p", p),
-                (f"MNT{k}", d, "SAMPLE", lx, "n", n),
-                (f"MNF{k}", lx, "SAMPLEB", q, "n", n),
-                (f"MNO{k}", q, ly, "VSS", "n", n),
-                (f"MNI{k}", ly, lx, "VSS", "n", n),
-            ]
+            q = f"LQ{k}" if self.register else f"Q<{k}>"
+            devices += _latch(
+                k, "", d, q, f"LX{k}", f"LY{k}", ("SAMPLE", "SAMPLEB"), n, p
+            )
+        if self.register:
+            devices += _latch(
+                k, "R", f"LQ{k}", f"Q<{k}>", f"RX{k}", f"RY{k}",
+                ("SAMPLEB", "SAMPLE"), n, p,
+            )  # fmt: skip
         return tuple(devices)
 
     @property
@@ -413,6 +444,32 @@ class RomSenseRowSpec:
                 "",
             ]
         )
+
+
+def _latch(
+    k: int,
+    tag: str,
+    d: str,
+    q: str,
+    x: str,
+    y: str,
+    clocks: tuple[str, str],
+    n: int,
+    p: int,
+) -> list[tuple[str, str, str, str, str, int]]:
+    """A TG latch, transparent while ``clocks[0]`` is high: its pass gates
+    take ``d`` to ``x`` and its feedback gates ``q`` back to ``x``."""
+    ck, ckb = clocks
+    return [
+        (f"M{tag}PI{k}", y, x, "VDD", "p", p),
+        (f"M{tag}PO{k}", q, y, "VDD", "p", p),
+        (f"M{tag}PF{k}", q, ck, x, "p", p),
+        (f"M{tag}PT{k}", x, ckb, d, "p", p),
+        (f"M{tag}NT{k}", d, ck, x, "n", n),
+        (f"M{tag}NF{k}", x, ckb, q, "n", n),
+        (f"M{tag}NO{k}", q, y, "VSS", "n", n),
+        (f"M{tag}NI{k}", y, x, "VSS", "n", n),
+    ]
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
@@ -487,6 +544,8 @@ def build_rom_sense_row(
             gate_contact(cell, seam, [x], x, lv["PRECHN"] - CAP)
         if spec.sample:
             _draw_sample_latch(cell, spec, k, ck_gates, ckb_gates)
+        if spec.register:
+            _draw_register_latch(cell, spec, k, ck_gates, ckb_gates)
 
     x_pre = spec.prechn_x
     m2_track(
@@ -541,21 +600,24 @@ def _reach(level: int, seam: int) -> int:
     return level - CAP if level < seam else level + CAP
 
 
-def _draw_sample_latch(
+def _draw_latch(
     cell: Any,
     spec: RomSenseRowSpec,
-    k: int,
-    ck_gates: list[int],
-    ckb_gates: list[int],
+    c: list[int],
+    levels: dict[str, int],
+    gates: tuple[list[int], list[int]],
 ) -> None:
-    """Leaf `k`'s sample latch, with ``D`` arriving on its two tracks."""
+    """One TG latch on columns `c`, its roles on `levels`.
+
+    ``D`` and ``DP`` take the input to the n drain at l2 and the p drain at
+    l4 from wherever their tracks start; ``Q``'s track joins the p drain at
+    l2 to the n drain at l4.  The stripe at l2-l3 goes to the ``CK`` track
+    and the one at l3-l4 to ``CKB``: `gates` collects them.
+    """
     n, p = spec.bands["n"], spec.bands["p"]
-    lv = spec.levels
+    lv = {**spec.levels, **levels}
     seam = spec.stack.seam_y(0)
-    c = [spec.latch_x(k, i) for i in range(SAMPLE_LATCH_COLUMNS)]
-    g = [spec.latch_gate_x(k, i) for i in range(6)]
-    ck_gates.append(g[2])
-    ckb_gates.append(g[3])
+    g = [x + GATE_PITCH // 2 for x in c[:6]]
     island(cell, p, c[0:5])
     island(cell, n, c[2:7])
     supply_contact(cell, p, c[1])
@@ -564,11 +626,8 @@ def _draw_sample_latch(
         _pad(cell, p, x)
     for x in (c[2], c[3], c[4], c[6]):
         _pad(cell, n, x)
-    # D's n drain: D from the leaf's c2 to l2's lower M3.
-    m2_track(cell, lv["D"], spec.leaf_x(k, 2) - PAD, c[2] + PAD)
+    # The input's n drain on l2's lower M3, its p drain on l4's upper.
     m3_column(cell, c[2], lv["n"] - PAD, lv["D"] + CAP, vias=[lv["D"]])
-    # D's p drain: DP from the leaf's c2 to l4's upper M3.
-    m2_track(cell, lv["DP"], spec.leaf_x(k, 2) - PAD, c[4] + PAD)
     m3_column(cell, c[4], lv["DP"] - CAP, lv["p"] + PAD, vias=[lv["DP"]])
     # Q: the p drain on l2's M3, the n drain on l4's lower M3, one track.
     m3_column(cell, c[2], lv["Q"] - CAP, lv["p"] + PAD, vias=[lv["Q"]])
@@ -585,9 +644,58 @@ def _draw_sample_latch(
     for x in (g[1], g[4]):
         gate_contact(cell, seam, [x], x, _reach(lv["Y"], seam))
     m2_track(cell, lv["Y"], c[0] - PAD, c[6] + PAD, vias=[g[1], g[4]])
-    # The clocks: SAMPLE's stripe at l2-l3, SAMPLEB's at l3-l4.
+    # The clocks.
     gate_contact(cell, seam, [g[2]], g[2], _reach(lv["CK"], seam))
     gate_contact(cell, seam, [g[3]], g[3], _reach(lv["CKB"], seam))
+    gates[0].append(g[2])
+    gates[1].append(g[3])
+
+
+def _draw_sample_latch(
+    cell: Any,
+    spec: RomSenseRowSpec,
+    k: int,
+    ck_gates: list[int],
+    ckb_gates: list[int],
+) -> None:
+    """Leaf `k`'s sample latch, with ``D`` arriving on its two tracks.
+
+    With ``register`` its ``Y`` and ``X`` trade levels (see the module) and
+    its ``Q`` track runs on to the register latch's jog.
+    """
+    lv = spec.levels
+    c = [spec.latch_x(k, i) for i in range(SAMPLE_LATCH_COLUMNS)]
+    swap = {"Y": lv["X"], "X": lv["Y"]} if spec.register else {}
+    _draw_latch(cell, spec, c, swap, (ck_gates, ckb_gates))
+    # D from the leaf's c2 to l2 and, as DP, to l4.
+    m2_track(cell, lv["D"], spec.leaf_x(k, 2) - PAD, c[2] + PAD)
+    m2_track(cell, lv["DP"], spec.leaf_x(k, 2) - PAD, c[4] + PAD)
+    if spec.register:
+        m2_track(cell, lv["Q"], c[4] - PAD, spec.register_x(k, 0) + PAD)
+
+
+def _draw_register_latch(
+    cell: Any,
+    spec: RomSenseRowSpec,
+    k: int,
+    ck_gates: list[int],
+    ckb_gates: list[int],
+) -> None:
+    """Leaf `k`'s register latch: the sample latch with its clocks swapped.
+
+    ``LQ`` arrives on the ``Q`` track at l0, where a jog under l0's own ``Y``
+    column takes it down to ``D`` and up to ``DP``.  Its own ``Q`` keeps the
+    ``Q`` track, from l2 on.
+    """
+    lv = spec.levels
+    c = [spec.register_x(k, i) for i in range(SAMPLE_LATCH_COLUMNS)]
+    clocks = {"CK": lv["CKB"], "CKB": lv["CK"]}
+    _draw_latch(cell, spec, c, clocks, (ckb_gates, ck_gates))
+    m3_column(
+        cell, c[0], lv["D"] - CAP, lv["DP"] + CAP, vias=[lv["D"], lv["Q"], lv["DP"]]
+    )
+    m2_track(cell, lv["D"], c[0] - PAD, c[2] + PAD)
+    m2_track(cell, lv["DP"], c[0] - PAD, c[4] + PAD)
 
 
 def main(argv: list[str] | None = None) -> None:

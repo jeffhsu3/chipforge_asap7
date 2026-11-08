@@ -89,13 +89,17 @@ def test_a_one_fin_array_is_too_dense_for_the_tracks():
         (128, 33, 2, True, False),
         (64, 33, 2, True, True),
         (128, 34, 2, True, True),
+        (64, 32, 2, "register", False),
+        (128, 34, 2, "register", True),
     ],
 )
 def test_lane_between_programmed_halves_is_clean(
     words, bits, fins, sample, replica, asap7_drc
 ):
     half = _half(words, bits, fins)
-    lane = RomLaneSpec(half, sample=sample, replica=replica)
+    lane = RomLaneSpec(
+        half, sample=bool(sample), register=sample == "register", replica=replica
+    )
     library = _library()
     rng = random.Random(words * bits)
     sites = {(w, b) for w in range(words) for b in range(bits) if rng.random() < 0.5}
@@ -118,9 +122,13 @@ def test_lane_between_programmed_halves_is_clean(
     assert asap7_drc(library, top, tag="lane") == []
 
 
-@pytest.mark.parametrize("sample", [False, True], ids=["leaves", "sampled"])
+@pytest.mark.parametrize(
+    "sample", [False, True, "register"], ids=["leaves", "sampled", "registered"]
+)
 def test_lane_matches_its_unit_fin_reference(sample, tmp_path: Path, require_klayout):
-    lane = RomLaneSpec(_half(64, 32), sample=sample)
+    lane = RomLaneSpec(
+        _half(64, 32), sample=bool(sample), register=sample == "register"
+    )
     library = _library()
     cell = build_rom_lane(lane, lib=library)
     gds = tmp_path / "lane.gds"
@@ -130,7 +138,8 @@ def test_lane_matches_its_unit_fin_reference(sample, tmp_path: Path, require_kla
     result = run_lvs(gds, reference, tmp_path / "lvs", cell_name=cell.name)
     assert result.matched
     fins = sum(device[5] for device in lane.devices())
-    assert fins == (32 * 12 if not sample else 32 * 14 * 4 + 2 * 4 * lane.rows)
+    per_bit = {False: 12, True: 14 * 4, "register": 22 * 4}[sample]
+    assert fins == 32 * per_bit + (2 * 4 * lane.rows if sample else 0)
     assert result.extracted_netlist.read_text().count("M$") == fins
 
 
@@ -199,6 +208,9 @@ def test_lane_with_a_bit_crossed_fails(tmp_path: Path, require_klayout):
         (16, 6, True, "control"),
         (64, 32, True, "control"),
         (128, 33, True, "control"),
+        (16, 6, True, "register"),
+        (64, 32, True, "register"),
+        (128, 33, True, "register"),
     ],
     ids=[
         "16x8",
@@ -212,6 +224,9 @@ def test_lane_with_a_bit_crossed_fails(tmp_path: Path, require_klayout):
         "16x6_self_timed",
         "64x32_self_timed",
         "128x33_self_timed",
+        "16x6_registered",
+        "64x32_registered",
+        "128x33_registered",
     ],
 )
 def test_rom_with_its_sense_lane_is_clean(words, bits, periphery, sample, asap7_drc):
@@ -223,7 +238,8 @@ def test_rom_with_its_sense_lane_is_clean(words, bits, periphery, sample, asap7_
         enable=periphery,
         latch=periphery,
         sample=bool(sample),
-        control=sample == "control",
+        control=sample in ("control", "register"),
+        register=sample == "register",
     )
     plain = RomDecoderSpec(array=RomArraySpec(words, bits), enable=periphery)
     assert spec.right_x >= plain.right_x
