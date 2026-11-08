@@ -462,6 +462,32 @@ def test_the_checks_pass_and_are_recorded(tmp_path, require_klayout, external_to
     )
 
 
+@pytest.mark.parametrize(
+    "bits, strap_every",
+    [
+        (8, 8),  # One lane row is too few tracks, so more straps add a row.
+        (12, 16),  # The bitlines leave a track for the Q columns.
+        (15, 8),  # More straps, and the latch row's rail just off the VSS bar.
+    ],
+)
+def test_narrow_widths_pass_their_checks(
+    bits, strap_every, tmp_path, require_klayout, external_tool
+):
+    from chipforge_asap7.verification.drc import find_gdscheck
+
+    try:
+        find_gdscheck()
+        found = True
+    except FileNotFoundError:
+        found = False
+    external_tool(found, "gdscheck is not installed (set GDSCHECK)")
+    words = [(i * 5 + 3) % 2**bits for i in range(WORDS)]
+    _, r = _compile(tmp_path, "narrow", words, "--drc", "--lvs", bits=bits)
+    assert r["strap_every"] == strap_every
+    assert r["artifacts"]["macro"]["drc"] == {}
+    assert r["artifacts"]["macro"]["lvs"] == "passed"
+
+
 def test_a_netlist_that_disagrees_fails_the_run(tmp_path, monkeypatch, require_klayout):
     from chipforge_asap7.devices import rom_netlist
 
@@ -476,6 +502,18 @@ def test_a_netlist_that_disagrees_fails_the_run(tmp_path, monkeypatch, require_k
     assert "physical checks failed" in str(caught.value.code)
     r = json.loads((tmp_path / "bad" / "manifest.json").read_text())
     assert r["artifacts"]["macro"]["lvs"] == "failed"
+
+
+def test_an_lvs_that_times_out_fails_the_run(tmp_path, monkeypatch):
+    def out_of_time(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("klayout", 1)
+
+    monkeypatch.setattr("chipforge_asap7.verification.lvs.run_lvs", out_of_time)
+    with pytest.raises(SystemExit) as caught:
+        _compile(tmp_path, "slow", IMAGE, "--lvs")
+    assert "physical checks failed" in str(caught.value.code)
+    r = json.loads((tmp_path / "slow" / "manifest.json").read_text())
+    assert r["artifacts"]["macro"]["lvs"] == "timed_out"
 
 
 def test_a_drc_violation_fails_the_run(tmp_path, monkeypatch):

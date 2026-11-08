@@ -29,6 +29,22 @@ The command exits non-zero if a check it ran failed.
 
 The same input gives the same files byte for byte, in any process.
 
+## Which shapes it can build
+
+A registered macro builds at every width from 2 to 200 bits at 16 to 1024 words.
+A latched macro does up to 167 bits at those depths, and refuses some widths above
+that with a clear error. The array height limit (ACTIVE.LUP.1) ends both near
+320 bits.
+
+A narrow array adds strap
+rows to make room for another lane row, which is the only way the lane gets more
+tracks: 8 bits draws a strap every 8 rows, 3 bits every 2, and 2 bits every row.
+The manifest's `strap_every` records what was drawn. A 1-bit array is refused
+because even a strap on every row leaves no room for one lane row.
+
+Building is not the same as checking. DRC and LVS have run on a sample of these
+shapes, so use `--drc --lvs` on any shape you ship.
+
 ## Sharing one abstract
 
 Programming only adds V1s at the array's bit sites, so every image of one shape
@@ -59,7 +75,7 @@ periphery V1 changing.
 | Flag | Runs | Recorded in `artifacts.macro` |
 |---|---|---|
 | `--drc` | gdscheck on `macro.gds` | `drc`: count per rule, `{}` when clean |
-| `--lvs` | KLayout on `macro.gds` against `macro.cdl` | `lvs`: `passed` or `failed`, with `renamed_pins`, `missing_pins`, `extra_pins` |
+| `--lvs` | KLayout on `macro.gds` against `macro.cdl` | `lvs`: `passed`, `failed` or `timed_out`, with `renamed_pins`, `missing_pins`, `extra_pins` once it finishes |
 
 Both start as `not_run`. Any older `manifest.json` is deleted before the build,
 so a run that dies leaves no earlier result behind.

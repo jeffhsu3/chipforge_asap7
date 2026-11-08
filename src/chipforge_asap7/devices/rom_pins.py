@@ -29,6 +29,10 @@ routes, each pin's reachable M5 span is read around those reservations, and
 `_assign` gives every pin its own track within its span, moving none further
 than it must.  Nothing else on M5 runs low in the macro: only the replica's
 ``READY`` riser, which the search avoids like any other M5.
+
+Pads share a row's few free tracks and columns fill a slot's M5, so on a wide
+macro an early pin can still shut a later one out.  That pin then goes first and
+the signals route again, up to `MAX_ROUTING_PASSES` times.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ SIDE_SPACE = 24  # M4.S.1
 ADJACENT = 3 * M4_WIDTH  # wall to wall: under this, wires are on adjacent tracks
 V4_SPACE = 33  # V4.S.2
 REACH = 128  # M5 tracks either side of its M3 that a pin may reach
+MAX_ROUTING_PASSES = 40  # tries at the signals, each with a shut-out pin first
 
 Rect = tuple[float, float, float, float]
 
@@ -291,6 +296,66 @@ def _land(
     return None
 
 
+def _route_signals(
+    order: list[_Pin],
+    reserved: dict[str, Rect],
+    bottom: float,
+    m4: list[Rect],
+    m5: list[Rect],
+    v4: list[Rect],
+) -> tuple[list[PinEscape], list[Rect], list[Rect], list[Rect]]:
+    """Route each pin in turn; a pin that finds no way out goes first next time.
+
+    Pads share a row's few free tracks and columns fill a slot's M5, so an
+    early pin can shut a later one out.  Returns the routes and the M4, M5 and
+    V4 with them added.
+    """
+    order = list(order)
+    for _ in range(MAX_ROUTING_PASSES):
+        passed = _route_in_order(order, reserved, bottom, m4, m5, v4)
+        if isinstance(passed, _Pin):
+            order.remove(passed)
+            order.insert(0, passed)
+            continue
+        return passed
+    raise ValueError(
+        f"no free M4 track and M5 column for {passed.port} "
+        f"({len(passed.tracks)} free tracks) in {MAX_ROUTING_PASSES} passes"
+    )
+
+
+def _route_in_order(
+    order: list[_Pin],
+    reserved: dict[str, Rect],
+    bottom: float,
+    m4: list[Rect],
+    m5: list[Rect],
+    v4: list[Rect],
+) -> tuple[list[PinEscape], list[Rect], list[Rect], list[Rect]] | _Pin:
+    """Route `order` on copies of the drawn metal, or return the pin that failed."""
+    m4, m5, v4, waiting = [*m4], [*m5], [*v4], dict(reserved)
+    routes = []
+    for pin in order:
+        others = [*m4, *(r for q, r in waiting.items() if q != pin.port)]
+        route = _escape(pin.port, pin.x, pin.target, pin.tracks, bottom, others, m5, v4)
+        if route is None:
+            return pin
+        waiting.pop(pin.port, None)
+        routes.append(route)
+        _add_route(route, m4, m5, v4)
+    return routes, m4, m5, v4
+
+
+def _add_route(
+    route: PinEscape, m4: list[Rect], m5: list[Rect], v4: list[Rect]
+) -> None:
+    m5.append(route.column)
+    h = M5_WIDTH // 2
+    v4.append((route.x - h, route.track - h, route.x + h, route.track + h))
+    if route.pad is not None:
+        m4.append(_bar(route.pad, route.track))
+
+
 def _m3_at(m3: list[Rect], x: float, y: float) -> Rect | None:
     """The M3 column centred on `x` that holds ``(x, y)``."""
     under = [
@@ -318,11 +383,7 @@ def plan_macro_pins(spec: RomDecoderSpec, cell: Any) -> list[PinEscape]:
 
     def take(route: PinEscape) -> None:
         routes.append(route)
-        m5.append(route.column)
-        h = M5_WIDTH // 2
-        v4.append((route.x - h, route.track - h, route.x + h, route.track + h))
-        if route.pad is not None:
-            m4.append(_bar(route.pad, route.track))
+        _add_route(route, m4, m5, v4)
 
     pins = []
     for port, (px, py) in spec.interface_points.items():
@@ -340,16 +401,9 @@ def plan_macro_pins(spec: RomDecoderSpec, cell: Any) -> list[PinEscape]:
     for pin in pins:
         _reach(pin, [*m4, *(r for q, r in reserved.items() if q != pin.port)])
     _assign(pins)
-    for pin in sorted(pins, key=lambda p: (len(p.tracks), abs(p.target - p.x), p.port)):
-        others = [*m4, *(r for q, r in reserved.items() if q != pin.port)]
-        route = _escape(pin.port, pin.x, pin.target, pin.tracks, bottom, others, m5, v4)
-        if route is None:
-            raise ValueError(
-                f"no free M4 track and M5 column for {pin.port} "
-                f"({len(pin.tracks)} free tracks)"
-            )
-        reserved.pop(pin.port, None)
-        take(route)
+    order = sorted(pins, key=lambda p: (len(p.tracks), abs(p.target - p.x), p.port))
+    routed, m4, m5, v4 = _route_signals(order, reserved, bottom, m4, m5, v4)
+    routes += routed
 
     for x, y in spec.vss_strap_points:
         shape = _m3_at(m3, x, y)

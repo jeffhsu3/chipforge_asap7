@@ -982,12 +982,32 @@ class RomDecoderSpec:
             return self.cells
         return replace(self.cells, words=self.cells.words // 2)
 
-    @property
+    @cached_property
     def cells(self) -> RomArraySpec:
-        """The array as drawn: `array`, and with ``control`` its replica bit on top."""
-        if not self.control:
-            return self.array
-        return replace(self.array, bits=self.array.bits + 1)
+        """The array as drawn: `array`, with ``control`` its replica bit on top.
+
+        Its strap rows are as close as `array` says or closer: the lane's rows
+        are taller than a few bits, and a narrow array whose lane has too few
+        tracks gets the height for another row from more straps.
+        """
+        cells = (
+            replace(self.array, bits=self.array.bits + 1)
+            if self.control
+            else self.array
+        )
+        if not self.lane or not self.sense:
+            return cells
+        every = cells.strap_every
+        while every >= 1:
+            try:
+                candidate = replace(cells, strap_every=every)
+                half = replace(candidate, words=candidate.words // 2)
+                self._lane_of(half).plan  # noqa: B018
+            except ValueError:
+                every //= 2
+            else:
+                return candidate
+        return cells
 
     @property
     def replica_bit(self) -> int:
@@ -1090,6 +1110,9 @@ class RomDecoderSpec:
             y = self.cells.height
         else:
             y = lane + LATCH_RAIL_CLEAR
+            if 0 < y - self.cells.height < TOP_CLEAR:
+                # Just off the VSS bar: its strap pad must clear the bar's M2.
+                y = -(-(self.cells.height + TOP_CLEAR) // FIN_PITCH) * FIN_PITCH
         if self.latch_ends[1] > self._lane().strap_xs["VSS"] - GATE_PITCH:
             # The row stands over the lane's VDD strap, which climbs to the
             # VDD stripe: its lowest M3 clears the strap's top.
@@ -1289,8 +1312,11 @@ class RomDecoderSpec:
 
     def _lane(self, right_x: int | None = None) -> RomLaneSpec:
         """The sense lane, at `right_x` or at its narrowest."""
+        return self._lane_of(self.half, right_x)
+
+    def _lane_of(self, half: RomArraySpec, right_x: int | None = None) -> RomLaneSpec:
         return RomLaneSpec(
-            self.half,
+            half,
             right_x=right_x,
             sample=self.sample,
             register=self.register,

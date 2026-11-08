@@ -13,6 +13,7 @@ data bit sites: a V1 anywhere else, the replica row's included, is frozen.
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -39,6 +40,9 @@ PROGRAMMING_LAYERS = ("V1",)
 
 #: Written into each GDS, so one input gives one file byte for byte.
 _TIMESTAMP = datetime(2000, 1, 1, tzinfo=UTC)
+
+#: How long `run_lvs` may take: 1024 x 199 needs most of its default half hour.
+_LVS_TIMEOUT_S = 4 * 3600
 
 #: The clock protocol of ``control``, for whoever reads the manifest.
 _INTERFACE = (
@@ -189,16 +193,21 @@ def _run_lvs(
 
     copy = out / "lvs" / "labelled.gds"
     write_gds(labelled, copy)
-    result = run_lvs(
-        copy,
-        out / record["cdl"],
-        out / "lvs",
-        cell_name=cell,
-        asap7_standard_cell=True,
-        tie_bodies=False,
-        merge_fin_diffusion=True,
-        flat=True,
-    )
+    try:
+        result = run_lvs(
+            copy,
+            out / record["cdl"],
+            out / "lvs",
+            cell_name=cell,
+            asap7_standard_cell=True,
+            tie_bodies=False,
+            merge_fin_diffusion=True,
+            flat=True,
+            timeout=_LVS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        record["lvs"] = "timed_out"
+        return True
     summary = summarize_lvsdb(result.report)
     renamed = [p for c in summary["circuits"] for p in c["renamed_pins"]]
     pins = {
@@ -287,6 +296,8 @@ def write_rom_package(
         "controller": "replica_feedback",
         "registered_output": spec.register,
         "layout": "nor_center_lane",
+        # A narrow array may draw more straps than asked, for the lane's rows.
+        "strap_every": spec.cells.strap_every,
         "interface": _INTERFACE.format(output=output),
         "timing_qualified": False,
         "artifacts": {"macro": record},

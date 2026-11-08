@@ -324,6 +324,12 @@ class RomSenseRowSpec:
         return M3_EDGE + V3_M3_CAP, self.height - M3_EDGE - V3_M3_CAP
 
     @property
+    def q_track_span(self) -> tuple[int, int]:
+        """Lowest and highest M4 track centre the ``Q`` column can take a V3 at."""
+        lv = self.levels
+        return lv["Q"] - CAP + V3_M3_CAP, lv["p"] + PAD - V3_M3_CAP
+
+    @property
     def pin_positions(self) -> dict[str, tuple[str, tuple[float, float]]]:
         mid = self.height / 2
         pins: dict[str, tuple[str, tuple[float, float]]] = {}

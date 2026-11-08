@@ -20,6 +20,7 @@ from chipforge_asap7.devices.rom_bitcell import (
     build_rom_array,
 )
 from chipforge_asap7.devices.rom_lane import RomLaneSpec, build_rom_lane
+from chipforge_asap7.devices.rom_pins import _crossing, _m3_at, _rects
 from chipforge_asap7.verification.lvs import run_lvs
 
 
@@ -254,3 +255,98 @@ def test_rom_with_its_sense_lane_is_clean(words, bits, periphery, sample, asap7_
 def test_sense_needs_the_lane():
     with pytest.raises(ValueError, match="sense needs lane"):
         RomDecoderSpec(array=RomArraySpec(16, 8), lane=False, sense=True)
+
+
+# ── Room for the macro's pins ─────────────────────────────────────────────────
+def _macro(
+    bits: int, strap_every: int = 16, *, register: bool = True
+) -> RomDecoderSpec:
+    return RomDecoderSpec(
+        array=RomArraySpec(64, bits, strap_every=strap_every),
+        sense=True,
+        enable=True,
+        latch=True,
+        sample=True,
+        control=True,
+        register=register,
+        edge_pins=True,
+    )
+
+
+def _q_track_is_open(lane: RomLaneSpec, row: int) -> bool:
+    """A track across the row's Q columns that no bitline runs on."""
+    taken = {p.track for p in lane.plan}
+    return bool(lane.q_tracks(row) - taken) or (
+        lane.ready_track in lane.q_tracks(row)
+        and lane.plan[lane.replica_bit].row == row
+    )
+
+
+@pytest.mark.parametrize("bits", [12, 13, 14, 24, 27, 37, 48, 74, 96, 132])
+def test_bitlines_leave_each_row_a_track_for_its_q_columns(bits):
+    """These widths once took every track the Q columns cross in some row."""
+    lane = _macro(bits).sense_lane
+    assert all(_q_track_is_open(lane, row) for row in range(lane.rows))
+
+
+@pytest.mark.parametrize("row", [0, 1])
+def test_q_tracks_are_the_ones_its_column_crosses(row):
+    """The plan's idea of the Q column against the column as drawn."""
+    spec = _macro(16)
+    lane = spec.sense_lane
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    top = build_rom_lane(lane, lib=library)
+    m3 = _rects(top, "M3")
+    bit = next(p.bit for p in lane.plan if p.row == row and p.bit in lane.data_bits)
+    shape = _m3_at(m3, *lane.q_pin(bit))
+    assert lane.q_tracks(row) == set(_crossing(shape))
+
+
+def test_a_lane_with_q_labels_reserves_nothing():
+    """Without pins nothing lands on those tracks, so the bitlines may use them."""
+    half = RomArraySpec(32, 13)
+    labelled = RomLaneSpec(half, sample=True, register=True, replica=True)
+    pinned = RomLaneSpec(half, sample=True, register=True, replica=True, q_labels=False)
+    assert not _q_track_is_open(labelled, 1)
+    assert _q_track_is_open(pinned, 1)
+
+
+@pytest.mark.parametrize(
+    "bits, every", [(2, 1), (3, 2), (8, 8), (9, 8), (15, 8), (6, 16), (148, 16)]
+)
+def test_only_an_array_too_short_for_its_tracks_adds_straps(bits, every):
+    spec = _macro(bits)
+    assert spec.cells.strap_every == every
+    assert spec.array.strap_every == 16
+
+
+def test_a_tighter_strap_interval_is_kept():
+    spec = _macro(30, strap_every=4)
+    assert spec.cells.strap_every == 4
+
+
+def test_one_bit_has_no_room_for_a_lane_row():
+    with pytest.raises(ValueError, match="no room"):
+        _macro(1).sense_lane  # noqa: B018
+
+
+@pytest.mark.parametrize(
+    "bits, register",
+    [(8, True), (12, True), (24, True), (48, True), (164, True), (150, False)],
+)
+def test_widths_once_refused_get_their_pins(bits, register):
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    top = build_rom(_macro(bits, register=register), lib=library)
+    labels = {label.text for label in top.get_labels()}
+    assert {f"Q[{b}]" for b in range(bits)} <= labels
+
+
+def test_a_pin_shut_out_of_the_first_routing_pass_goes_first(monkeypatch):
+    """One pass is what refused this width; the retry is what builds it."""
+    monkeypatch.setattr("chipforge_asap7.devices.rom_pins.MAX_ROUTING_PASSES", 1)
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    with pytest.raises(ValueError, match="in 1 passes"):
+        build_rom(_macro(164), lib=library)

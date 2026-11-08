@@ -45,6 +45,7 @@ bar that `build_rom` lays along the array's top edge.
 
 from __future__ import annotations
 
+from collections.abc import Container, Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, Literal
@@ -93,6 +94,13 @@ class LanePlacement:
     lift: int
 
 
+def _open_tracks(free: Iterable[int], keep: Container[int]) -> list[int]:
+    """The `free` tracks a bitline may take: not the last one of `keep`."""
+    tracks = list(free)
+    kept = [t for t in tracks if t in keep]
+    return [t for t in tracks if t not in kept] if len(kept) == 1 else tracks
+
+
 @dataclass(frozen=True)
 class RomLaneSpec:
     """The sense lane beside `half`, one of the two half arrays.
@@ -107,7 +115,9 @@ class RomLaneSpec:
             (see `RomSenseRowSpec`).
         replica: the half's last bit is the replica bit; its leaf's ``D`` is
             ``READY``.
-        q_labels: label each ``Q<b>``; a macro with its own pins does not.
+        q_labels: label each ``Q<b>``.  A macro with its own pins does not, and
+            needs a way onto M4 from each row's ``Q`` columns instead, so the
+            bitlines leave it one of the tracks those columns cross.
     """
 
     half: RomArraySpec
@@ -185,6 +195,14 @@ class RomLaneSpec:
         first = y0 + lo + (M4_TRACK_OFFSET - y0 - lo) % M4_PITCH
         return list(range(first, y0 + hi + 1, M4_PITCH))
 
+    def q_tracks(self, row: int) -> set[int]:
+        """The tracks of `row` that its ``Q`` columns can take a V3 at."""
+        lo, hi = self.row_spec(1).q_track_span
+        if row % 2:
+            lo, hi = self.row_height - hi, self.row_height - lo
+        y0 = self.row_y(row)
+        return {t for t in self.tracks(row) if y0 + lo <= t <= y0 + hi}
+
     # ── Plan ──────────────────────────────────────────────────────────────────
     @staticmethod
     def lift_span(y_bitline: int, y_track: int) -> tuple[int, int]:
@@ -199,14 +217,18 @@ class RomLaneSpec:
         """Row, slot, track and lift column of every bit, in bit order."""
         free = {r: self.tracks(r) for r in range(self.rows)}
         used: dict[int, int] = {r: 0 for r in range(self.rows)}
+        keep = {
+            r: self.q_tracks(r) if self.sample and not self.q_labels else set()
+            for r in range(self.rows)
+        }
         placed = []
         for bit in self._plan_order:
             y = self.bitline_y(bit)
             home = min(max(y // self.row_height, 0), self.rows - 1)
             best = None
             for r in (home, home - 1, home + 1, home - 2, home + 2):
-                if free.get(r):
-                    t = min(free[r], key=lambda t: (abs(t - y), t))
+                if open_tracks := _open_tracks(free.get(r, ()), keep.get(r, ())):
+                    t = min(open_tracks, key=lambda t: (abs(t - y), t))
                     key = (abs(t - y), used[r])
                     if best is None or key < best[0]:
                         best = (key, r, t)
@@ -236,6 +258,10 @@ class RomLaneSpec:
                 ready = min(ok, key=lambda y: (abs(y - t), y))
                 free[r].remove(ready)
                 object.__setattr__(self, "_ready_track", ready)
+                # READY's wire stops at the replica's own leaf, so a Q column
+                # further along can still use its track.
+                if ready in keep[r]:
+                    keep[r] = set()
             placed.append((bit, r, used[r], t))
             used[r] += 1
         # Pack each lift onto the first column whose last segment it clears.
