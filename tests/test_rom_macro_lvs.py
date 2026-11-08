@@ -3,8 +3,10 @@
 The comparison is flat: the reference is, and KLayout 0.30's hierarchical
 extractor was seen to run past 20 minutes on a 64x32 macro that flat
 extraction matches in 11 s.  The unprogrammed drains are labelled
-(`label_floating_drains`), which cuts the compare about tenfold.  LVS skips when KLayout is missing;
-``ASAP7_REQUIRE_TOOLS=1`` makes that a failure.
+(`label_floating_drains`), which cuts the compare about tenfold.  The
+compare is topological, so a match must also pair each pin with its own
+name.  LVS skips when KLayout is missing; ``ASAP7_REQUIRE_TOOLS=1`` makes
+that a failure.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import pytest
 from chipforge_asap7.devices import RomDecoderSpec, build_rom
 from chipforge_asap7.devices.rom_bitcell import RomArraySpec
 from chipforge_asap7.verification.lvs import run_lvs
+from chipforge_asap7.verification.lvs_report import summarize_lvsdb
 from chipforge_asap7.verification.rom_macro_lvs import (
     label_floating_drains,
     rom_macro_reference,
@@ -116,6 +119,8 @@ def test_macro_matches_its_unit_fin_reference(config, tmp_path: Path, require_kl
     reference = rom_macro_reference(spec, sites, name_floating=True)
     result = _lvs(gds, reference.render(name), tmp_path)
     assert result.matched
+    circuits = summarize_lvsdb(result.report)["circuits"]
+    assert [c.get("renamed_pins", []) for c in circuits] == [[]] * len(circuits)
     assert result.extracted_netlist.read_text().count("M$") == reference.fins
 
 

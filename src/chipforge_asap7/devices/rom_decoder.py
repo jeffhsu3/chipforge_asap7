@@ -1965,6 +1965,12 @@ def main(argv: list[str] | None = None) -> None:
                 None,
                 "JSON search report; defaults to the GDS path with .search.json.",
             ),
+            Option(
+                "cdl",
+                Path | None,
+                None,
+                "Also write the macro's flat CDL netlist here.",
+            ),
         ),
     )
     spec: RomDecoderSpec = args.spec
@@ -2033,6 +2039,12 @@ def main(argv: list[str] | None = None) -> None:
     }[args.pattern]
     cell, out = write_gds(lambda lib: build_rom(spec, sites, lib=lib), args.out)
     print(f"✓ {cell.name} -> {out}")
+    if args.cdl is not None:
+        from .rom_netlist import rom_macro_cdl, rom_macro_ports
+
+        args.cdl.parent.mkdir(parents=True, exist_ok=True)
+        args.cdl.write_text(rom_macro_cdl(spec, sites, name=cell.name))
+        print(f"  CDL -> {args.cdl}: pins {' '.join(rom_macro_ports(spec))}")
     if search is not None:
         import json
 
