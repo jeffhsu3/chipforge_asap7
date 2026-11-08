@@ -56,7 +56,8 @@ line used in more than one pair -- every ``PB``, and the predecoders' shared
 lines -- has an M3 join column beside the predecoders: on the lane's left
 side for a ``PB`` line only the left half uses, else on its right.  Each row
 is padded with filler to one common span and ends in ``filler tap filler``
-and ``tap filler``.  ``lane=False`` keeps the predecoders at the rows' left
+and ``tap filler``; a row too long for those to reach gets another tap in the
+lane (`RomDecoderSpec.lane_tap_x`).  ``lane=False`` keeps the predecoders at the rows' left
 end, ``[ends][predecoder columns][join columns][slots ...][ends]``, and one
 array whose bitlines leave its left edge.
 
@@ -90,7 +91,13 @@ from .cli import Option, parse_spec, write_gds
 from .finfet import DEVICE_GATE_CUT_HEIGHT
 from .inverter import InverterSpec, build_inverter
 from .nand import NandSpec, build_nand
-from .rom_bitcell import ROM_TILE_WORDS, STRAP_WL_XS, RomArraySpec, build_rom_array
+from .rom_bitcell import (
+    LATCHUP_REACH,
+    ROM_TILE_WORDS,
+    STRAP_WL_XS,
+    RomArraySpec,
+    build_rom_array,
+)
 from .rom_control import RomControlSpec, build_rom_control_row
 from .rom_lane import M5_WIDTH, TOP_CLEAR, V4_CAP, RomLaneSpec, build_rom_lane
 from .rom_latch import M3_EDGE as M3_EDGE_LATCH
@@ -127,6 +134,9 @@ MIN_STUB = 2 * TRACK_PITCH
 OUT_TO_WORDLINE = 2 * TRACK_PITCH
 #: Support cells at each row end: ``filler tap filler``, two CPP each.
 END_CPP = 2
+#: How far along a row a PMOS may stand from its well's tap: ACTIVE.LUP.1's reach,
+#: less a margin for its round corner across the row and the cells' own widths.
+WELL_TAP_REACH = LATCHUP_REACH - 1_000
 #: Space between pairs.  Their VSS rails are not shared: at the 162 nm shift
 #: between one pair's slots and the next one's, a filler's rail contact would
 #: land on a source stub of the other row (V0.M1.AUX.3).  Two fin pitches
@@ -516,6 +526,15 @@ class RomDecoderSpec:
                 self.interleave,
                 self.predecoder_placement,
             )
+        if self.half.width > WELL_TAP_REACH:  # no shorter row can be too long
+            longest = max(b - a for a, b in pairwise(self.well_taps))
+            if longest > 2 * WELL_TAP_REACH:
+                raise ValueError(
+                    f"a {self.array.words}-word decoder has {longest} nm of row between "
+                    f"N-well taps, which leaves PMOS further than {LATCHUP_REACH} nm "
+                    "from a tap (ACTIVE.LUP.1)"
+                    + ("" if self.lane else "; the lane would add one")
+                )
 
     # ── Address ───────────────────────────────────────────────────────────────
     @cached_property
@@ -983,18 +1002,20 @@ class RomDecoderSpec:
         return (0, self.right_x) if self.lane else (0,)
 
     @cached_property
-    def right_x(self) -> int:
-        """X of the right half: the first whole tile whose slots clear the lane.
-
-        A whole tile keeps the right half's slots the left half's, shifted.
-        """
-        if not self.lane:
-            raise ValueError("only a ROM with the lane has a right half")
+    def _lane_end(self) -> int:
+        """X the lane's predecoders and right join columns need, tap aside."""
         end = self.pre_x(self.pre_columns) + END_CPP * GATE_PITCH
         right = self._join_groups[1]
         if right:
             first = self.pre_x(self.pre_columns) + TRACK_PITCH
             end = max(end, first + max(right.values()) * TRACK_PITCH + JOIN_MARGIN)
+        return end
+
+    def _right_x_past(self, end: int) -> int:
+        """The first whole tile's x whose slots clear `end` and the lane's rows.
+
+        A whole tile keeps the right half's slots the left half's, shifted.
+        """
         tile = self.half.bitcell.width
         right = -(-(end - self.side_span(0)[0]) // tile) * tile
         if self.sense:
@@ -1004,6 +1025,42 @@ class RomDecoderSpec:
             end = self.latch_ends[1] + GATE_PITCH
             right = max(right, -(-end // tile) * tile)
         return right
+
+    @cached_property
+    def lane_tap_x(self) -> int | None:
+        """X of the well tap in the lane, or ``None`` if the row ends reach it all.
+
+        A row's N-well has its taps at the row's two ends, which hold a PMOS to
+        30 um (ACTIVE.LUP.1).  A row too long for that gets a third tap just
+        past the predecoders, on the filler every row has there, about halfway
+        along.  The p-side needs nothing: the array's tap row runs under the
+        whole decoder.
+        """
+        if not self.lane:
+            return None
+        lo, hi = self._left_slot_span
+        span = self._right_x_past(self._lane_end) + hi - lo + 2 * END_CPP * GATE_PITCH
+        if span <= 2 * WELL_TAP_REACH:
+            return None
+        return self.pre_x(self.pre_columns) + END_CPP * GATE_PITCH
+
+    @cached_property
+    def right_x(self) -> int:
+        """X of the right half: the first whole tile whose slots clear the lane."""
+        if not self.lane:
+            raise ValueError("only a ROM with the lane has a right half")
+        end = self._lane_end
+        if self.lane_tap_x is not None:
+            # The tap and the filler after it, before the right half's slots.
+            end = max(end, self.lane_tap_x + 2 * END_CPP * GATE_PITCH)
+        return self._right_x_past(end)
+
+    @cached_property
+    def well_taps(self) -> tuple[int, ...]:
+        """X of the N-well taps along every row, left to right."""
+        left = self.rows_span[0] + END_CPP * GATE_PITCH
+        lane = () if self.lane_tap_x is None else (self.lane_tap_x,)
+        return (left, *lane, self.slots_span[1])
 
     @cached_property
     def vdd_stripe_y(self) -> int:
@@ -1094,9 +1151,7 @@ class RomDecoderSpec:
         top = self.latch_y + rs.height - M3_EDGE_LATCH
         names = self.port_names
         return {
-            **{
-                names[f"Q<{b}>"]: lane.q_pin(b) for b in range(self.array.bits)
-            },
+            **{names[f"Q<{b}>"]: lane.q_pin(b) for b in range(self.array.bits)},
             **{
                 names[f"A<{i}>"]: (
                     self.latch_x + rs.d_x(i),
@@ -1289,7 +1344,8 @@ class RomDecoderSpec:
         """X spans of `row` between its slots, predecoders and row ends.
 
         Rows are padded to `slots_span`; with the lane each half's slots end
-        in filler up to the predecoders, which covers the join columns.
+        in filler up to the predecoders, which covers the join columns.  The
+        filler leaves room for `lane_tap_x`'s tap.
         """
         k, sw = self.interleave, self.slot_width
         xs = [self.slot_x(w) for w in range(row, self.array.words, k)]
@@ -1298,10 +1354,17 @@ class RomDecoderSpec:
             spans = [(self.join_x0, xs[0]), (xs[-1] + sw, hi)]
         else:
             m = self.half.words // k
+            lane = [(self.pre_x(self.pre_columns), xs[m])]
+            if self.lane_tap_x is not None:
+                tap = self.lane_tap_x
+                lane = [
+                    (self.pre_x(self.pre_columns), tap),
+                    (tap + END_CPP * GATE_PITCH, xs[m]),
+                ]
             spans = [
                 (lo, xs[0]),
                 (xs[m - 1] + sw, self.pre_x(0)),
-                (self.pre_x(self.pre_columns), xs[m]),
+                *lane,
                 (xs[-1] + sw, hi),
             ]
         return [(x0, x1) for x0, x1 in spans if x1 > x0]
@@ -1655,6 +1718,8 @@ def build_rom_decoder(
             put(support, x_left + i * end_w)
         for i, support in enumerate(right):
             put(support, x_right + i * end_w)
+        if spec.lane_tap_x is not None:
+            put(left[1], spec.lane_tap_x)
 
         for w, x in zip(words, xs):
             # The wordline: from its V2 down to the array's top edge.

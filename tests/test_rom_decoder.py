@@ -21,7 +21,12 @@ from chipforge_asap7.devices import (
     build_rom_decoder,
     size_rom_decoder,
 )
-from chipforge_asap7.devices.rom_decoder import MIN_GAP, RAIL_MARGIN, main
+from chipforge_asap7.devices.rom_decoder import (
+    MIN_GAP,
+    RAIL_MARGIN,
+    WELL_TAP_REACH,
+    main,
+)
 from chipforge_asap7.devices.rom_predecoder import network
 from chipforge_asap7.layout import GATE_PITCH
 
@@ -253,6 +258,65 @@ def test_decoder_drc_with_taller_pairs(asap7_drc):
     library = _library()
     top = build_rom_decoder(spec, lib=library)
     assert set(asap7_drc(library, top, tag=top.name)) == set()
+
+
+def test_only_a_row_too_long_for_its_end_taps_gets_a_tap_in_the_lane():
+    assert RomDecoderSpec(array=RomArraySpec(512, 16)).lane_tap_x is None
+    spec = RomDecoderSpec(array=RomArraySpec(1024, 16))
+    taps = spec.well_taps
+    assert len(taps) == 3 and taps[1] == spec.lane_tap_x
+    assert max(b - a for a, b in pairwise(taps)) <= 2 * WELL_TAP_REACH
+    # Every row has filler where the tap stands, and its slots stay clear of it.
+    tap = spec.lane_tap_x
+    for row in range(spec.interleave):
+        spans = spec.fills(row)
+        assert not any(x0 < tap + 108 and tap < x1 for x0, x1 in spans), row
+        assert any(x1 == tap and x1 - x0 >= 108 for x0, x1 in spans), row
+        assert any(x0 == tap + 108 and x1 - x0 >= 108 for x0, x1 in spans), row
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"array": RomArraySpec(1024, 8), "lane": False},
+        {"array": RomArraySpec(2048, 16)},
+    ],
+    ids=["no_lane_for_a_tap", "too_long_for_one_tap"],
+)
+def test_a_row_no_tap_can_reach_is_refused(spec):
+    with pytest.raises(ValueError, match=r"N-well taps.*ACTIVE\.LUP\.1"):
+        RomDecoderSpec(**spec)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {},
+        {
+            "sense": True,
+            "enable": True,
+            "latch": True,
+            "sample": True,
+            "register": True,
+            "control": True,
+        },
+    ],
+    ids=["array_and_decoder", "self_timed"],
+)
+def test_1024_words_are_drc_clean(asap7_drc, flags):
+    spec = RomDecoderSpec(array=RomArraySpec(1024, 16), **flags)
+    library = _library()
+    top = build_rom(spec, lib=library)
+    assert set(asap7_drc(library, top, tag=top.name)) == set()
+
+
+def test_1024_words_without_the_lane_tap_break_the_latchup_rule(asap7_drc):
+    """The negative control: this is what the tap is for."""
+    spec = RomDecoderSpec(array=RomArraySpec(1024, 16))
+    spec.__dict__["lane_tap_x"] = None
+    library = _library()
+    top = build_rom(spec, lib=library)
+    assert set(asap7_drc(library, top, tag=top.name)) == {"ACTIVE.LUP.1"}
 
 
 def _extract(tmp_path, spec, sites):

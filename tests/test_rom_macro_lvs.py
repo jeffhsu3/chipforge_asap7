@@ -124,6 +124,21 @@ def test_macro_matches_its_unit_fin_reference(config, tmp_path: Path, require_kl
     assert result.extracted_netlist.read_text().count("M$") == reference.fins
 
 
+@pytest.mark.slow
+def test_1024_words_match_with_the_well_tap_in_the_lane(
+    tmp_path: Path, require_klayout
+):
+    """The tap ties the N-well and adds no device: 220 s of compare says so."""
+    spec = _spec(1024, 16, control=True, register=True)
+    assert spec.lane_tap_x is not None
+    sites = _sites(spec)
+    gds, name = _build(spec, sites, tmp_path, labelled=sites)
+    reference = rom_macro_reference(spec, sites, name_floating=True)
+    result = _lvs(gds, reference.render(name), tmp_path)
+    assert result.matched
+    assert result.extracted_netlist.read_text().count("M$") == reference.fins
+
+
 def test_the_labels_only_speed_the_compare(tmp_path: Path, require_klayout):
     """Without the drain labels the macro matches all the same."""
     spec = _spec(**CONFIGS["16x6_self_timed"])
