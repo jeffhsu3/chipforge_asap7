@@ -388,6 +388,10 @@ class RomDecoderSpec:
             ``SAMPLE``, and a replica bit, one more bit row programmed in
             every word (`cells`), tells it when a read is done.  Needs
             enable, latch and sample.
+        edge_pins: carry the interface to M5 columns reaching the macro's bottom
+            edge, labelled there, as a placed block needs
+            (`chipforge_asap7.devices.rom_pins`).  The bus pins become
+            ``A[i]`` and ``Q[b]``, the B-ROM's names.  Needs control.
     """
 
     array: RomArraySpec = field(default_factory=RomArraySpec)
@@ -413,6 +417,7 @@ class RomDecoderSpec:
     register: bool = False
     control: bool = False
     control_fingers: int = 4
+    edge_pins: bool = False
 
     def __post_init__(self) -> None:
         k = self.interleave
@@ -449,6 +454,10 @@ class RomDecoderSpec:
             raise ValueError(
                 "the controller drives EVAL, the address latches' PRECHN and the "
                 "sample latches' SAMPLE: control needs enable, latch and sample"
+            )
+        if self.edge_pins and not self.control:
+            raise ValueError(
+                "the edge pins are the self-timed interface's: edge_pins needs control"
             )
         if self.register and not self.sample:
             raise ValueError(
@@ -1069,6 +1078,57 @@ class RomDecoderSpec:
         return self.control_x + cs.out_x(gate)
 
     @property
+    def port_names(self) -> dict[str, str]:
+        """Each bus net's name as a pin, where that is not the net's own."""
+        if not self.edge_pins:
+            return {}
+        return {
+            **{f"A<{i}>": f"A[{i}]" for i in range(self.address_bits)},
+            **{f"Q<{b}>": f"Q[{b}]" for b in range(self.array.bits)},
+        }
+
+    @property
+    def interface_points(self) -> dict[str, tuple[float, float]]:
+        """Where each signal pin meets its M3, in macro coordinates."""
+        rs, lane = self.latch_row, self.sense_lane
+        top = self.latch_y + rs.height - M3_EDGE_LATCH
+        names = self.port_names
+        return {
+            **{
+                names[f"Q<{b}>"]: lane.q_pin(b) for b in range(self.array.bits)
+            },
+            **{
+                names[f"A<{i}>"]: (
+                    self.latch_x + rs.d_x(i),
+                    self.latch_y + rs.levels["X"],
+                )
+                for i in range(self.address_bits)
+            },
+            **{pin: (self.control_pin_x(pin), top - 9) for pin in ("CLK", "RESETN")},
+        }
+
+    @property
+    def vss_strap_points(self) -> list[tuple[int, int]]:
+        """A point on each M3 VSS strap: the decoder's two, the lane's and the
+        latch row's."""
+        rails = [y for y, net in self.supply_rails if net == "VSS"]
+        rows = (min(rails) + max(rails)) // 2
+        return [
+            *((x, rows) for x in self.strap_xs["VSS"]),
+            (self.sense_lane.strap_xs["VSS"], self.sense_lane.height // 2),
+            (self.latch_strap_xs["VSS"], self.latch_y + self.latch_row.height // 2),
+        ]
+
+    @property
+    def vdd_strap_xs(self) -> list[int]:
+        """Each M3 VDD strap that lands on the M4 stripe."""
+        return [
+            *self.strap_xs["VDD"],
+            self.sense_lane.strap_xs["VDD"],
+            self.latch_strap_xs["VDD"],
+        ]
+
+    @property
     def _latch_gap(self) -> int:
         """The gap the latch row and its channel need, on the fin grid."""
         need = self._channel_tracks()[-1] + LATCH_CHANNEL_TOP - self.cells.height
@@ -1180,6 +1240,7 @@ class RomDecoderSpec:
             sample=self.sample,
             register=self.register,
             replica=self.control,
+            q_labels=not self.edge_pins,
         )
 
     def wordline_x(self, word: int) -> int:
@@ -1346,7 +1407,8 @@ class RomDecoderSpec:
             f"{'_l' if self.latch else ''}"
             f"{'_s' if self.sense else ''}{'_q' if self.sample else ''}"
             f"{'r' if self.register else ''}"
-            f"{f'_c{self.control_fingers}' if self.control else ''}{tag}"
+            f"{f'_c{self.control_fingers}' if self.control else ''}"
+            f"{'_pins' if self.edge_pins else ''}{tag}"
         )
 
 
@@ -1753,6 +1815,10 @@ def build_rom(
         _tie_lane_vdd(spec, cell)
     if spec.latch:
         _draw_address_latches(spec, cell, lib)
+    if spec.edge_pins:
+        from .rom_pins import draw_macro_pins
+
+        draw_macro_pins(spec, cell)
     return cell
 
 
@@ -1819,10 +1885,14 @@ def _draw_address_latches(spec: RomDecoderSpec, cell: Any, lib: Any) -> None:
         box(cell, "M4", x0, track - _HALF_M4, x1, track + _HALF_M4)
         for xv in (xq, xj):
             box(cell, "V3", xv - HALF, track - _HALF_M4, xv + HALF, track + _HALF_M4)
-    for bit in range(spec.address_bits):
-        _label(
-            cell, f"A<{bit}>", "M3", (spec.latch_x + rs.d_x(bit), y + rs.levels["X"])
-        )
+    if not spec.edge_pins:
+        for bit in range(spec.address_bits):
+            _label(
+                cell,
+                f"A<{bit}>",
+                "M3",
+                (spec.latch_x + rs.d_x(bit), y + rs.levels["X"]),
+            )
 
 
 def _draw_controller(spec: RomDecoderSpec, cell: Any, lib: Any, top: int) -> None:
@@ -1971,6 +2041,13 @@ def main(argv: list[str] | None = None) -> None:
                 None,
                 "Also write the macro's flat CDL netlist here.",
             ),
+            Option(
+                "views",
+                Path | None,
+                None,
+                "Also write the macro's LEF, Verilog and estimated Liberty to "
+                "this directory; needs --edge_pins.",
+            ),
         ),
     )
     spec: RomDecoderSpec = args.spec
@@ -2045,6 +2122,13 @@ def main(argv: list[str] | None = None) -> None:
         args.cdl.parent.mkdir(parents=True, exist_ok=True)
         args.cdl.write_text(rom_macro_cdl(spec, sites, name=cell.name))
         print(f"  CDL -> {args.cdl}: pins {' '.join(rom_macro_ports(spec))}")
+    if args.views is not None:
+        from .rom_views import rom_macro_views
+
+        args.views.mkdir(parents=True, exist_ok=True)
+        for filename, text in rom_macro_views(spec, sites, cell).items():
+            (args.views / filename).write_text(text)
+            print(f"  view -> {args.views / filename}")
     if search is not None:
         import json
 

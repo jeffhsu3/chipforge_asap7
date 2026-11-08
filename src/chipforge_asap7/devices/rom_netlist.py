@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..layout.grid import FIN_WIDTH, GATE_WIDTH
 from .inverter import InverterSpec
@@ -335,6 +335,17 @@ def rom_macro_devices(
         out += _latches(spec)
     if spec.control:
         out += _controller(spec)
+    names = spec.port_names
+    if names:
+        out = [
+            replace(
+                d,
+                drain=names.get(d.drain, d.drain),
+                gate=names.get(d.gate, d.gate),
+                source=names.get(d.source, d.source),
+            )
+            for d in out
+        ]
     return tuple(out)
 
 
@@ -364,7 +375,8 @@ def rom_macro_pins(spec: RomDecoderSpec) -> tuple[str, ...]:
         pins += [f"A<{i}>" for i in range(spec.address_bits)]
     if spec.control:
         pins += ["CLK", "RESETN"]
-    return (*dict.fromkeys(pins), "VDD", "VSS")
+    names = spec.port_names
+    return (*dict.fromkeys(names.get(p, p) for p in pins), "VDD", "VSS")
 
 
 def rom_macro_ports(spec: RomDecoderSpec) -> tuple[str, ...]:
@@ -392,7 +404,8 @@ def rom_macro_ports(spec: RomDecoderSpec) -> tuple[str, ...]:
         ports += [f"BLL<{b}>" for b in bits] + [f"BLR<{b}>" for b in bits]
     else:
         ports += [f"BL<{b}>" for b in bits]
-    return (*ports, "VDD", "VSS")
+    names = spec.port_names
+    return (*(names.get(p, p) for p in ports), "VDD", "VSS")
 
 
 def rom_macro_cdl(

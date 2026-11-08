@@ -107,6 +107,7 @@ class RomLaneSpec:
             (see `RomSenseRowSpec`).
         replica: the half's last bit is the replica bit; its leaf's ``D`` is
             ``READY``.
+        q_labels: label each ``Q<b>``; a macro with its own pins does not.
     """
 
     half: RomArraySpec
@@ -118,6 +119,7 @@ class RomLaneSpec:
     sample: bool = False
     register: bool = False
     replica: bool = False
+    q_labels: bool = True
 
     def __post_init__(self) -> None:
         rs = self.row_spec(1)
@@ -391,6 +393,7 @@ class RomLaneSpec:
             f"_{self.half.cell_name.removeprefix('rom_array_')}"
             f"_x{self.x_right}_{self.n_fins}n{self.p_fins}p"
             f"_h{self.band_height[0]}x{self.band_height[1]}{vt_tag}"
+            f"{'' if self.q_labels else '_nq'}"
         )
 
     # ── Netlist ───────────────────────────────────────────────────────────────
@@ -600,7 +603,7 @@ def build_rom_lane(
                     p.track + M4_HALF,
                 )
         _label(cell, spec.d_net(p.bit), "M3", spec.d_pin(p.bit))
-        if spec.sample and p.bit in spec.data_bits:
+        if spec.sample and spec.q_labels and p.bit in spec.data_bits:
             _label(cell, f"Q<{p.bit}>", "M3", spec.q_pin(p.bit))
 
     if spec.replica:
