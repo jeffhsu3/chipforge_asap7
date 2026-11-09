@@ -37,8 +37,13 @@ both from the leaf's c2 column::
     column   l0    l1     l2        l3          l4    l5     l6
 
 A leaf, a gap and a latch make a 13-column slice.  The row starts with
-``PRECHN``'s and ``SAMPLE``'s full-height M3 columns and an inverter that
-makes the row's ``SAMPLEB``.  The slice carries eight M2 levels between the
+``PRECHN``'s and ``SAMPLE``'s full-height M3 columns and two inverters on one
+island: ``SAMPLE`` makes the row's ``SAMPLEB``, and that makes the row's own
+copy of ``SAMPLE``, which is what the latches see.  Long M3 and every latch's
+gates on the column would leave a slow edge at the far rows, with the sample
+and register latches conducting together while it passes; SPICE at 1024x148
+shows ``Q`` changing before ``CLK`` rises.  So the column drives one inverter
+per row.  The slice carries eight M2 levels between the
 via rows, ``D PRECHN Q SAMPLE DP SAMPLEB Y X`` from the bottom; all but the
 latch's own ``Q``, ``Y`` and ``X`` cross the leaf, under its bitline ties.
 That needs a 513 nm row of 4-fin bands, the default when ``sample`` is set.
@@ -105,9 +110,9 @@ SAMPLE_LATCH_COLUMNS = 7
 SAMPLE_SLICE_COLUMNS = LEAF_COLUMNS + SAMPLE_LATCH_COLUMNS
 #: With ``register``, the register latch straight after the sample latch.
 REGISTER_SLICE_COLUMNS = SAMPLE_SLICE_COLUMNS + SAMPLE_LATCH_COLUMNS
-#: Before the first sample slice: PRECHN's M3, SAMPLE's, SAMPLEB's inverter
-#: (two columns) and a gap.
-SAMPLE_LEAD_COLUMNS = 5
+#: Before the first sample slice: PRECHN's M3, SAMPLE's, the two inverters of
+#: the row's clocks on one island (three columns) and a gap.
+SAMPLE_LEAD_COLUMNS = 6
 #: A standing landing's end faces an M2 track's side across 25 nm (M2.S.2),
 #: 51 nm centre to centre from its via.
 LANDING_CLEAR = 51
@@ -353,12 +358,14 @@ class RomSenseRowSpec:
     # ── Netlist ───────────────────────────────────────────────────────────────
     @property
     def lead_devices(self) -> tuple[tuple[str, str, str, str, str, int], ...]:
-        """The row's own transistors: with ``sample``, the ``SAMPLEB`` inverter."""
+        """The row's own transistors: with ``sample``, its two clock inverters."""
         if not self.sample:
             return ()
         return (
             ("MPS", "SAMPLEB", "SAMPLE", "VDD", "p", self.p_fins),
             ("MNS", "SAMPLEB", "SAMPLE", "VSS", "n", self.n_fins),
+            ("MPC", "SAMPLEL", "SAMPLEB", "VDD", "p", self.p_fins),
+            ("MNC", "SAMPLEL", "SAMPLEB", "VSS", "n", self.n_fins),
         )
 
     def leaf_devices(self, k: int) -> tuple[tuple[str, str, str, str, str, int], ...]:
@@ -379,12 +386,12 @@ class RomSenseRowSpec:
         if self.sample:
             q = f"LQ{k}" if self.register else f"Q<{k}>"
             devices += _latch(
-                k, "", d, q, f"LX{k}", f"LY{k}", ("SAMPLE", "SAMPLEB"), n, p
+                k, "", d, q, f"LX{k}", f"LY{k}", ("SAMPLEL", "SAMPLEB"), n, p
             )
         if self.register:
             devices += _latch(
                 k, "R", f"LQ{k}", f"Q<{k}>", f"RX{k}", f"RY{k}",
-                ("SAMPLEB", "SAMPLE"), n, p,
+                ("SAMPLEB", "SAMPLEL"), n, p,
             )  # fmt: skip
         return tuple(devices)
 
@@ -559,10 +566,10 @@ def build_rom_sense_row(
     )
     m3_column(cell, x_pre, 0, height, vias=[lv["PRECHN"]])
     if spec.sample:
-        x_inv = spec.column_x[3]
-        m2_track(cell, lv["CK"], spec.sample_x - PAD, max(ck_gates) + PAD,
+        m2_track(cell, lv["CK"], spec.column_x[4] - PAD, max(ck_gates) + PAD,
                  vias=ck_gates)  # fmt: skip
-        m2_track(cell, lv["CKB"], x_inv - PAD, max(ckb_gates) + PAD, vias=ckb_gates)
+        m2_track(cell, lv["CKB"], spec.column_x[2] - PAD, max(ckb_gates) + PAD,
+                 vias=ckb_gates)  # fmt: skip
 
     if draw_pin_labels:
         for pin, (metal, origin) in spec.pin_positions.items():
@@ -578,27 +585,34 @@ def _pad(cell: Any, band: RowBand, x: int) -> None:
 
 
 def _draw_sample_lead(cell: Any, spec: RomSenseRowSpec) -> tuple[list[int], list[int]]:
-    """``SAMPLE``'s column and the ``SAMPLEB`` inverter; returns the gates of each track.
+    """``SAMPLE``'s column and the row's two inverters; returns the gates of each track.
 
-    ``SAMPLE`` is column 1's full-height M3, which stacked rows share; the
-    inverter's supply is column 2 and its output column 3, whose M3 meets the
-    ``SAMPLEB`` track.
+    ``SAMPLE`` is column 1's full-height M3, which stacked rows share, and its
+    own short piece of the ``SAMPLE`` level takes it to the first inverter.
+    That inverter's output is column 2, on the ``SAMPLEB`` track; the second's
+    gate is on that track and its output is column 4, where the row's copy of
+    ``SAMPLE`` starts.  Both share the supply at column 3.
     """
     n, p = spec.bands["n"], spec.bands["p"]
     lv = spec.levels
     seam = spec.stack.seam_y(0)
     cx = spec.column_x
-    island(cell, p, cx[2:4])
-    island(cell, n, cx[2:4])
-    supply_contact(cell, p, cx[2])
-    supply_contact(cell, n, cx[2])
-    _pad(cell, p, cx[3])
-    _pad(cell, n, cx[3])
-    g_inv = cx[2] + GATE_PITCH // 2
-    gate_contact(cell, seam, [g_inv], g_inv, _reach(lv["CK"], seam))
-    m3_column(cell, cx[3], lv["n"] - PAD, lv["p"] + PAD, vias=[lv["CKB"]])
+    island(cell, p, cx[2:5])
+    island(cell, n, cx[2:5])
+    supply_contact(cell, p, cx[3])
+    supply_contact(cell, n, cx[3])
+    for x in (cx[2], cx[4]):
+        _pad(cell, p, x)
+        _pad(cell, n, x)
+    g_in = cx[2] + GATE_PITCH // 2
+    g_out = cx[3] + GATE_PITCH // 2
+    gate_contact(cell, seam, [g_in], g_in, _reach(lv["CK"], seam))
+    gate_contact(cell, seam, [g_out], g_out, _reach(lv["CKB"], seam))
+    m3_column(cell, cx[2], lv["n"] - PAD, lv["p"] + PAD, vias=[lv["CKB"]])
+    m3_column(cell, cx[4], lv["n"] - PAD, lv["p"] + PAD, vias=[lv["CK"]])
     m3_column(cell, spec.sample_x, 0, spec.height, vias=[lv["CK"]])
-    return [g_inv], []
+    m2_track(cell, lv["CK"], spec.sample_x - PAD, g_in + PAD, vias=[g_in])
+    return [], [g_out]
 
 
 def _reach(level: int, seam: int) -> int:

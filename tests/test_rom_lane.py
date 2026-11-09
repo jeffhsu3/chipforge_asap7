@@ -140,7 +140,7 @@ def test_lane_matches_its_unit_fin_reference(sample, tmp_path: Path, require_kla
     assert result.matched
     fins = sum(device[5] for device in lane.devices())
     per_bit = {False: 12, True: 14 * 4, "register": 22 * 4}[sample]
-    assert fins == 32 * per_bit + (2 * 4 * lane.rows if sample else 0)
+    assert fins == 32 * per_bit + (4 * 4 * lane.rows if sample else 0)
     assert result.extracted_netlist.read_text().count("M$") == fins
 
 
@@ -333,7 +333,7 @@ def test_one_bit_has_no_room_for_a_lane_row():
 
 @pytest.mark.parametrize(
     "bits, register",
-    [(8, True), (12, True), (24, True), (48, True), (164, True), (150, False)],
+    [(8, True), (12, True), (24, True), (48, True), (174, True), (150, False)],
 )
 def test_widths_once_refused_get_their_pins(bits, register):
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
@@ -349,4 +349,4 @@ def test_a_pin_shut_out_of_the_first_routing_pass_goes_first(monkeypatch):
     library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
     gdspy.current_library = library
     with pytest.raises(ValueError, match="in 1 passes"):
-        build_rom(_macro(164), lib=library)
+        build_rom(_macro(174), lib=library)

@@ -156,7 +156,7 @@ def test_register_on_the_sample_latchs_clock_fails(tmp_path: Path, require_klayo
     library.write_gds(str(gds))
     reference = tmp_path / "reference.spice"
     text = spec.lvs_reference()
-    wrong = text.replace("MRNT0_f0 LQ0 SAMPLEB RX0", "MRNT0_f0 LQ0 SAMPLE RX0")
+    wrong = text.replace("MRNT0_f0 LQ0 SAMPLEB RX0", "MRNT0_f0 LQ0 SAMPLEL RX0")
     assert wrong != text
     reference.write_text(wrong)
     assert not run_lvs(

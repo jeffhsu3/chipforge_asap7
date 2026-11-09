@@ -304,13 +304,14 @@ def estimate_timing(
 
     q_um = max((um for pin, um in columns.items() if pin.startswith("Q[")), default=0)
     request = stage("C_REQ")
-    # CLK rises: REQ falls, SAMPLE falls, each row's SAMPLEB rises, the register
-    # latch opens, and its two inverters drive Q.
+    # CLK rises: REQ falls, SAMPLE falls, each row's SAMPLEB rises and its copy
+    # of SAMPLE falls, the register latch opens, and its two inverters drive Q.
     clk_q = (
         request
         + stage("C_SN")
         + stage("SAMPLE", across_um)
         + stage("S_SAMPLEB_R0", row_um)
+        + stage("S_SAMPLEL_R0", row_um)
         + stage("S_RX0")
         + stage("S_RY0")
         + stage("Q[0]", q_um, OUTPUT_LOAD_FF)

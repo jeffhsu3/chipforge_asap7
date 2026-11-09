@@ -426,8 +426,8 @@ class RomLaneSpec:
     def devices(self) -> list[tuple[str, str, str, str, str, int]]:
         """Every leaf's transistors, named and netted by bit, then each row's own.
 
-        A row's ``SAMPLEB`` inverter drives that row's latches only, so its
-        output is ``SAMPLEB_R<row>``.
+        A row's two clock inverters drive that row's latches only, so their
+        outputs are ``SAMPLEB_R<row>`` and ``SAMPLEL_R<row>``.
         """
         rs = self.row_spec(1)
         out = []
@@ -446,6 +446,7 @@ class RomLaneSpec:
                     "RX0": f"RX{b}",
                     "RY0": f"RY{b}",
                     "SAMPLEB": f"SAMPLEB_R{p.row}",
+                    "SAMPLEL": f"SAMPLEL_R{p.row}",
                 }
                 out.append(
                     (
@@ -461,12 +462,12 @@ class RomLaneSpec:
             if not self.row_leaves(r):
                 continue
             for device, drain, gate, source, flavor, fins in rs.lead_devices:
-                rename = {"SAMPLEB": f"SAMPLEB_R{r}"}
+                rename = {"SAMPLEB": f"SAMPLEB_R{r}", "SAMPLEL": f"SAMPLEL_R{r}"}
                 out.append(
                     (
                         f"{device}_R{r}",
                         rename.get(drain, drain),
-                        gate,
+                        rename.get(gate, gate),
                         rename.get(source, source),
                         flavor,
                         fins,
