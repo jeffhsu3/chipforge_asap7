@@ -405,8 +405,12 @@ def render_deck(
     watch: Sequence[str],
     *,
     wires: bool = True,
+    q_nodeset: float | None = None,
 ) -> tuple[str, list[str]]:
-    """The deck, and the nodes it writes to ``waveform.dat`` in order."""
+    """The deck, and the nodes it writes to ``waveform.dat`` in order.
+
+    `q_nodeset`, a fraction of VDD, gives the solver a first guess for every
+    ``Q`` pin (see `simulate`)."""
     if wires:
         rc, devices, loads = _ladders(spec, path)
     else:
@@ -426,6 +430,11 @@ def render_deck(
         f".temp {corner.temperature_c:g}",
         ".options reltol=1e-3 abstol=1e-12 vntol=1e-6 method=gear rshunt=1e10",
         f"Vsupply vdd 0 {vdd:g}",
+        *(
+            f".nodeset v({names[f'Q[{b}]']})={q_nodeset * vdd:g}"
+            for b in range(spec.array.bits)
+            if q_nodeset is not None and f"Q[{b}]" in names
+        ),
         f"VCLK {names['CLK']} 0 {_pwl(_clock(stimulus), vdd, stimulus.slew)}",
         f"VRESETN {names['RESETN']} 0 "
         + _pwl([(0.0, 0), (stimulus.high, 1)], vdd, stimulus.slew),
@@ -524,22 +533,30 @@ def simulate(
     (out / "models.pm").write_text(
         "\n".join(translate_asap7_model(card, model) for model in models)
     )
-    deck, _ = render_deck(spec, path, stimulus, corner, osdi, watch, wires=wires)
-    (out / "read.sp").write_text(deck)
     waveform = out / "waveform.dat"
-    waveform.unlink(missing_ok=True)
     simulator = shutil.which("ngspice")
     if simulator is None:
         raise FileNotFoundError("ngspice was not found")
-    done = subprocess.run(
-        [simulator, "-b", "read.sp"],
-        cwd=out,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-    )
-    (out / "read.log").write_text(done.stdout + done.stderr)
+    # The output latches hold either value before the first read, and at the
+    # fast corner with keepers the solver can fail to settle on one.  A first
+    # guess for Q gets it there; the first read overwrites Q either way.
+    for q_nodeset in (None, *Q_NODESETS):
+        deck, _ = render_deck(
+            spec, path, stimulus, corner, osdi, watch, wires=wires, q_nodeset=q_nodeset
+        )
+        (out / "read.sp").write_text(deck)
+        waveform.unlink(missing_ok=True)
+        done = subprocess.run(
+            [simulator, "-b", "read.sp"],
+            cwd=out,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        (out / "read.log").write_text(done.stdout + done.stderr)
+        if not OPERATING_POINT_FAILED.search(done.stdout + done.stderr):
+            break
     if done.returncode or not waveform.is_file():
         raise RuntimeError(
             f"ngspice failed (exit {done.returncode}); see {out}/read.log"
@@ -549,6 +566,13 @@ def simulate(
         raise RuntimeError(f"incomplete transient; see {out}/read.log")
     traces = {name: data[:, i + 1] for i, name in enumerate(watch)}
     return Waveforms(data[:, 0] * 1e12, traces, corner.vdd)
+
+
+#: ngspice's words when no operating point was found.
+OPERATING_POINT_FAILED = re.compile(r"operating point could not be simulated")
+#: The first guesses for ``Q``, as a fraction of VDD, tried in turn when ngspice
+#: finds no operating point.
+Q_NODESETS = (1.0, 0.0)
 
 
 # ── Characterizing ────────────────────────────────────────────────────────────
@@ -564,6 +588,10 @@ DROOP_LOW_PS = 6000.0
 #: hasn't flipped by then: at 1024 words and the slow corner, a bitline at 0.39 V
 #: of 0.63 V after 20 ns left ``D`` at 7% of VDD.
 DROOP_LIMIT = 2 / 3
+#: A bitline falling slower than this, in mV/ns, is held: a keeper's line
+#: settles a little under VDD, and at this rate it would take some 20 ms to fall
+#: 0.2 V, so `max_low` has no limit to report.
+HELD_MV_PER_NS = 0.01
 #: A logic level is good within this fraction of VDD of its rail.
 LEVEL_TOLERANCE = 0.2
 
@@ -806,8 +834,9 @@ def _droop(
     ``CLK`` can stay low before it reaches `DROOP_LIMIT` of VDD, in ps.
 
     The read selects a word with no bit here and every other word has one, so
-    nothing holds the line up and all of them leak.  The rate falls with the
-    voltage, so a straight line from the end of the run is on the safe side.
+    only a keeper holds the line up and all of them leak.  The rate falls with
+    the voltage, so a straight line from the end of the run is on the safe side.
+    A line falling slower than `HELD_MV_PER_NS` is held: no limit, ``None``.
     """
     _, word = read_words(spec)
     nets = ("BLL<0>", "BLR<0>")
@@ -821,8 +850,8 @@ def _droop(
         slope = (w.at(net, middle) - now) / (end - middle)  # V/ps
         level = min(level, now)
         rate = max(rate, slope)
-    if rate <= 0:
-        return 0.0, None
+    if rate * 1e6 < HELD_MV_PER_NS:
+        return max(rate, 0.0) * 1e6, None
     return rate * 1e6, DROOP_LOW_PS + (level - DROOP_LIMIT * w.vdd) / rate
 
 

@@ -15,6 +15,7 @@ from chipforge_asap7.devices.rom_netlist import rom_macro_devices
 from chipforge_asap7.devices.rom_timing import (
     CORNERS,
     LOADS_FF,
+    OPERATING_POINT_FAILED,
     REPORT_FORMAT,
     CornerTiming,
     ReadPath,
@@ -175,6 +176,24 @@ def test_deck_keeps_a_stop_time_of_any_length():
     tran = next(line for line in deck.splitlines() if line.startswith("tran "))
     assert float(tran.split()[2].removesuffix("p")) == pytest.approx(
         stimulus.stop, abs=1e-3
+    )
+
+
+def test_deck_can_give_q_a_first_guess_for_the_operating_point():
+    """Only with the retry asks for it: the guess must not touch a normal run."""
+    spec = _macro()
+    path = read_path(spec, read_sites(spec), read_words(spec), (0,))
+    stimulus = Stimulus(read_words(spec))
+    corner = CORNERS["fast"]
+    plain, _ = render_deck(spec, path, stimulus, corner, Path("x.osdi"), ["Q[0]"])
+    assert ".nodeset" not in plain
+    guessed, _ = render_deck(
+        spec, path, stimulus, corner, Path("x.osdi"), ["Q[0]"], q_nodeset=1.0
+    )
+    nodesets = [line for line in guessed.splitlines() if line.startswith(".nodeset")]
+    assert nodesets and all(line.endswith(f"={corner.vdd:g}") for line in nodesets)
+    assert OPERATING_POINT_FAILED.search(
+        "Error: The operating point could not be simulated successfully."
     )
 
 

@@ -67,6 +67,11 @@ reads were correct at every corner at 16x6 and at 1024x148. That was one bit at
 Solver settings matter here: `rshunt=1e10` is what lets the fast corner find an
 operating point, and a time step above 1 ps aborts at the fast and typical
 corners. Where larger steps finished at 64x16, they moved results under 1 ps.
+With keepers, 1024x148 still found no operating point at the fast corner. When
+ngspice says so, `simulate` runs the deck again with a first guess for each `Q`
+pin, VDD and then 0. `Q` may start at either rail, and the first read
+overwrites it, so the guess doesn't change what is measured. `rshunt=1e9` also
+worked, but it leaks about 0.8 nA from every node.
 
 ## Measured results
 
@@ -113,12 +118,28 @@ records the report's hash and each corner's source and `max_low_ps`.
 
 ## Limits to design around
 
-**Don't stop `CLK` low for long.** The read leaf has no keeper. While `CLK` is
-low, a bitline reading 0 floats and every programmed bit on it leaks, so it
-droops until the leaf reads 1. `max_low` is a straight-line extrapolation, which
-is on the safe side because the rate falls with voltage. It is shortest at the
-slow corner, which is the hot one. A direct 20 ns run at 1024x148 there left the
+**Without `--keeper`, don't stop `CLK` low for long.** While `CLK` is low, a
+bitline reading 0 floats and every programmed bit on it leaks, so it droops
+until the leaf reads 1. `max_low` is a straight-line extrapolation, which is on
+the safe side because the rate falls with voltage. It is shortest at the slow
+corner, which is the hot one. A direct 20 ns run at 1024x148 there left the
 bitline at 0.39 V of 0.63 V and `D` at 7% of VDD.
+
+`--keeper` adds two pFETs in series from VDD to each bitline, one gated by the
+leaf's output `D` and one by `SAMPLEB`. They are off while the line evaluates,
+so they don't fight a discharge, and they hold a line that read 0 from `SAMPLE`
+rising until `CLK` rises. A line that holds reports a `droop` under
+0.01 mV/ns and no `max_low`. A keeper sized only to be weak doesn't work here:
+in the 4-fin band, two in series held the line at 0.49 V against the 2-fin
+cell, and the read never finished.
+
+At 1024x148, with the timing measured without keepers, a read with keepers was
+correct at all three corners. It was also correct with a card made from the
+slow NMOS and fast PMOS models, at both temperatures, where a keeper fights
+hardest. The PDK has no such corner. `clk_q` rose
+about 10% later, from the extra load on `SAMPLEB`: 175.4 ps against 158.9 ps at
+slow, 105.9 against 95.8 at fast. Characterizing macros with keepers gives their
+own numbers.
 
 **The first read's `Q` is unknown.** Reset doesn't initialize the register. `Q`
 is X in the Verilog model, and either rail in SPICE, until the first `CLK` rise

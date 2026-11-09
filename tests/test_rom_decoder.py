@@ -443,7 +443,19 @@ def test_each_address_raises_its_own_wordline(tmp_path, words, interleave, lane)
         }, address
 
 
-def _settle(devices, net, inputs, held):
+def _keepers(devices, net):
+    """The weak devices of `devices`: each pFET on a bitline gated by a read
+    leaf's output, which is a bitline keeper."""
+    outputs = {v for k, v in net.items() if k == "READY" or k.startswith("D<")}
+    lines = {v for k, v in net.items() if k.startswith(("BLL<", "BLR<"))}
+    return frozenset(
+        i
+        for i, d in enumerate(devices)
+        if d["pmos"] and d["gate"] in outputs and lines & set(d["terminals"])
+    )
+
+
+def _settle(devices, net, inputs, held, weak=frozenset()):
     """`_switch_level` with charge: a net no source reaches keeps its `held` value.
 
     The sources are VDD, VSS and the driven inputs.  The on transistors join
@@ -456,6 +468,11 @@ def _settle(devices, net, inputs, held):
     value and an unknown chase each other round its two inverters forever.  One that reaches both is a fight, unknown too:
     a latch's two gates overlap for the inverter delay of its clock, as they
     do in silicon.  A fight still standing once the nets settle is a short.
+
+    The devices at the indices in `weak` (`_keepers`) lose to any other: a
+    group they join to a source, or to another group, takes that value only
+    if nothing else reaches it, and a fight between weak paths is unknown,
+    not a short.
     """
     source = {net["VDD"]: 1, net["VSS"]: 0, **inputs}
     nets = {t for d in devices for t in (*d["terminals"], d["gate"])} | set(held)
@@ -470,11 +487,10 @@ def _settle(devices, net, inputs, held):
                 n = parent[n]
             return n
 
-        on = [
-            d["terminals"]
-            for d in devices
-            if (g := value.get(d["gate"])) is not None and g == (0 if d["pmos"] else 1)
-        ]
+        on, weak_on = [], []
+        for i, d in enumerate(devices):
+            if (g := value.get(d["gate"])) is not None and g == (0 if d["pmos"] else 1):
+                (weak_on if i in weak else on).append(d["terminals"])
         for a, b in on:
             if a not in source and b not in source:
                 parent[find(a)] = find(b)
@@ -483,6 +499,25 @@ def _settle(devices, net, inputs, held):
             for n, other in ((a, b), (b, a)):
                 if other in source and n not in source:
                     reach.setdefault(find(n), set()).add(source[other])
+        # The weak paths: groups they join, and the sources they reach.
+        joined: dict = {}
+
+        def top(r, joined=joined):
+            joined.setdefault(r, r)
+            while joined[r] != r:
+                r = joined[r]
+            return r
+
+        for a, b in weak_on:
+            if a not in source and b not in source:
+                joined[top(find(a))] = top(find(b))
+        weakly: dict = {}
+        for a, b in weak_on:
+            for n, other in ((a, b), (b, a)):
+                if other in source and n not in source:
+                    weakly.setdefault(top(find(n)), set()).add(source[other])
+        for root, levels in list(reach.items()):
+            weakly.setdefault(top(root), set()).update(levels)
         charge: dict = {}
         recent: dict = {}
         for n in nets - source.keys():
@@ -493,6 +528,8 @@ def _settle(devices, net, inputs, held):
         for n in nets - source.keys():
             root = find(n)
             levels = reach.get(root)
+            if levels is None:
+                levels = weakly.get(top(root))
             if levels is None:
                 levels = (charge[root] - {None}) or (recent[root] - {None})
             elif len(levels) > 1:

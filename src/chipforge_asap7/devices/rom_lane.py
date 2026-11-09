@@ -110,9 +110,9 @@ class RomLaneSpec:
             `right_x`.
         right_x: x of the right half.  ``None`` is the narrowest lane,
             `min_right_x`.
-        n_fins, p_fins, band_height, vt, sample, register: the leaves'
-            devices and rows, their sample latches and register latches
-            (see `RomSenseRowSpec`).
+        n_fins, p_fins, band_height, vt, sample, register, keeper: the
+            leaves' devices and rows, their sample latches, register latches
+            and bitline keepers (see `RomSenseRowSpec`).
         replica: the half's last bit is the replica bit; its leaf's ``D`` is
             ``READY``.
         q_labels: label each ``Q<b>``.  A macro with its own pins does not, and
@@ -128,6 +128,7 @@ class RomLaneSpec:
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
     sample: bool = False
     register: bool = False
+    keeper: bool = False
     replica: bool = False
     q_labels: bool = True
 
@@ -157,6 +158,7 @@ class RomLaneSpec:
             vt=self.vt,
             sample=self.sample,
             register=self.register,
+            keeper=self.keeper,
         )
 
     @cached_property
@@ -416,6 +418,7 @@ class RomLaneSpec:
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         return (
             f"rom_lane{'_q' if self.sample else ''}{'r' if self.register else ''}"
+            f"{'k' if self.keeper else ''}"
             f"_{self.half.cell_name.removeprefix('rom_array_')}"
             f"_x{self.x_right}_{self.n_fins}n{self.p_fins}p"
             f"_h{self.band_height[0]}x{self.band_height[1]}{vt_tag}"
@@ -447,6 +450,11 @@ class RomLaneSpec:
                     "RY0": f"RY{b}",
                     "SAMPLEB": f"SAMPLEB_R{p.row}",
                     "SAMPLEL": f"SAMPLEL_R{p.row}",
+                    **{
+                        f"K{side}{i}0": f"K{side}{i}_{b}"
+                        for side in "LR"
+                        for i in range(rs.stack_depth - 1)
+                    },
                 }
                 out.append(
                     (
@@ -508,7 +516,7 @@ class RomLaneSpec:
             bulk = "VSS" if flavor == "n" else "VDD"
             for fin in range(fins):
                 d, s = (
-                    f"{net}_f{fin}" if net.startswith("X") else net
+                    f"{net}_f{fin}" if net.startswith(("X", "KL", "KR")) else net
                     for net in (drain, source)
                 )
                 lines.append(

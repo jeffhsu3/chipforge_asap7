@@ -5,9 +5,12 @@ NOR ROM, and can check it:
 
 ```sh
 asap7-rom --array.words 1024 --array.bits 148 \
-    --sense --enable --latch --sample --control --register --edge_pins \
+    --sense --enable --latch --sample --control --register --keeper --edge_pins \
     --words words.json --package out/ --drc --lvs
 ```
+
+`--keeper` keeps each bitline that read 0 from drooping while `CLK` stays low.
+It costs three columns per bit slice. See [the read's limits](rom_timing.md#limits-to-design-around).
 
 `words.json` is a JSON array with one unsigned integer per word. Bit `b` of word
 `w` set means a V1 at that bit's site, and that bit reads back as 1. Without

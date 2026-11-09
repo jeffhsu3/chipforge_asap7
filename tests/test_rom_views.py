@@ -16,7 +16,7 @@ from pathlib import Path
 
 import gdspy
 import pytest
-from test_rom_decoder import _extract, _settle
+from test_rom_decoder import _extract, _keepers, _settle
 
 from chipforge_asap7.devices import RomDecoderSpec, build_rom
 from chipforge_asap7.devices.rom_bitcell import RomArraySpec
@@ -48,7 +48,9 @@ TECH_LEF = Path(__file__).resolve().parents[2] / (
 SIZES = [(16, 6), (64, 32), (128, 33)]
 
 
-def _spec(words=16, bits=6, register=True, edge_pins=True) -> RomDecoderSpec:
+def _spec(
+    words=16, bits=6, register=True, edge_pins=True, keeper=False
+) -> RomDecoderSpec:
     return RomDecoderSpec(
         array=RomArraySpec(words, bits),
         sense=True,
@@ -56,6 +58,7 @@ def _spec(words=16, bits=6, register=True, edge_pins=True) -> RomDecoderSpec:
         latch=True,
         sample=True,
         register=register,
+        keeper=keeper,
         control=True,
         edge_pins=edge_pins,
     )
@@ -367,12 +370,20 @@ def test_a_latched_models_q_opens_while_clk_is_low(tmp_path, external_tool):
     assert q[1] == q[2] == _word(sites, 5, 6)
 
 
-@pytest.mark.parametrize("register", [True, False], ids=["registered", "latched"])
-def test_the_model_matches_the_extracted_layout(register, tmp_path, external_tool):
-    """Both see one random stimulus, resets and all, and agree on every Q."""
+@pytest.mark.parametrize(
+    ("register", "keeper"),
+    [(True, False), (False, False), (True, True)],
+    ids=["registered", "latched", "kept"],
+)
+def test_the_model_matches_the_extracted_layout(
+    register, keeper, tmp_path, external_tool
+):
+    """Both see one random stimulus, resets and all, and agree on every Q.
+
+    With keepers the switch level sees each as weaker than a bit cell."""
     external_tool(shutil.which("iverilog") is not None, "iverilog is not installed")
-    spec = _spec(register=register, edge_pins=False)
-    named = _spec(register=register)
+    spec = _spec(register=register, edge_pins=False, keeper=keeper)
+    named = _spec(register=register, keeper=keeper)
     sites = _sites(spec)
     rng = random.Random(7)
     steps = [(0, 1, 1)]
@@ -381,6 +392,8 @@ def test_the_model_matches_the_extracted_layout(register, tmp_path, external_too
         resetn = int(rng.random() > 0.1)
         steps += [(address, 0, resetn), (rng.randrange(16), 1, resetn)]
     devices, net = _extract(tmp_path, spec, sites)
+    weak = _keepers(devices, net)
+    assert len(weak) == (2 * 7 if keeper else 0)  # two per leaf, replica too
     supplies = {net["VDD"]: 1, net["VSS"]: 0}
     value = {}
     switch = []
@@ -391,7 +404,7 @@ def test_the_model_matches_the_extracted_layout(register, tmp_path, external_too
             net["CLK"]: clk,
             net["RESETN"]: resetn,
         }
-        value = _settle(devices, net, pins, value)
+        value = _settle(devices, net, pins, value, weak)
         switch.append(
             "".join(
                 "x" if value[net[f"Q<{b}>"]] is None else str(value[net[f"Q<{b}>"]])

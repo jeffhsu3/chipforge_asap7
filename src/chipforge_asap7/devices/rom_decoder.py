@@ -395,6 +395,13 @@ class RomDecoderSpec:
             that ``Q<b>`` takes the word as ``SAMPLE`` falls and holds it
             for a cycle.  With ``control`` that is just after ``CLK`` rises,
             one cycle after the address was latched.  Needs sample.
+        keeper: hold each bitline up once its leaf has read 0, with two
+            pFETs in series from VDD, gated by the leaf's output and
+            ``SAMPLEB`` (`chipforge_asap7.devices.rom_sense`).  It is off
+            while the bitlines evaluate and holds them from ``SAMPLE`` rising
+            until ``CLK`` rises.  Without it a line that nothing discharges
+            droops while ``CLK`` is low, which limits how long ``CLK`` may
+            stay low.  Costs three columns per bit.  Needs sample.
         control: time each read itself from ``CLK`` and ``RESETN``: the
             controller (`chipforge_asap7.devices.rom_control`) stands at the
             end of the address-latch row and drives ``PRECHN``, ``EVAL`` and
@@ -428,6 +435,7 @@ class RomDecoderSpec:
     sense: bool = False
     sample: bool = False
     register: bool = False
+    keeper: bool = False
     control: bool = False
     control_fingers: int = 4
     edge_pins: bool = False
@@ -475,6 +483,11 @@ class RomDecoderSpec:
         if self.register and not self.sample:
             raise ValueError(
                 "the register latches follow the sample latches: register needs sample"
+            )
+        if self.keeper and not self.sample:
+            raise ValueError(
+                "the keepers take the p columns the sample latches leave: keeper "
+                "needs sample"
             )
         if self.sample and not self.sense:
             raise ValueError(
@@ -1348,6 +1361,7 @@ class RomDecoderSpec:
             right_x=right_x,
             sample=self.sample,
             register=self.register,
+            keeper=self.keeper,
             replica=self.control,
             q_labels=not self.edge_pins,
         )
@@ -1528,7 +1542,7 @@ class RomDecoderSpec:
             f"{'' if self.lane else '_edge'}{'_e' if self.enable else ''}"
             f"{'_l' if self.latch else ''}"
             f"{'_s' if self.sense else ''}{'_q' if self.sample else ''}"
-            f"{'r' if self.register else ''}"
+            f"{'r' if self.register else ''}{'k' if self.keeper else ''}"
             f"{f'_c{self.control_fingers}' if self.control else ''}"
             f"{'_pins' if self.edge_pins else ''}{tag}"
         )
