@@ -2176,7 +2176,7 @@ def main(argv: list[str] | None = None) -> None:
                 "views",
                 Path | None,
                 None,
-                "Also write the macro's LEF, Verilog and estimated Liberty to "
+                "Also write the macro's LEF, Verilog and Liberty to "
                 "this directory; needs --edge_pins.",
             ),
             Option(
@@ -2196,6 +2196,40 @@ def main(argv: list[str] | None = None) -> None:
             ),
             Option("drc", bool, False, "Run gdscheck on the packaged macro."),
             Option("lvs", bool, False, "Run LVS of the packaged macro on its CDL."),
+            Option(
+                "characterize",
+                Path | None,
+                None,
+                "Simulate the read and write a timing report here instead of "
+                "a macro; its working files go beside it.  Needs --register.",
+            ),
+            Option(
+                "corners",
+                tuple[Literal["typical", "fast", "slow"], ...],
+                ("typical", "fast", "slow"),
+                "The corners --characterize measures.",
+            ),
+            Option("jobs", int, 6, "Simulations --characterize runs at a time."),
+            Option(
+                "resolution",
+                float,
+                10.0,
+                "How closely --characterize brackets each limit, in ps.",
+            ),
+            Option(
+                "osdi",
+                Path | None,
+                None,
+                "BSIM-CMG's OSDI library for --characterize; compiled beside the "
+                "report if absent.",
+            ),
+            Option(
+                "timing",
+                Path | None,
+                None,
+                "A report from --characterize: --package and --views take each "
+                "measured corner's Liberty from it.",
+            ),
         ),
     )
     spec: RomDecoderSpec = args.spec
@@ -2208,6 +2242,32 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
     try:
+        if args.characterize is not None:
+            import json
+
+            from .rom_timing import characterize, default_osdi
+
+            if not spec.register or not spec.edge_pins:
+                raise ValueError("--characterize needs --register and --edge_pins")
+            work = args.characterize.with_suffix(".work")
+            osdi = args.osdi or default_osdi(work / "model")
+            report = characterize(
+                spec,
+                args.corners,
+                osdi,
+                work,
+                jobs=args.jobs,
+                resolution=args.resolution,
+            )
+            args.characterize.parent.mkdir(parents=True, exist_ok=True)
+            args.characterize.write_text(json.dumps(report, indent=2) + "\n")
+            print(f"✓ {spec.macro_name} -> {args.characterize}")
+            if report["failed"]:
+                reasons = "; ".join(f"{c}: {r}" for c, r in report["failed"].items())
+                raise SystemExit(f"error: corners failed: {reasons}")
+            return
+        if args.timing is not None and args.package is None and args.views is None:
+            raise ValueError("--timing is for --package or --views")
         if args.package is None and (args.drc or args.lvs):
             raise ValueError("--drc and --lvs check a macro written by --package")
         if args.package is not None:
@@ -2282,7 +2342,7 @@ def main(argv: list[str] | None = None) -> None:
         from .rom_package import rom_image_name, write_rom_package
 
         failed = write_rom_package(
-            spec, sites, args.package, drc=args.drc, lvs=args.lvs
+            spec, sites, args.package, drc=args.drc, lvs=args.lvs, timing=args.timing
         )
         top_name, out = rom_image_name(spec, sites), args.package / "macro.gds"
         print(f"✓ {top_name} -> {args.package / 'manifest.json'}")
@@ -2297,10 +2357,12 @@ def main(argv: list[str] | None = None) -> None:
         args.cdl.write_text(rom_macro_cdl(spec, sites, name=top_name))
         print(f"  CDL -> {args.cdl}: pins {' '.join(rom_macro_ports(spec))}")
     if args.views is not None:
+        from .rom_timing import load_report
         from .rom_views import rom_macro_views
 
         args.views.mkdir(parents=True, exist_ok=True)
-        for filename, text in rom_macro_views(spec, sites, cell).items():
+        measured = load_report(args.timing, spec) if args.timing else None
+        for filename, text in rom_macro_views(spec, sites, cell, measured).items():
             (args.views / filename).write_text(text)
             print(f"  view -> {args.views / filename}")
     if search is not None:

@@ -236,18 +236,22 @@ def write_rom_package(
     *,
     drc: bool = False,
     lvs: bool = False,
+    timing: Path | None = None,
 ) -> bool:
     """Write the macro's package to `out`; True if a check it ran failed.
 
     ``macro.gds``, ``macro.cdl``, ``macro.lef``, ``macro.v``, with ``register``
     ``macro_{tt,ff,ss}.lib``, the abstract and ``manifest.json``.  The manifest
     is written before each check runs and after it, so a check that dies leaves
-    ``not_run`` behind rather than an older run's result.
+    ``not_run`` behind rather than an older run's result.  `timing` is a report
+    from `chipforge_asap7.devices.rom_timing`, of this shape.
     """
     from .rom_netlist import rom_macro_cdl, rom_macro_devices, rom_macro_ports
-    from .rom_views import rom_macro_views
+    from .rom_timing import load_report
+    from .rom_views import CORNERS, rom_macro_views
 
     sites = sorted(set(programmed))
+    measured = load_report(timing, spec) if timing is not None else {}
     out.mkdir(parents=True, exist_ok=True)
     manifest = out / "manifest.json"
     # Invalidate a prior successful report before writing anything it describes.
@@ -260,7 +264,7 @@ def write_rom_package(
         timestamp=_TIMESTAMP,
     )
     (out / "macro.cdl").write_text(rom_macro_cdl(spec, sites, name=name))
-    views = rom_macro_views(spec, sites, top)
+    views = rom_macro_views(spec, sites, top, measured)
     for filename, text in views.items():
         (out / filename).write_text(text)
     (x0, y0), (x1, y1) = top.get_bounding_box()
@@ -300,6 +304,20 @@ def write_rom_package(
         "strap_every": spec.cells.strap_every,
         "interface": _INTERFACE.format(output=output),
         "timing_qualified": False,
+        "timing": {
+            "report_sha256": (
+                sha256(timing.read_bytes()).hexdigest() if timing else None
+            ),
+            "wires": "estimated" if measured else None,
+            "corners": {
+                corner: (
+                    {"source": "spice", "max_low_ps": measured[corner].max_low}
+                    if corner in measured
+                    else {"source": "estimate"}
+                )
+                for corner in CORNERS
+            },
+        },
         "artifacts": {"macro": record},
         "abstract": _write_abstract(spec, top, out),
     }

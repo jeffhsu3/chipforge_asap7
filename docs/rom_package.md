@@ -23,7 +23,7 @@ The command exits non-zero if a check it ran failed.
 | `macro.gds` | The programmed macro, named by its contents |
 | `macro.cdl` | Its flat netlist, sized by `nfin` |
 | `macro.lef`, `macro.v` | Its abstract and behavioral model |
-| `macro_{tt,ff,ss}.lib` | Estimated timing, with `--register` only |
+| `macro_{tt,ff,ss}.lib` | Timing, with `--register` only: estimated, or measured with `--timing` |
 | `abstract.gds`, `abstract.lef` | The shape, under a stable name |
 | `manifest.json` | The record of all of the above |
 
@@ -89,5 +89,7 @@ LVS reads a label only as a name, so it can't tell a VDD column labelled VSS.
 That is covered by the connectivity tests in `tests/test_rom_views.py`, not by
 `--lvs`.
 
-`timing_qualified` is `false`: the Liberty is a logical-effort estimate that no
-SPICE run has checked yet.
+`timing_qualified` is `false`. Without `--timing` the Liberty is a logical-effort
+estimate, which SPICE shows can be optimistic: at 16x6 it gives a shorter `CLK`
+low than the read needs. Use a report from [`--characterize`](rom_timing.md). That
+is simulation with estimated wires, so it stays `false` too.

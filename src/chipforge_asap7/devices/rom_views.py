@@ -1,4 +1,4 @@
-"""LEF, Verilog and estimated Liberty views of a placeable NOR ROM macro.
+"""LEF, Verilog and Liberty views of a placeable NOR ROM macro.
 
 The macro is ``build_rom(spec, ...)`` with ``spec.edge_pins``: its interface is
 ``A[i]``, ``CLK``, ``RESETN``, ``Q[b]``, ``VDD`` and ``VSS``, on M5 columns
@@ -10,12 +10,14 @@ falling closes the address latches and starts the read, and with ``register``
 ``Q`` takes the word as ``CLK`` rises.  A read has to finish while ``CLK`` is
 low; if it does not, ``SAMPLE`` never rises and ``Q`` keeps the old word.
 
-**The Liberty is an estimate, not a characterization.**  `estimate_timing` walks
+**Without a timing report, the Liberty is an estimate.**  `estimate_timing` walks
 the macro's actual transistors with the logical-effort numbers
 `chipforge_asap7.devices.sizing.LogicalEffortModel` holds, a rough wire
 capacitance, no wire resistance and a flat margin.  It tracks the macro's size
 but no simulation has checked it; the arcs exist so that a design can be placed
-and constrained until the read is simulated.
+and constrained until the read is simulated.  A corner measured by
+`chipforge_asap7.devices.rom_timing` takes its delays and constraints from the
+measurement instead, plus `MEASURED_MARGIN`; pin capacitances stay estimates.
 """
 
 from __future__ import annotations
@@ -23,12 +25,15 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..layout.layers import LAYERS, PIN_LAYERS
 from .rom_decoder import RomDecoderSpec
 from .rom_netlist import rom_macro_devices, rom_macro_ports
 from .sizing import LogicalEffortModel
+
+if TYPE_CHECKING:
+    from .rom_timing import CornerTiming
 
 __all__ = [
     "CORNERS",
@@ -50,6 +55,12 @@ EXACT = ("M4", "M5", "M6")
 CORNERS = {"typical": ("tt", 1.0), "fast": ("ff", 0.75), "slow": ("ss", 1.44)}
 #: Multiplies every estimated delay: nothing here has been simulated.
 MARGIN = 1.5
+#: The loads a measured ``Q`` table is indexed by, in fF, as
+#: `chipforge_asap7.devices.rom_timing` measures them.
+LIBERTY_LOADS_FF = (0.0, 1.0, 4.0)
+#: Multiplies a measured delay or constraint: its wires are estimates, it has no
+#: local wire capacitance and it is one bit of one programming.
+MEASURED_MARGIN = 1.25
 #: A pin's load when nothing else is known: as the B-ROM's estimate assumes.
 OUTPUT_LOAD_FF = 1.0
 #: Diffusion capacitance per fin, relative to a fin's gate capacitance.
@@ -376,6 +387,16 @@ def _scalar(kind: str, value: float) -> str:
     return f'          {kind} (scalar) {{ values ("{value:.2f}"); }}\n'
 
 
+def _table(kind: str, values: Iterable[float]) -> str:
+    row = ", ".join(f"{value:.2f}" for value in values)
+    return f'          {kind} (rom_q_load) {{ values ("{row}"); }}\n'
+
+
+def _guarded(value: float) -> float:
+    """A measured constraint with margin, however early it is, and its floor."""
+    return max(value + abs(value) * (MEASURED_MARGIN - 1), MIN_CONSTRAINT_PS)
+
+
 def _constraint(kind: str, value: float) -> str:
     return (
         '        timing() {\n          related_pin : "CLK";\n'
@@ -392,9 +413,11 @@ def rom_macro_liberty(
     corner: str,
     area_um2: float,
     estimate: RomTimingEstimate | None = None,
+    measured: CornerTiming | None = None,
 ) -> str:
-    """Estimated Liberty of one corner; ``A`` latches at ``CLK`` falling and
-    ``Q`` launches at ``CLK`` rising, so this needs ``register``.
+    """Liberty of one corner, from `measured` if given and otherwise estimated;
+    ``A`` latches at ``CLK`` falling and ``Q`` launches at ``CLK`` rising, so this
+    needs ``register``.
 
     ``CLK``'s minimum pulse widths carry the read itself: low for a read to
     finish, high for the bitlines to recover.  ``RESETN`` carries no arc: it is
@@ -406,28 +429,61 @@ def rom_macro_liberty(
     suffix, _ = CORNERS[corner]
     t = (estimate or estimate_timing(spec)).at(corner)
     ab, bits = spec.address_bits, spec.array.bits
+    if measured is None:
+        setup, hold = t.setup, t.hold
+        min_low, min_high = t.min_low, t.min_high
+        q_arcs = (
+            _scalar("cell_rise", t.clk_q)
+            + _scalar("cell_fall", t.clk_q)
+            + _scalar("rise_transition", t.slew)
+            + _scalar("fall_transition", t.slew)
+        )
+        templates = ""
+        status = "ESTIMATED, NOT CHARACTERIZED\n * (chipforge_asap7.devices.rom_views)."
+    else:
+        setup, hold = _guarded(measured.setup), _guarded(measured.hold)
+        min_low = MEASURED_MARGIN * measured.min_low
+        min_high = MEASURED_MARGIN * measured.min_high
+        scaled = lambda values: [MEASURED_MARGIN * value for value in values]
+        q_arcs = (
+            _table("cell_rise", scaled(measured.clk_q_rise))
+            + _table("cell_fall", scaled(measured.clk_q_fall))
+            + _table("rise_transition", scaled(measured.q_rise_slew))
+            + _table("fall_transition", scaled(measured.q_fall_slew))
+        )
+        templates = (
+            "  lu_table_template (rom_q_load) {\n"
+            "    variable_1 : total_output_net_capacitance;\n"
+            f'    index_1 ("{", ".join(f"{load:g}" for load in LIBERTY_LOADS_FF)}");\n'
+            "  }\n"
+        )
+        limit = (
+            "no limit found"
+            if measured.max_low is None
+            else f"about {measured.max_low:g} ps"
+        )
+        status = (
+            f"SIMULATED, NOT SIGN-OFF: ngspice on a reduced netlist with\n"
+            f" * estimated wire RC, margin {MEASURED_MARGIN:g}, nothing extracted\n"
+            " * (chipforge_asap7.devices.rom_timing).  Pin capacitances are estimates.\n"
+            f" * CLK may stay low for {limit} before a bitline droops too far."
+        )
     a_pins = "".join(
         f"      pin(A[{i}]) {{\n        direction : input;\n"
         f"        capacitance : {t.address_cap:.3f};\n"
-        + _constraint("setup_falling", t.setup)
-        + _constraint("hold_falling", t.hold)
+        + _constraint("setup_falling", setup)
+        + _constraint("hold_falling", hold)
         + "      }\n"
         for i in range(ab)
     )
     q_pins = "".join(
         f"      pin(Q[{b}]) {{\n        direction : output;\n"
         '        timing() {\n          related_pin : "CLK";\n'
-        "          timing_type : rising_edge;\n"
-        + _scalar("cell_rise", t.clk_q)
-        + _scalar("cell_fall", t.clk_q)
-        + _scalar("rise_transition", t.slew)
-        + _scalar("fall_transition", t.slew)
-        + "        }\n      }\n"
+        "          timing_type : rising_edge;\n" + q_arcs + "        }\n      }\n"
         for b in range(bits)
     )
     return (
-        f"/* {name}: ASAP7 NOR ROM, {corner} corner. ESTIMATED, NOT CHARACTERIZED\n"
-        " * (chipforge_asap7.devices.rom_views). */\n"
+        f"/* {name}: ASAP7 NOR ROM, {corner} corner. {status} */\n"
         f"library({name}_{suffix}) {{\n"
         "  technology (cmos);\n  delay_model : table_lookup;\n"
         '  time_unit : "1ps";\n  voltage_unit : "1V";\n  current_unit : "1mA";\n'
@@ -438,15 +494,16 @@ def rom_macro_liberty(
         "  slew_lower_threshold_pct_rise : 20;\n"
         "  input_threshold_pct_fall : 50;\n  input_threshold_pct_rise : 50;\n"
         "  output_threshold_pct_fall : 50;\n  output_threshold_pct_rise : 50;\n"
+        + templates
         + _bus_type(f"ROM_A_{ab}", ab)
         + _bus_type(f"ROM_Q_{bits}", bits)
         + f"  cell({name}) {{\n    area : {area_um2:.4f};\n    dont_touch : true;\n"
         "    dont_use : true;\n    interface_timing : true;\n"
         "    pin(CLK) {\n      direction : input;\n      clock : true;\n"
         f"      capacitance : {t.clk_cap:.3f};\n"
-        f"      min_pulse_width_low : {t.min_low:.2f};\n"
-        f"      min_pulse_width_high : {t.min_high:.2f};\n"
-        f"      min_period : {t.min_low + t.min_high:.2f};\n    }}\n"
+        f"      min_pulse_width_low : {min_low:.2f};\n"
+        f"      min_pulse_width_high : {min_high:.2f};\n"
+        f"      min_period : {min_low + min_high:.2f};\n    }}\n"
         "    pin(RESETN) {\n      direction : input;\n"
         f"      capacitance : {t.resetn_cap:.3f};\n    }}\n"
         f"    bus(A) {{\n      bus_type : ROM_A_{ab};\n"
@@ -459,10 +516,13 @@ def rom_macro_liberty(
 
 # ── All of them ───────────────────────────────────────────────────────────────
 def rom_macro_views(
-    spec: RomDecoderSpec, programmed: Iterable[tuple[int, int]], top: Any
+    spec: RomDecoderSpec,
+    programmed: Iterable[tuple[int, int]],
+    top: Any,
+    timing: dict[str, CornerTiming] | None = None,
 ) -> dict[str, str]:
     """The macro's views by file name: ``macro.lef``, ``macro.v`` and, with
-    ``register``, ``macro_{tt,ff,ss}.lib``."""
+    ``register``, ``macro_{tt,ff,ss}.lib``, from `timing` for a corner it has."""
     views = {
         "macro.lef": rom_macro_lef(spec, top),
         "macro.v": rom_macro_verilog(spec, programmed, top.name),
@@ -477,6 +537,6 @@ def rom_macro_views(
         area = (x1 - x0) * (y1 - y0) / 1e6
         for corner, (suffix, _) in CORNERS.items():
             views[f"macro_{suffix}.lib"] = rom_macro_liberty(
-                spec, top.name, corner, area, estimate
+                spec, top.name, corner, area, estimate, (timing or {}).get(corner)
             )
     return views

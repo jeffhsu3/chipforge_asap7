@@ -26,6 +26,7 @@ from chipforge_asap7.devices.rom_package import (
     sites_from_words,
     write_rom_package,
 )
+from chipforge_asap7.devices.rom_timing import REPORT_FORMAT, circuit_digest
 from chipforge_asap7.layout.layers import LAYERS
 
 WORDS, BITS = 16, 6
@@ -564,3 +565,92 @@ def test_macro_with_a_moved_latch_tap_is_clean(tmp_path: Path, require_klayout):
     )
     sites = [(w, b) for w in range(16) for b in range(3) if (w + b) % 2]
     assert not write_rom_package(spec, sites, tmp_path, drc=True, lvs=True)
+
+
+def _timing_report(path: Path, spec: RomDecoderSpec) -> Path:
+    corner = {
+        "clk_q_rise": [90.0, 100.0, 130.0],
+        "clk_q_fall": [80.0, 90.0, 120.0],
+        "q_rise_slew": [10.0, 20.0, 50.0],
+        "q_fall_slew": [9.0, 19.0, 49.0],
+        "setup": -20.0,
+        "hold": 30.0,
+        "min_low": 150.0,
+        "min_high": 60.0,
+        "droop": 1.0,
+        "max_low": 200000,
+        "aborted": 0,
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "format": REPORT_FORMAT,
+                "macro": spec.macro_name,
+                "circuit_sha256": circuit_digest(spec),
+                "corners": {"typical": corner},
+                "failed": {"fast": "did not converge"},
+            }
+        )
+    )
+    return path
+
+
+def _small(words: int = 16, bits: int = 6) -> RomDecoderSpec:
+    return RomDecoderSpec(
+        array=RomArraySpec(words, bits),
+        sense=True,
+        enable=True,
+        latch=True,
+        sample=True,
+        control=True,
+        register=True,
+        edge_pins=True,
+    )
+
+
+def test_package_takes_measured_corners_and_says_which(tmp_path: Path):
+    spec = _small()
+    report = _timing_report(tmp_path / "timing.json", spec)
+    out = tmp_path / "pkg"
+    assert not write_rom_package(spec, [], out, timing=report)
+    assert "SIMULATED, NOT SIGN-OFF" in (out / "macro_tt.lib").read_text()
+    assert "ESTIMATED" in (out / "macro_ff.lib").read_text()
+    manifest = json.loads((out / "manifest.json").read_text())
+    timing = manifest["timing"]
+    assert manifest["timing_qualified"] is False
+    assert timing["corners"]["typical"] == {"source": "spice", "max_low_ps": 200000}
+    assert timing["corners"]["fast"] == {"source": "estimate"}
+    assert len(timing["report_sha256"]) == 64
+
+
+def test_package_without_a_report_records_no_measurement(tmp_path: Path):
+    assert not write_rom_package(_small(), [], tmp_path)
+    timing = json.loads((tmp_path / "manifest.json").read_text())["timing"]
+    assert timing["report_sha256"] is None
+    assert {c["source"] for c in timing["corners"].values()} == {"estimate"}
+
+
+def test_package_refuses_another_shapes_report(tmp_path: Path):
+    report = _timing_report(tmp_path / "timing.json", _small(32, 6))
+    with pytest.raises(ValueError, match="measured"):
+        write_rom_package(_small(), [], tmp_path / "pkg", timing=report)
+    assert not (tmp_path / "pkg" / "manifest.json").exists()
+
+
+def _argv(*extra: str) -> list[str]:
+    return [
+        "--array.words", "16", "--array.bits", "6", "--sense", "--enable", "--latch",
+        "--sample", "--control", "--edge_pins", *extra,
+    ]  # fmt: skip
+
+
+def test_characterize_needs_the_register(tmp_path: Path, capsys):
+    with pytest.raises(SystemExit):
+        main(_argv("--characterize", str(tmp_path / "t.json")))
+    assert "--register" in capsys.readouterr().err
+
+
+def test_timing_needs_something_to_apply_to(tmp_path: Path, capsys):
+    with pytest.raises(SystemExit):
+        main(_argv("--register", "--timing", str(tmp_path / "t.json")))
+    assert "--timing is for" in capsys.readouterr().err
