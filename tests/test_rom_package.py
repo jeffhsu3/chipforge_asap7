@@ -24,6 +24,7 @@ from chipforge_asap7.devices.rom_package import (
     programming_sites,
     rom_image_name,
     sites_from_words,
+    write_rom_package,
 )
 from chipforge_asap7.layout.layers import LAYERS
 
@@ -529,3 +530,37 @@ def test_a_drc_violation_fails_the_run(tmp_path, monkeypatch):
     assert "physical checks failed" in str(caught.value.code)
     r = json.loads((tmp_path / "bad" / "manifest.json").read_text())
     assert r["artifacts"]["macro"]["drc"] == {"M1.W.1": 1}
+
+
+@pytest.mark.parametrize("words, bits, register", [(16, 3, True), (128, 7, False)])
+def test_latch_row_vss_strap_clears_the_lanes_vdd_strap(words, bits, register):
+    """The two climb past the array's top edge together; 18 nm apart they touched,
+    which shorted VDD to VSS."""
+    spec = RomDecoderSpec(
+        array=RomArraySpec(words, bits),
+        sense=True,
+        enable=True,
+        latch=True,
+        sample=True,
+        control=True,
+        register=register,
+        edge_pins=True,
+    )
+    assert spec.latch_tap_shift == 1
+    gap = spec.latch_strap_xs["VSS"] - spec.sense_lane.strap_xs["VDD"]
+    assert abs(gap) >= 54
+
+
+def test_macro_with_a_moved_latch_tap_is_clean(tmp_path: Path, require_klayout):
+    spec = RomDecoderSpec(
+        array=RomArraySpec(16, 3),
+        sense=True,
+        enable=True,
+        latch=True,
+        sample=True,
+        control=True,
+        register=True,
+        edge_pins=True,
+    )
+    sites = [(w, b) for w in range(16) for b in range(3) if (w + b) % 2]
+    assert not write_rom_package(spec, sites, tmp_path, drc=True, lvs=True)

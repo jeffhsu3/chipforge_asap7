@@ -156,6 +156,9 @@ M3_RUN = 2 * HALF
 #: The lane's VDD strap top under the latch row's lowest M3: M3.S.6's corner
 #: and two short edges' 31 nm, with room.
 LATCH_STRAP_CLEAR = 40
+#: The latch row's VSS strap from the lane's VDD strap, centre to centre, where
+#: they run side by side: well past M3.S.6, and a whole column from touching.
+LATCH_STRAP_SPACE = 54
 #: The latch row's bottom rail over the lane's top one: a gate cut (44 nm)
 #: and GCUT.S.3's 35 nm, on the fin grid.
 LATCH_RAIL_CLEAR = 3 * FIN_PITCH
@@ -1234,11 +1237,36 @@ class RomDecoderSpec:
         return self.latch_x + self.latch_row.width
 
     @property
+    def _latch_cells_width(self) -> int:
+        return self.latch_row.width + (self.control_row.width if self.control else 0)
+
+    @cached_property
+    def latch_tap_shift(self) -> int:
+        """Columns added before the latch row's tap to clear the lane's VDD strap.
+
+        That strap climbs past the array's top edge to the VDD stripe, and the
+        latch row's VSS strap comes down to the same edge, so the two run side
+        by side wherever their x are close.  Moving the row's tap and last
+        filler moves its straps.
+        """
+        vss = (
+            self.latch_x
+            + self._latch_cells_width
+            + 2 * END_CPP * GATE_PITCH
+            + TRACK_PITCH
+        )
+        vdd = self._lane().strap_xs["VDD"]
+        shift = 0
+        while abs(vss + shift * GATE_PITCH - vdd) < LATCH_STRAP_SPACE:
+            shift += 1
+        return shift
+
+    @property
     def latch_ends(self) -> tuple[int, int]:
         """X span of the latch row with its row ends: filler, cell(s), filler, tap, filler."""
         x0 = self.latch_x - END_CPP * GATE_PITCH
-        width = self.latch_row.width + (self.control_row.width if self.control else 0)
-        return x0, self.latch_x + width + 3 * END_CPP * GATE_PITCH
+        fill = 3 * END_CPP + self.latch_tap_shift
+        return x0, self.latch_x + self._latch_cells_width + fill * GATE_PITCH
 
     @property
     def latch_strap_xs(self) -> dict[str, int]:
@@ -1936,15 +1964,22 @@ def _draw_address_latches(spec: RomDecoderSpec, cell: Any, lib: Any) -> None:
         lambda: build_rom_address_latch_row(rs, lib=lib, draw_pin_labels=False),
     )
 
-    def support(kind: str) -> Any:
-        s = RowSupportSpec(stack=rs.stack, kind=kind, width_cpp=END_CPP)  # type: ignore[arg-type]
+    def support(kind: str, cpp: int) -> Any:
+        s = RowSupportSpec(stack=rs.stack, kind=kind, width_cpp=cpp)  # type: ignore[arg-type]
         return _shared(lib, s.cell_name, lambda: build_row_support(s, lib=lib))
 
     x = spec.latch_ends[0]
-    for item in ("filler", row, "filler", "tap", "filler"):
-        ref = support(item) if isinstance(item, str) else item
+    fills = (
+        ("filler", END_CPP),
+        (row, 0),
+        ("filler", END_CPP + spec.latch_tap_shift),
+        ("tap", END_CPP),
+        ("filler", END_CPP),
+    )
+    for item, cpp in fills:
+        ref = support(item, cpp) if isinstance(item, str) else item
         cell.add(gdspy.CellReference(ref, (x, y)))
-        x += rs.width if ref is row else END_CPP * GATE_PITCH
+        x += rs.width if ref is row else cpp * GATE_PITCH
         if ref is row and spec.control:
             x += spec.control_row.width  # the controller's cell stands here
 
