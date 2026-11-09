@@ -51,6 +51,24 @@ _INTERFACE = (
 )
 
 
+def read_contract(spec: RomDecoderSpec) -> dict[str, Any] | None:
+    """The read a registered macro keeps, in the terms of chipforge's
+    ``ROMMacroInterface`` (its docs/rom_macro_contract.md); None without
+    ``register``, whose output follows the sample latches into the next cycle.
+
+    It is a two-phase read: CLK high precharges, CLK falling latches A, and Q
+    takes the word just after the next CLK rise, one cycle after A launched.
+    """
+    if not spec.register:
+        return None
+    return {
+        "contract": "two_phase",
+        "latency": 1,
+        "addr_hold_edge": "fall",
+        "reset": {"pin": "RESETN", "active": "low"},
+    }
+
+
 def sites_from_words(words: Any, spec: RomDecoderSpec) -> list[tuple[int, int]]:
     """The ``(word, bit)`` sites holding a 1 in `words`, a list of unsigned ints."""
     array = spec.array
@@ -303,6 +321,7 @@ def write_rom_package(
         # A narrow array may draw more straps than asked, for the lane's rows.
         "strap_every": spec.cells.strap_every,
         "interface": _INTERFACE.format(output=output),
+        "read": read_contract(spec),
         "timing_qualified": False,
         "timing": {
             "report_sha256": (

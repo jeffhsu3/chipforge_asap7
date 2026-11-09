@@ -73,6 +73,22 @@ which every image has. `programming_layers` still names V1, so a layer-based XOR
 of two images passes on any V1 change. The fingerprint is what catches a
 periphery V1 changing.
 
+## The read it keeps
+
+With `--register`, the manifest's `read` record names the read in the terms of
+chipforge's `ROMMacroInterface` (its `docs/rom_macro_contract.md`):
+
+```json
+"read": {"contract": "two_phase", "latency": 1, "addr_hold_edge": "fall",
+         "reset": {"pin": "RESETN", "active": "low"}}
+```
+
+`CLK` high precharges, `CLK` falling latches `A`, and `Q` takes the word just
+after the next rise. Core's bank script refuses a macro whose record differs
+from the interface it declares. Without `--register`, `Q` follows the sample
+latches into the next cycle, which is no read core supports, and `read` is
+`null`.
+
 ## Checks
 
 | Flag | Runs | Recorded in `artifacts.macro` |

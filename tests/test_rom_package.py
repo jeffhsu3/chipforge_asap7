@@ -318,6 +318,12 @@ def test_the_manifest_describes_the_macro(images):
     assert r["pins"] == list(rom_macro_ports(spec))
     assert r["timing_qualified"] is False
     assert r["registered_output"] is True
+    assert r["read"] == {
+        "contract": "two_phase",
+        "latency": 1,
+        "addr_hold_edge": "fall",
+        "reset": {"pin": "RESETN", "active": "low"},
+    }
     assert r["spec"]["array"]["words"] == WORDS
     assert r["programming"] == {
         "digest": programming_digest(sites_from_words(IMAGE, spec)),
@@ -359,6 +365,7 @@ def test_a_latched_macro_has_no_liberty(tmp_path):
     )  # fmt: skip
     r = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert r["registered_output"] is False
+    assert r["read"] is None
     assert r["artifacts"]["macro"]["liberty"] == {}
     assert not list((tmp_path / "out").glob("*.lib"))
 
