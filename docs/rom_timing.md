@@ -67,10 +67,10 @@ reads were correct at every corner at 16x6 and at 1024x148. That was one bit at
 Solver settings matter here: `rshunt=1e10` is what lets the fast corner find an
 operating point, and a time step above 1 ps aborts at the fast and typical
 corners. Where larger steps finished at 64x16, they moved results under 1 ps.
-With keepers, 1024x148 still found no operating point at the fast corner. When
-ngspice says so, `simulate` runs the deck again with a first guess for each `Q`
-pin, VDD and then 0. `Q` may start at either rail, and the first read
-overwrites it, so the guess doesn't change what is measured. `rshunt=1e9` also
+With keepers, 1024x148 still found no operating point at the fast corner
+without help. When ngspice says so, `simulate` runs the deck again with a first
+guess for each `Q` pin, VDD and then 0. `Q` may start at either rail, and the
+first read overwrites it, so the guess doesn't change what is measured. `rshunt=1e9` also
 worked, but it leaks about 0.8 nA from every node.
 
 ## Measured results
@@ -139,7 +139,25 @@ slow NMOS and fast PMOS models, at both temperatures, where a keeper fights
 hardest. The PDK has no such corner. `clk_q` rose
 about 10% later, from the extra load on `SAMPLEB`: 175.4 ps against 158.9 ps at
 slow, 105.9 against 95.8 at fast. Characterizing macros with keepers gives their
-own numbers.
+own numbers:
+
+| | 16x6 tt | 16x6 ff | 16x6 ss | 1024x148 tt | 1024x148 ff | 1024x148 ss |
+|---|---:|---:|---:|---:|---:|---:|
+| `clk_q_rise` | 94.8 | 70.3 | 136.6 | 131.0 | 102.2 | 175.4 |
+| `clk_q_fall` | 71.3 | 54.0 | 101.3 | 109.6 | 82.5 | 142.4 |
+| `setup` | −8.0 | −8.0 | −24.0 | −29.0 | −19.0 | −58.8 |
+| `hold` | 32.0 | 24.0 | 40.0 | 49.1 | 36.8 | 84.8 |
+| `min_low` | 163 | 131 | 226 | 766 | 614 | 1018 |
+| `min_high` | 68 | 52 | 84 | 307 | 226 | 409 |
+
+These are bare measurements at 1 fF, in ps. The bitline holds at every corner:
+`droop` is 0 and there is no `max_low`. Against the keeperless macro, `clk_q`
+is 17–23% later at 16x6 and 3–11% later at 1024x148, from the extra load on
+`SAMPLEB`. `min_low` and `min_high` grow 8–20% at 16x6, but at 1024x148,
+where they limit the clock, they change by under 3%. No simulation aborted.
+At 1024x148 typical, one simulation stalled past the default one-hour timeout
+(the 409 ps hold check). Rerun with a longer timeout, it finished in 22
+minutes. The report records that rerun.
 
 **The first read's `Q` is unknown.** Reset doesn't initialize the register. `Q`
 is X in the Verilog model, and either rail in SPICE, until the first `CLK` rise
