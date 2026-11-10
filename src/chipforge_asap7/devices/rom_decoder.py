@@ -335,6 +335,21 @@ class _SlotSpec:
             cpp += 1
 
 
+#: The read path's parts and the parts each stands on, top of the read
+#: first: a part turns on what it needs, so one option names a macro.
+#: ``predecode`` and ``lane`` are on by default; turning one off is a choice,
+#: and a part that needs it says so instead.
+_NEEDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("flow_through", ("control",)),
+    ("edge_pins", ("control",)),
+    ("control", ("enable", "latch", "sample")),
+    ("register", ("sample",)),
+    ("keeper", ("sample",)),
+    ("latch", ("sense",)),
+    ("sample", ("sense",)),
+)
+
+
 @dataclass(frozen=True)
 class RomDecoderSpec:
     """The post-decode AND gates and wordline drivers for `array`.
@@ -380,7 +395,7 @@ class RomDecoderSpec:
             transparent while it is low.  The pins ``A<i>`` move to the
             latches' inputs and the decoder's lines become ``AL<i>``; each
             latch's output reaches its line's join column on M4, in a
-            channel over the latches.  Needs the sense lane, whose
+            channel over the latches.  Turns on the sense lane, whose
             ``PRECHN`` column the latches share; the gap grows to fit.
         sense: fill the lane beside the array with read leaves, one per bit,
             and route both halves' bitlines to them
@@ -388,39 +403,40 @@ class RomDecoderSpec:
             half moves out if the leaves need more room than the predecoders.
         sample: put a sample latch beside each read leaf, transparent while
             the ``SAMPLE`` pin is high, with each bit's output on ``Q<b>``
-            (`chipforge_asap7.devices.rom_sense`).  Needs the sense lane,
-            whose rows grow to fit.
+            (`chipforge_asap7.devices.rom_sense`).  Turns on the sense
+            lane, whose rows grow to fit.
         register: make ``Q`` a rising-edge register output: a register
             latch after each sample latch, open while ``SAMPLE`` is low, so
             that ``Q<b>`` takes the word as ``SAMPLE`` falls and holds it
             for a cycle.  With ``control`` that is just after ``CLK`` rises,
-            one cycle after the address was latched.  Needs sample.
+            one cycle after the address was latched.  Turns on sample.
         keeper: hold each bitline up once its leaf has read 0, with two
             pFETs in series from VDD, gated by the leaf's output and
             ``SAMPLEB`` (`chipforge_asap7.devices.rom_sense`).  It is off
             while the bitlines evaluate and holds them from ``SAMPLE`` rising
             until ``CLK`` rises.  Without it a line that nothing discharges
             droops while ``CLK`` is low, which limits how long ``CLK`` may
-            stay low.  Costs three columns per bit.  Needs sample.
+            stay low.  Costs three columns per bit.  Turns on sample.
         control: time each read itself from ``CLK`` and ``RESETN``: the
             controller (`chipforge_asap7.devices.rom_control`) stands at the
             end of the address-latch row and drives ``PRECHN``, ``EVAL`` and
             ``SAMPLE``, and a replica bit, one more bit row programmed in
-            every word (`cells`), tells it when a read is done.  Needs
-            enable, latch and sample.
+            every word (`cells`), tells it when a read is done.  Turns on
+            enable, latch and sample, and through them sense.
         flow_through: read on ``CLK``'s rising edge instead of while it is
             low.  The edge closes the address latches and starts a read that
             ends itself from the replica, the bitlines precharge in between,
             and ``Q`` follows the sample latches, holding each word until
             the next read's arrives (`chipforge_asap7.devices.rom_control`).
-            Needs control; the register and keepers have no part in it.
+            Turns on control, and with it the whole read path; the register
+            and keepers have no part in it.
         done_delay: with flow_through, the inverters that hold the sample
             latches open once the replica has read.  Odd; 15 reads at every
             corner up to 1024x148 (`RomControlSpec`).
         edge_pins: carry the interface to M5 columns reaching the macro's bottom
             edge, labelled there, as a placed block needs
             (`chipforge_asap7.devices.rom_pins`).  The bus pins become
-            ``A[i]`` and ``Q[b]``, the B-ROM's names.  Needs control.
+            ``A[i]`` and ``Q[b]``, the B-ROM's names.  Turns on control.
     """
 
     array: RomArraySpec = field(default_factory=RomArraySpec)
@@ -452,6 +468,10 @@ class RomDecoderSpec:
     edge_pins: bool = False
 
     def __post_init__(self) -> None:
+        for part, needs in _NEEDS:
+            if getattr(self, part):
+                for need in needs:
+                    object.__setattr__(self, need, True)
         k = self.interleave
         if isinstance(k, bool) or not isinstance(k, int):
             raise TypeError(f"interleave must be an integer, got {k!r}")
@@ -482,41 +502,14 @@ class RomDecoderSpec:
             raise ValueError(
                 "the sense leaves stand in the center lane: sense needs lane"
             )
-        if self.control and not (self.enable and self.latch and self.sample):
-            raise ValueError(
-                "the controller drives EVAL, the address latches' PRECHN and the "
-                "sample latches' SAMPLE: control needs enable, latch and sample"
-            )
-        if self.flow_through and not self.control:
-            raise ValueError(
-                "a flow-through read is the controller's: flow_through needs control"
-            )
         if self.flow_through and (self.register or self.keeper):
             raise ValueError(
                 "a flow-through read holds Q in the sample latches and precharges "
                 "the bitlines between reads: it takes no register and no keeper"
             )
-        if self.edge_pins and not self.control:
+        if self.latch and not self.predecode:
             raise ValueError(
-                "the edge pins are the self-timed interface's: edge_pins needs control"
-            )
-        if self.register and not self.sample:
-            raise ValueError(
-                "the register latches follow the sample latches: register needs sample"
-            )
-        if self.keeper and not self.sample:
-            raise ValueError(
-                "the keepers take the p columns the sample latches leave: keeper "
-                "needs sample"
-            )
-        if self.sample and not self.sense:
-            raise ValueError(
-                "the sample latches stand beside the read leaves: sample needs sense"
-            )
-        if self.latch and not (self.sense and self.predecode):
-            raise ValueError(
-                "the address latches share the sense lane's PRECHN and feed the "
-                "predecoders: latch needs sense and predecode"
+                "the address latches feed the predecoders: latch needs predecode"
             )
         if self.latch and self.gap < self._latch_gap:
             object.__setattr__(self, "gap", self._latch_gap)
@@ -2214,7 +2207,7 @@ def main(argv: list[str] | None = None) -> None:
                 Path | None,
                 None,
                 "Also write the macro's LEF, Verilog and Liberty to "
-                "this directory; needs --edge_pins.",
+                "this directory; turns on --edge_pins.",
             ),
             Option(
                 "words",
@@ -2228,8 +2221,8 @@ def main(argv: list[str] | None = None) -> None:
                 Path | None,
                 None,
                 "Write the whole macro to this directory: GDS, CDL, views, the "
-                "stable-named abstract and manifest.json; needs --edge_pins and "
-                "replaces --out, --cdl and --views.",
+                "stable-named abstract and manifest.json; turns on --edge_pins "
+                "and replaces --out, --cdl and --views.",
             ),
             Option("drc", bool, False, "Run gdscheck on the packaged macro."),
             Option("lvs", bool, False, "Run LVS of the packaged macro on its CDL."),
@@ -2238,8 +2231,8 @@ def main(argv: list[str] | None = None) -> None:
                 Path | None,
                 None,
                 "Simulate the read and write a timing report here instead of "
-                "a macro; its working files go beside it.  Needs --register or "
-                "--flow-through.",
+                "a macro; its working files go beside it.  Needs --flow-through "
+                "or --register; turns on --edge_pins.",
             ),
             Option(
                 "corners",
@@ -2271,6 +2264,9 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     spec: RomDecoderSpec = args.spec
+    if any(path is not None for path in (args.views, args.package, args.characterize)):
+        # A macro that is placed or simulated has its pins at its edge.
+        spec = replace(spec, edge_pins=True)
     sizing = None
     search = None
     sites: list[tuple[int, int]] | None = None
@@ -2285,10 +2281,8 @@ def main(argv: list[str] | None = None) -> None:
 
             from .rom_timing import characterize, default_osdi
 
-            if not (spec.register or spec.flow_through) or not spec.edge_pins:
-                raise ValueError(
-                    "--characterize needs --register or --flow-through, and --edge_pins"
-                )
+            if not (spec.register or spec.flow_through):
+                raise ValueError("--characterize needs --flow-through or --register")
             work = args.characterize.with_suffix(".work")
             osdi = args.osdi or default_osdi(work / "model")
             report = characterize(
@@ -2313,8 +2307,6 @@ def main(argv: list[str] | None = None) -> None:
         if args.package is not None:
             if args.out is not None or args.cdl is not None or args.views is not None:
                 raise ValueError("--package replaces --out, --cdl and --views")
-            if not spec.edge_pins:
-                raise ValueError("--package writes a placeable macro: add --edge_pins")
         if args.search or args.pack:
             from .rom_search import (
                 RomShapeSearch,

@@ -5,14 +5,17 @@ BSIM-CMG and writes what it measured. `--timing REPORT` then builds the macro's
 Liberty from those numbers:
 
 ```sh
-asap7-rom --array.words 1024 --array.bits 148 \
-    --sense --enable --latch --sample --control --flow-through --edge_pins \
+asap7-rom --array.words 1024 --array.bits 148 --flow-through \
     --characterize out/timing.json --jobs 6 --resolution 20
 
-asap7-rom --array.words 1024 --array.bits 148 \
-    --sense --enable --latch --sample --control --flow-through --edge_pins \
+asap7-rom --array.words 1024 --array.bits 148 --flow-through \
     --words words.json --package out/macro --timing out/timing.json
 ```
+
+`--flow-through` turns on the read path it stands on (`--control`, and with
+it `--enable`, `--latch`, `--sample` and `--sense`), and `--characterize`,
+`--package` and `--views` turn on `--edge_pins`. Spelling them out still
+works.
 
 The macro reads one of two ways, and core's bank script builds the first:
 

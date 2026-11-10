@@ -78,9 +78,8 @@ def _build(spec: RomDecoderSpec, sites=()):
 
 
 # ── The pins ──────────────────────────────────────────────────────────────────
-def test_edge_pins_need_the_controller():
-    with pytest.raises(ValueError, match="edge_pins needs control"):
-        RomDecoderSpec(array=RomArraySpec(16, 6), edge_pins=True)
+def test_edge_pins_turn_on_the_controller():
+    assert RomDecoderSpec(array=RomArraySpec(16, 6), edge_pins=True).control
 
 
 def test_edge_pins_name_the_cell_apart():

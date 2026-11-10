@@ -444,16 +444,21 @@ def test_a_words_file_that_cannot_be_read_is_a_usage_error(capsys, tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-def test_a_package_needs_edge_pins(capsys, tmp_path):
-    with pytest.raises(SystemExit) as caught:
-        main(
-            [
-                "--array.words", str(WORDS), "--array.bits", str(BITS),
-                "--package", str(tmp_path),
-            ]
-        )  # fmt: skip
-    assert caught.value.code == 2
-    assert "--edge_pins" in capsys.readouterr().err
+def test_one_read_option_packages_a_placeable_macro(tmp_path):
+    path = tmp_path / "words.json"
+    path.write_text(json.dumps(IMAGE))
+    main(
+        [
+            "--array.words", str(WORDS), "--array.bits", str(BITS),
+            "--flow-through", "--words", str(path), "--package", str(tmp_path / "out"),
+        ]
+    )  # fmt: skip
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    spec = manifest["spec"]
+    # --flow-through turns on the read path under it, and --package the pins.
+    assert all(spec[part] for part in ("sense", "enable", "latch", "sample"))
+    assert spec["control"] and spec["edge_pins"]
+    assert manifest["read"]["contract"] == "edge_flow_through"
 
 
 def test_bad_words_are_a_usage_error(capsys, tmp_path):

@@ -848,25 +848,26 @@ def test_a_flow_through_read_takes_one_word_per_rising_edge(tmp_path):
 
 
 def test_a_flow_through_read_takes_no_register_or_keeper():
-    base = {"enable": True, "sense": True, "latch": True, "sample": True}
-    with pytest.raises(ValueError, match="flow_through needs control"):
-        _spec(16, 6, 2, **base, flow_through=True)
     for extra in ({"register": True}, {"keeper": True}):
         with pytest.raises(ValueError, match="no register and no keeper"):
-            _spec(16, 6, 2, **base, control=True, flow_through=True, **extra)
+            _spec(16, 6, 2, flow_through=True, **extra)
 
 
-def test_register_needs_the_sample_latches():
-    with pytest.raises(ValueError, match="register needs sample"):
-        _spec(16, 6, 2, sense=True, register=True)
+def test_a_read_option_turns_on_the_parts_it_stands_on():
+    path = ("sense", "enable", "latch", "sample", "control")
+    full = _spec(16, 6, 2, **dict.fromkeys(path, True), flow_through=True)
+    assert _spec(16, 6, 2, flow_through=True) == full
+    assert _spec(16, 6, 2, edge_pins=True).control
+    register = _spec(16, 6, 2, register=True)
+    assert register.sample and register.sense and not register.control
+    assert _spec(16, 6, 2, latch=True).sense
+    # Parts that are on by default stay the caller's to turn off.
+    with pytest.raises(ValueError, match="latch needs predecode"):
+        _spec(16, 4, 2, latch=True, predecode=False)
 
 
-def test_control_needs_the_whole_read_path():
-    with pytest.raises(ValueError, match="control needs enable, latch and sample"):
-        _spec(16, 6, 2, enable=True, sense=True, latch=True, control=True)
-    spec = _spec(
-        16, 6, 2, enable=True, sense=True, latch=True, sample=True, control=True
-    )
+def test_control_takes_a_replica_bit():
+    spec = _spec(16, 6, 2, control=True)
     assert spec.cells.bits == 7 and spec.replica_bit == 6
     assert spec.sense_lane.d_net(6) == "READY"
     tracks = spec.latch_tracks
@@ -878,17 +879,13 @@ def test_control_needs_the_whole_read_path():
     assert "EVAL" in spec.joins
 
 
-def test_sample_needs_the_sense_lane():
-    with pytest.raises(ValueError, match="sample needs sense"):
-        _spec(16, 4, 2, sample=True)
-    spec = _spec(16, 6, 2, sense=True, sample=True)
+def test_sample_stands_in_the_sense_lane():
+    spec = _spec(16, 6, 2, sample=True)
     assert spec.sense_lane.sample
     assert spec.cell_name.endswith("_s_q")
 
 
-def test_latch_needs_the_sense_lane_and_grows_the_gap():
-    with pytest.raises(ValueError, match="latch needs sense"):
-        _spec(16, 4, 2, enable=True, latch=True)
+def test_latch_grows_the_gap():
     plain = _spec(16, 4, 2, enable=True, sense=True)
     latched = _spec(16, 4, 2, enable=True, sense=True, latch=True)
     assert latched.gap > plain.gap
