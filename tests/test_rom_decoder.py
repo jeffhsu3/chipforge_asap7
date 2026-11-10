@@ -783,6 +783,79 @@ def test_a_registered_read_changes_q_only_as_clk_rises(tmp_path):
     assert q(value) == word(3)
 
 
+def test_a_flow_through_read_takes_one_word_per_rising_edge(tmp_path):
+    """The flow-through controller at switch level, on the extracted ROM.
+
+    CLK rising starts a read that ends itself: once the inputs settle the
+    controller is idle again, the bitlines precharge, and Q holds the word
+    the edge's address selected.  Neither a new address nor CLK falling
+    changes Q; only the next rising edge does.  In reset an edge reads nothing.
+    """
+    words, bits = 16, 6
+    spec = _spec(
+        words,
+        bits,
+        2,
+        enable=True,
+        sense=True,
+        latch=True,
+        sample=True,
+        control=True,
+        flow_through=True,
+    )
+    assert "_ft15" in spec.macro_name
+    sites = {
+        (w, b) for w in range(words) for b in range(bits) if (w * 5 + b * 3) % 7 < 3
+    }
+    devices, net = _extract(tmp_path, spec, sites)
+    supplies = {net["VDD"]: 1, net["VSS"]: 0}
+
+    def word(address):
+        return [int((address, b) in sites) for b in range(bits)]
+
+    def pins(address, clk, resetn=1):
+        return {
+            **supplies,
+            **{net[f"A<{i}>"]: (address >> i) & 1 for i in range(spec.address_bits)},
+            net["CLK"]: clk,
+            net["RESETN"]: resetn,
+        }
+
+    def q(value):
+        return [value[net[f"Q<{b}>"]] for b in range(bits)]
+
+    def idle(value):
+        return [value[net[n]] for n in ("PRECHN", "EVAL", "SAMPLE")] == [0] * 3
+
+    # Out of reset with CLK low, as the read's latch starts unknown.
+    value = _settle(devices, net, pins(0, 0, resetn=0), {})
+    value = _settle(devices, net, pins(0, 0), value)
+    assert idle(value)
+    addresses = [*range(words), 3]
+    for address in addresses:
+        value = _settle(devices, net, pins(address, 0), value)
+        value = _settle(devices, net, pins(address, 1), value)
+        assert idle(value) and q(value) == word(address), address
+        # Still high, a new address reads nothing; nor does CLK falling.
+        value = _settle(devices, net, pins(address ^ 5, 1), value)
+        assert q(value) == word(address), address
+        value = _settle(devices, net, pins(address ^ 5, 0), value)
+        assert idle(value) and q(value) == word(address), address
+    assert word(addresses[-2]) != word(addresses[-1])
+    value = _settle(devices, net, pins(9, 0, resetn=0), value)
+    value = _settle(devices, net, pins(9, 1, resetn=0), value)
+    assert idle(value) and q(value) == word(3)
+
+
+def test_a_flow_through_read_takes_no_register_or_keeper():
+    base = {"enable": True, "sense": True, "latch": True, "sample": True}
+    with pytest.raises(ValueError, match="flow_through needs control"):
+        _spec(16, 6, 2, **base, flow_through=True)
+    for extra in ({"register": True}, {"keeper": True}):
+        with pytest.raises(ValueError, match="no register and no keeper"):
+            _spec(16, 6, 2, **base, control=True, flow_through=True, **extra)
+
+
 def test_register_needs_the_sample_latches():
     with pytest.raises(ValueError, match="register needs sample"):
         _spec(16, 6, 2, sense=True, register=True)

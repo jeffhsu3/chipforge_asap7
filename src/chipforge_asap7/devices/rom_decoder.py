@@ -408,6 +408,15 @@ class RomDecoderSpec:
             ``SAMPLE``, and a replica bit, one more bit row programmed in
             every word (`cells`), tells it when a read is done.  Needs
             enable, latch and sample.
+        flow_through: read on ``CLK``'s rising edge instead of while it is
+            low.  The edge closes the address latches and starts a read that
+            ends itself from the replica, the bitlines precharge in between,
+            and ``Q`` follows the sample latches, holding each word until
+            the next read's arrives (`chipforge_asap7.devices.rom_control`).
+            Needs control; the register and keepers have no part in it.
+        done_delay: with flow_through, the inverters that hold the sample
+            latches open once the replica has read.  Odd; 15 reads at every
+            corner up to 1024x148 (`RomControlSpec`).
         edge_pins: carry the interface to M5 columns reaching the macro's bottom
             edge, labelled there, as a placed block needs
             (`chipforge_asap7.devices.rom_pins`).  The bus pins become
@@ -438,6 +447,8 @@ class RomDecoderSpec:
     keeper: bool = False
     control: bool = False
     control_fingers: int = 4
+    flow_through: bool = False
+    done_delay: int = 15
     edge_pins: bool = False
 
     def __post_init__(self) -> None:
@@ -475,6 +486,15 @@ class RomDecoderSpec:
             raise ValueError(
                 "the controller drives EVAL, the address latches' PRECHN and the "
                 "sample latches' SAMPLE: control needs enable, latch and sample"
+            )
+        if self.flow_through and not self.control:
+            raise ValueError(
+                "a flow-through read is the controller's: flow_through needs control"
+            )
+        if self.flow_through and (self.register or self.keeper):
+            raise ValueError(
+                "a flow-through read holds Q in the sample latches and precharges "
+                "the bitlines between reads: it takes no register and no keeper"
             )
         if self.edge_pins and not self.control:
             raise ValueError(
@@ -1238,6 +1258,8 @@ class RomDecoderSpec:
         rs = self.latch_row
         return RomControlSpec(
             fingers=self.control_fingers,
+            edge=self.flow_through,
+            done_delay=self.done_delay,
             n_fins=rs.n_fins,
             p_fins=rs.p_fins,
             band_height=rs.band_height,
@@ -1544,6 +1566,7 @@ class RomDecoderSpec:
             f"{'_s' if self.sense else ''}{'_q' if self.sample else ''}"
             f"{'r' if self.register else ''}{'k' if self.keeper else ''}"
             f"{f'_c{self.control_fingers}' if self.control else ''}"
+            f"{f'_ft{self.done_delay}' if self.flow_through else ''}"
             f"{'_pins' if self.edge_pins else ''}{tag}"
         )
 
@@ -2215,7 +2238,8 @@ def main(argv: list[str] | None = None) -> None:
                 Path | None,
                 None,
                 "Simulate the read and write a timing report here instead of "
-                "a macro; its working files go beside it.  Needs --register.",
+                "a macro; its working files go beside it.  Needs --register or "
+                "--flow-through.",
             ),
             Option(
                 "corners",
@@ -2261,8 +2285,10 @@ def main(argv: list[str] | None = None) -> None:
 
             from .rom_timing import characterize, default_osdi
 
-            if not spec.register or not spec.edge_pins:
-                raise ValueError("--characterize needs --register and --edge_pins")
+            if not (spec.register or spec.flow_through) or not spec.edge_pins:
+                raise ValueError(
+                    "--characterize needs --register or --flow-through, and --edge_pins"
+                )
             work = args.characterize.with_suffix(".work")
             osdi = args.osdi or default_osdi(work / "model")
             report = characterize(

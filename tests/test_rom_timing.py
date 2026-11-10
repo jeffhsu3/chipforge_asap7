@@ -165,6 +165,17 @@ def test_stimulus_address_can_arrive_after_the_clock_and_turn_after_hold():
     assert held.stop == held.fall(2) + held.high + 70.0
 
 
+def test_a_flow_through_stimulus_holds_the_address_around_clk_rising():
+    from chipforge_asap7.devices.rom_timing import _address
+
+    s = Stimulus((0, 1), setup=30.0, hold=20.0, slew=4.0, edge=True)
+    points = _address(s, 0)
+    centre = s.rise(1) + s.slew / 2
+    assert (centre - 30.0 - s.slew / 2, 1) in points  # read 1's address
+    assert (centre + 20.0 - s.slew / 2, 0) in points  # then its complement
+    assert not any(abs(t - s.fall(1)) < 30.0 for t, _ in points)
+
+
 def test_deck_keeps_a_stop_time_of_any_length():
     """A rounded stop time made searched runs look unfinished, as false failures."""
     spec = _macro()

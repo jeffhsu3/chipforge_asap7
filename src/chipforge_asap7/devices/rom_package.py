@@ -49,22 +49,35 @@ _INTERFACE = (
     "CLK high precharges; CLK falling closes the address latches and starts the "
     "read; {output}; RESETN active low; internal replica feedback"
 )
+_FLOW_THROUGH_INTERFACE = (
+    "CLK rising closes the address latches and starts a read that ends itself; "
+    "the bitlines precharge between reads; Q holds each word until the next "
+    "read's arrives; RESETN active low; internal replica feedback"
+)
 
 
 def read_contract(spec: RomDecoderSpec) -> dict[str, Any] | None:
-    """The read a registered macro keeps, in the terms of chipforge's
-    ``ROMMacroInterface`` (its docs/rom_macro_contract.md); None without
-    ``register``, whose output follows the sample latches into the next cycle.
+    """The read the macro keeps, in the terms of chipforge's
+    ``ROMMacroInterface`` (its docs/rom_macro_contract.md); None with neither
+    ``register`` nor ``flow_through``, whose output follows the sample latches
+    into the next cycle.
 
-    It is a two-phase read: CLK high precharges, CLK falling latches A, and Q
-    takes the word just after the next CLK rise, one cycle after A launched.
+    With ``register`` it is a two-phase read: CLK high precharges, CLK falling
+    latches A, and Q takes the word just after the next CLK rise, one cycle
+    after A launched.  With ``flow_through`` CLK rising latches A and starts the
+    read, and Q takes the word before the next rise: one cycle after A
+    launched, as the L-Unit sees it, with A held to the rise.
     """
-    if not spec.register:
+    if spec.flow_through:
+        contract, hold = "edge_flow_through", "rise"
+    elif spec.register:
+        contract, hold = "two_phase", "fall"
+    else:
         return None
     return {
-        "contract": "two_phase",
+        "contract": contract,
         "latency": 1,
-        "addr_hold_edge": "fall",
+        "addr_hold_edge": hold,
         "reset": {"pin": "RESETN", "active": "low"},
     }
 
@@ -259,7 +272,8 @@ def write_rom_package(
     """Write the macro's package to `out`; True if a check it ran failed.
 
     ``macro.gds``, ``macro.cdl``, ``macro.lef``, ``macro.v``, with ``register``
-    ``macro_{tt,ff,ss}.lib``, the abstract and ``manifest.json``.  The manifest
+    or ``flow_through`` ``macro_{tt,ff,ss}.lib``, the abstract and
+    ``manifest.json``.  The manifest
     is written before each check runs and after it, so a check that dies leaves
     ``not_run`` behind rather than an older run's result.  `timing` is a report
     from `chipforge_asap7.devices.rom_timing`, of this shape.
@@ -306,6 +320,11 @@ def write_rom_package(
     output = (
         "Q updates on CLK rising" if spec.register else "Q follows the sample latches"
     )
+    interface = (
+        _FLOW_THROUGH_INTERFACE
+        if spec.flow_through
+        else _INTERFACE.format(output=output)
+    )
     report = {
         "spec": asdict(spec),
         "top_cell": name,
@@ -316,11 +335,11 @@ def write_rom_package(
         },
         "pins": list(rom_macro_ports(spec)),
         "controller": "replica_feedback",
-        "registered_output": spec.register,
+        "registered_output": spec.register or spec.flow_through,
         "layout": "nor_center_lane",
         # A narrow array may draw more straps than asked, for the lane's rows.
         "strap_every": spec.cells.strap_every,
-        "interface": _INTERFACE.format(output=output),
+        "interface": interface,
         "read": read_contract(spec),
         "timing_qualified": False,
         "timing": {

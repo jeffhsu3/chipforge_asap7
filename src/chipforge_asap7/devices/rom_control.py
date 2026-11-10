@@ -34,6 +34,28 @@ left edge, where it meets the address latches' ``PRECHN`` track
 (`chipforge_asap7.devices.rom_latch`, which this row matches).  ``EVAL`` and
 ``SAMPLE`` climb to the row's top on their output columns; ``CLK``,
 ``RESETN`` and ``READY`` are M3 pin columns in the gaps.
+
+With ``edge``, CLK rising starts a read that ends itself, and the bitlines
+precharge in between, whatever CLK is doing.  ``REQ`` becomes a latch, set
+by the rising edge and reset once the sample latches have had the word for
+``done_delay`` inverters::
+
+    ARMED  = !REQ . (!CLK + ARMED)    armed while CLK is low, disarmed by a read
+    REQ    = RESETN . !DONE . (CLK . ARMED + REQ)
+    DONE   = SAMPLE, delayed
+
+``PRECHN``, ``EVAL`` and ``SAMPLE`` are as above, so the read drains in the
+same order once ``DONE`` drops ``REQ``.  The address latches close as
+``PRECHN`` rises, now just after CLK rises, and the sample latches hold the
+word until the next read's ``SAMPLE``.  In static CMOS::
+
+    CLKB  = !CLK                       RN   = !RESETN
+    ARMED = NOR(REQ, ARMB)             ARMB = NOR(CLKB, ARMED)
+    SET   = NOR(CLKB, ARMB)            REQB = NOR(SET, REQ)
+    REQ   = NOR(RN, DONE, REQB)        DONE = SN, through an odd chain
+
+``REQ`` clears ``ARMED`` through two gates and then ``SET`` through a third,
+by which time ``REQB`` already holds ``REQ`` up.
 """
 
 from __future__ import annotations
@@ -87,6 +109,7 @@ TRACK_END_SPACE = 36
 _KINDS: dict[str, tuple[tuple[str | None, ...], tuple[str | None, ...]]] = {
     "nor2": (("S", None, "Y"), ("Y", "S", "Y")),
     "nand3": (("Y", "S", "Y", "S"), ("S", None, None, "Y")),
+    "nor3": (("S", None, None, "Y"), ("Y", "S", "Y", "S")),
 }
 
 
@@ -95,7 +118,7 @@ class GateSpec:
     """One static CMOS gate: ``out = kind(*ins)``; an ``inv`` has `fingers` stripes."""
 
     out: str
-    kind: Literal["inv", "nor2", "nand3"]
+    kind: Literal["inv", "nor2", "nand3", "nor3"]
     ins: tuple[str, ...]
     fingers: int = 1
 
@@ -121,16 +144,46 @@ class GateSpec:
     def out_column(self) -> int:
         """The column of the output's M3: an output column of both bands if
         there is one, else the rightmost output column."""
-        ys = {b: {i for i, n in enumerate(c) if n == "Y"} for b, c in self.bands.items()}
+        ys = {
+            b: {i for i, n in enumerate(c) if n == "Y"} for b, c in self.bands.items()
+        }
         common = ys["p"] & ys["n"]
         return min(common) if common else max(ys["p"] | ys["n"])
 
 
-def controller_gates(fingers: int) -> tuple[GateSpec, ...]:
-    """The controller's gates in row order; the three drivers have `fingers` stripes."""
+def controller_gates(
+    fingers: int, edge: bool = False, done_delay: int = 15
+) -> tuple[GateSpec, ...]:
+    """The controller's gates in row order; the three drivers have `fingers` stripes.
+
+    With `edge`, ``REQ`` is latched from CLK's rising edge and reset by
+    ``DONE``, `done_delay` inverters after ``SN``."""
+    if edge:
+        chain = [f"DL{i}" for i in range(done_delay - 1)] + ["DONE"]
+        return (
+            GateSpec("RN", "inv", ("RESETN",)),
+            GateSpec("CLKB", "inv", ("CLK",)),
+            GateSpec("ARMED", "nor2", ("REQ", "ARMB")),
+            GateSpec("ARMB", "nor2", ("CLKB", "ARMED")),
+            GateSpec("SET", "nor2", ("CLKB", "ARMB")),
+            GateSpec("REQB", "nor2", ("SET", "REQ")),
+            GateSpec("REQ", "nor3", ("RN", "DONE", "REQB")),
+            *_drain_gates(fingers),
+            *(
+                GateSpec(out, "inv", (src,))
+                for src, out in zip(["SN", *chain], chain, strict=False)
+            ),
+        )
     return (
         GateSpec("RN", "inv", ("RESETN",)),
         GateSpec("REQ", "nor2", ("CLK", "RN")),
+        *_drain_gates(fingers),
+    )
+
+
+def _drain_gates(fingers: int) -> tuple[GateSpec, ...]:
+    """``PRECHN``, ``EVAL`` and ``SAMPLE`` from ``REQ`` and ``READY``."""
+    return (
         GateSpec("EN", "nor2", ("REQ", "EVAL")),
         GateSpec("PRECHN", "inv", ("EN",), fingers),
         GateSpec("PN", "inv", ("PRECHN",)),
@@ -183,6 +236,12 @@ class RomControlSpec:
         p_fins: fins of every pFET.
         band_height: ``(n_band, p_band)`` in nm: the address-latch row's.
         vt: threshold flavor of every device.
+        edge: start each read on CLK's rising edge and end it from the
+            replica, as described above, instead of reading while CLK is low.
+        done_delay: with `edge`, the inverters from ``SN`` to ``DONE``: how
+            long the sample latches stay open.  Odd.  At 3 the open pulse,
+            about 20 ps, flips no ``Q`` once a macro reaches 256x148; 9 does
+            at typical, and 15 at every corner up to 1024x148.
     """
 
     fingers: int = 4
@@ -190,9 +249,15 @@ class RomControlSpec:
     p_fins: int = 4
     band_height: tuple[int, int] = (243, 243)
     vt: Literal["rvt", "lvt", "slvt", "sram"] = "rvt"
+    edge: bool = False
+    done_delay: int = 15
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "band_height", tuple(self.band_height))
+        if self.done_delay < 1 or self.done_delay % 2 == 0:
+            raise ValueError(
+                f"done_delay must be odd, for DONE to follow SAMPLE: {self.done_delay}"
+            )
         if isinstance(self.fingers, bool) or not isinstance(self.fingers, int):
             raise TypeError(f"fingers must be an integer, got {self.fingers!r}")
         if self.fingers < 1:
@@ -236,14 +301,15 @@ class RomControlSpec:
     def cell_name(self) -> str:
         vt_tag = "" if self.vt == "rvt" else f"_{self.vt}"
         return (
-            f"rom_control_f{self.fingers}_{self.n_fins}n{self.p_fins}p"
+            f"rom_control{f'_edge{self.done_delay}' if self.edge else ''}"
+            f"_f{self.fingers}_{self.n_fins}n{self.p_fins}p"
             f"_h{self.band_height[0]}x{self.band_height[1]}{vt_tag}"
         )
 
     # ── Columns ───────────────────────────────────────────────────────────────
     @property
     def gates(self) -> tuple[GateSpec, ...]:
-        return controller_gates(self.fingers)
+        return controller_gates(self.fingers, self.edge, self.done_delay)
 
     @cached_property
     def placement(self) -> tuple[dict[str, int], dict[str, int]]:
@@ -308,7 +374,9 @@ class RomControlSpec:
         """Each net's track terminals: ``"v1"`` gate xs and ``"v2"`` column xs."""
         nets: dict[str, dict[str, list[int]]] = {}
         for gate in self.gates:
-            nets.setdefault(gate.out, {"v1": [], "v2": []})["v2"].append(self.out_x(gate))
+            nets.setdefault(gate.out, {"v1": [], "v2": []})["v2"].append(
+                self.out_x(gate)
+            )
             for net, run in self.contacts(gate):
                 nets.setdefault(net, {"v1": [], "v2": []})["v1"].append(run[0])
         for pin in CONTROL_INPUTS:
@@ -370,8 +438,14 @@ class RomControlSpec:
 
                 for i, g in enumerate(gate.stripes):
                     out.append(
-                        (f"M{band.upper()}_{gate.out}_{i}", net(i), g, net(i + 1),
-                         band, fins)  # fmt: skip
+                        (
+                            f"M{band.upper()}_{gate.out}_{i}",
+                            net(i),
+                            g,
+                            net(i + 1),
+                            band,
+                            fins,
+                        )  # fmt: skip
                     )
         return tuple(out)
 

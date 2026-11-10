@@ -6,13 +6,28 @@ Liberty from those numbers:
 
 ```sh
 asap7-rom --array.words 1024 --array.bits 148 \
-    --sense --enable --latch --sample --control --register --edge_pins \
+    --sense --enable --latch --sample --control --flow-through --edge_pins \
     --characterize out/timing.json --jobs 6 --resolution 20
 
 asap7-rom --array.words 1024 --array.bits 148 \
-    --sense --enable --latch --sample --control --register --edge_pins \
+    --sense --enable --latch --sample --control --flow-through --edge_pins \
     --words words.json --package out/macro --timing out/timing.json
 ```
+
+The macro reads one of two ways, and core's bank script builds the first:
+
+- **`--flow-through`** (`edge_flow_through` in core's
+  `docs/rom_macro_contract.md`): `CLK` rising latches `A` and starts a
+  self-timed read. When the replica says the read is done, the sample latches
+  open for `done_delay` inverters, then close, and the bitlines precharge.
+  `Q` holds until the next read changes it. There is no register and no keeper.
+- **`--register`** (`two_phase`): `CLK` high precharges, `CLK` falling latches
+  `A`, the read runs while `CLK` is low, and a register shows the word from the
+  next rise. `--keeper` holds its bitlines while `CLK` stays low.
+
+Both have a latency of one cycle. Most of this page measures the two-phase
+read, which came first; [the flow-through read](#the-flow-through-read) has
+its own numbers.
 
 A report belongs to one shape and one circuit: `--timing` refuses a report whose
 macro name differs, or whose `circuit_sha256` no longer matches the macro's
@@ -42,8 +57,9 @@ that bit programmed. Each read takes `Q[0]` the other way: words 0, W-1, 0.
 |---|---|
 | `clk_q_rise`, `clk_q_fall` | `CLK` rising to `Q` at 50%, per load in `loads_ff` |
 | `q_rise_slew`, `q_fall_slew` | `Q`'s 20% to 80% time, per load |
-| `setup`, `hold` | How close to `CLK` falling the address can change; setup can be negative |
+| `setup`, `hold` | How close to `CLK` falling (rising, flow-through) the address can change; setup can be negative |
 | `min_low`, `min_high` | The shortest `CLK` pulses that still read correctly |
+| `min_period` | Flow-through only: the shortest period at 50% duty that still reads correctly |
 | `droop` | The worst bitline's fall in mV/ns while `CLK` is low, on a line nothing discharges |
 | `max_low` | How long `CLK` can stay low before that line reaches 2/3 of VDD, in ps |
 | `aborted` | Searched simulations that did not finish; they count as failures |
@@ -159,6 +175,49 @@ At 1024x148 typical, one simulation stalled past the default one-hour timeout
 (the 409 ps hold check). Rerun with a longer timeout, it finished in 22
 minutes. The report records that rerun.
 
-**The first read's `Q` is unknown.** Reset doesn't initialize the register. `Q`
-is X in the Verilog model, and either rail in SPICE, until the first `CLK` rise
-that follows a `CLK` low with `RESETN` high.
+**The first read's `Q` is unknown.** Reset doesn't initialize the register or
+the sample latches. `Q` is X in the Verilog model, and either rail in SPICE,
+until the first read with `RESETN` high: for the two-phase read, the first
+`CLK` rise that follows a `CLK` low; for the flow-through read, the first `CLK`
+rise.
+
+## The flow-through read
+
+`CLK` rising sets a request latch, `REQ`, which turns the precharge off
+(`PRECHN` rises) and then the wordlines on (`EVAL`). The address latches close
+as `PRECHN` rises, just after the rise, so `A` is held to the rise. The
+replica bitline's fall raises `SAMPLE`, which opens one latch per bit. A chain
+of `done_delay` inverters after `SAMPLE` raises `DONE`, which resets `REQ`:
+`SAMPLE` falls, the latches close on the word, and the bitlines precharge.
+`CLK` must fall between reads to arm the next one, but only for a few gates.
+
+**`done_delay` is 15.** It sets how long the latches stay open, and at 3,
+about 20 ps, the latches did not flip `Q` at 256x148. At 9 they did at
+typical, and 15, about 60 ps, read at every corner up to 1024x148.
+`RomControlSpec.done_delay` and `RomDecoderSpec.done_delay` default to 15.
+
+The shortest period at 50% duty against the two-phase read's, in ps, bare, at
+148 bits. A two-phase period is twice `min_low`:
+
+| Words | two-phase tt | flow-through tt | flow-through ff | flow-through ss | flow-through `clk_q` tt |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 745.6 | 569.6 | 417.3 | 804.9 | 446.6 |
+| 512 | 956.8 | 710.4 | 535.0 | 990.1 | 550.5 |
+| 1024 | 1496.0 | 1078.4 | 800.0 | 1449.9 | 832.4 |
+
+The flow-through read is 24–28% shorter at typical. These searched only
+`min_period`, with the address set up and held well clear of the rise, so
+setup and hold for this read are still the estimate's.
+
+**`clk_q` is most of the period.** `Q` changes only once the read is done, so
+whatever takes `Q` gets the period less `clk_q`: 246 ps at 1024x148 typical,
+at the shortest period, against nearly the whole cycle behind the two-phase
+read's register. A path from `Q` longer than that sets the period instead.
+
+**The estimate is safe for this read.** At typical, with its 1.5 margin, the
+Liberty's estimate is at or above the measurement at each size: `clk_q` 448
+against 446.6 at 256x148 and 942 against 832.4 at 1024x148, `min_period` 650
+against 569.6 and 1319 against 1078.4. Without the margin it is 25–35% short.
+
+The flow-through read has no register, so it has no keeper either: the
+bitlines are precharged except while a read runs.

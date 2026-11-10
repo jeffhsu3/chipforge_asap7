@@ -353,6 +353,31 @@ def test_the_manifest_describes_the_macro(images):
     )
 
 
+def test_a_flow_through_macro_reads_on_the_rising_edge(tmp_path):
+    path = tmp_path / "words.json"
+    path.write_text(json.dumps(IMAGE))
+    flags = [f if f != "--register" else "--flow-through" for f in SHAPE]
+    main(
+        [
+            "--array.words", str(WORDS), "--array.bits", str(BITS), *flags,
+            "--words", str(path), "--package", str(tmp_path / "out"),
+        ]
+    )  # fmt: skip
+    r = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert r["registered_output"] is True
+    assert r["read"] == {
+        "contract": "edge_flow_through",
+        "latency": 1,
+        "addr_hold_edge": "rise",
+        "reset": {"pin": "RESETN", "active": "low"},
+    }
+    assert r["interface"].startswith("CLK rising closes the address latches")
+    assert set(r["artifacts"]["macro"]["liberty"]) == {"tt", "ff", "ss"}
+    lib = (tmp_path / "out" / "macro_tt.lib").read_text()
+    assert "setup_rising" in lib and "hold_rising" in lib
+    assert "setup_falling" not in lib
+
+
 def test_a_latched_macro_has_no_liberty(tmp_path):
     path = tmp_path / "words.json"
     path.write_text(json.dumps(IMAGE))

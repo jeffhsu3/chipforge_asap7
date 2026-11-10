@@ -339,8 +339,10 @@ class Stimulus:
     """Reads of `reads`, each a CLK cycle, low first; times in ps.
 
     The address arrives `setup` before CLK falls and, with `hold` given, turns
-    to its complement that long after.  `tail` is more time after the last
-    high phase, for an output still on its way.
+    to its complement that long after.  With `edge`, a flow-through read
+    (`RomDecoderSpec.flow_through`), that is around CLK rising instead.  Either
+    way read k's word is due when CLK rises after read k's own edge.  `tail`
+    is more time after the last high phase, for an output still on its way.
     """
 
     reads: tuple[int, ...]
@@ -352,6 +354,7 @@ class Stimulus:
     load_ff: float = 1.0
     max_step: float = 1.0
     tail: float = 0.0
+    edge: bool = False
 
     @property
     def first_fall(self) -> float:
@@ -389,7 +392,7 @@ def _address(s: Stimulus, bit: int) -> list[tuple[float, int]]:
     value = lambda read: s.reads[read] >> bit & 1
     points = [(0.0, value(0))]
     for read in range(len(s.reads)):
-        centre = s.fall(read) + s.slew / 2
+        centre = (s.rise(read) if s.edge else s.fall(read)) + s.slew / 2
         points.append((centre - s.setup - s.slew / 2, value(read)))
         if s.hold is not None:
             points.append((centre + s.hold - s.slew / 2, 1 - value(read)))
@@ -603,7 +606,9 @@ class CornerTiming:
     ``clk_q_*`` and ``q_*_slew`` hold one value per load in `LOADS_FF`; a slew is
     20% to 80% of the swing.  ``max_low`` is an extrapolation from `droop`,
     the worst bitline's fall in mV/ns while ``CLK`` is low, and is ``None`` if it
-    did not fall.
+    did not fall.  ``min_period`` is the shortest cycle at 50% duty that reads,
+    measured for a flow-through read, whose setup and hold are to ``CLK``
+    rising rather than falling.
     """
 
     clk_q_rise: tuple[float, ...]
@@ -617,6 +622,7 @@ class CornerTiming:
     droop: float
     max_low: float | None
     aborted: int = 0
+    min_period: float | None = None
 
 
 def read_errors(
@@ -737,18 +743,22 @@ def characterize_corner(
         return passes
 
     # A cycle long enough to read, from the estimate and then by doubling.
-    guess = estimate_timing(spec).at(corner.name)
+    # The estimate models the two-phase read; its array's is a start for either.
+    guess = estimate_timing(replace(spec, flow_through=False)).at(corner.name)
     low = max(400.0, round(guess.min_low))
     high = max(400.0, round(guess.min_high))
+    edge = spec.flow_through
     for _ in range(4):
-        if good(Stimulus(reads, low=low, high=high)):
+        if good(Stimulus(reads, low=low, high=high, edge=edge)):
             break
         low, high = 2 * low, 2 * high
     else:
         raise RuntimeError(
             f"no read succeeded at the {corner.name} corner, up to CLK low {low:g} ps"
         )
-    base = Stimulus(reads, low=low, high=high)
+    base = Stimulus(reads, low=low, high=high, edge=edge)
+    # The phase the address is set up and held across.
+    window = high if edge else low
 
     # CLK to Q at each load.
     def measure(load: float) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -769,7 +779,7 @@ def characterize_corner(
 
     # Each limit, one at a time.  Setup can be negative: the address latches
     # close only after PRECHN has risen.
-    setup_floor = -low / 2
+    setup_floor = -window / 2
     if many(lambda s: replace(base, setup=s))([setup_floor])[0]:
         setup = setup_floor
     else:
@@ -783,12 +793,12 @@ def characterize_corner(
     if many(lambda h: replace(base, hold=h))([0.0])[0]:
         hold = 0.0
     else:
-        if not many(lambda h: replace(base, hold=h))([low / 2])[0]:
-            raise RuntimeError(f"address hold of {low / 2:g} ps does not read")
+        if not many(lambda h: replace(base, hold=h))([window / 2])[0]:
+            raise RuntimeError(f"address hold of {window / 2:g} ps does not read")
         hold = search_limit(
             many(lambda h: replace(base, hold=h)),
             0.0,
-            low / 2,
+            window / 2,
             points=jobs,
             resolution=resolution,
         )
@@ -806,6 +816,15 @@ def characterize_corner(
         points=jobs,
         resolution=resolution,
     )
+    min_period = None
+    if edge:
+        min_period = search_limit(
+            many(lambda v: replace(base, low=v / 2, high=v / 2, tail=high)),
+            2 * base.slew,
+            low + high,
+            points=jobs,
+            resolution=resolution,
+        )
     droop, max_low = _droop(spec, path, corner, osdi, out / "droop", timeout_s)
     return CornerTiming(
         clk_q_rise=tuple(round(e[0][0], 2) for e in edges),
@@ -819,6 +838,7 @@ def characterize_corner(
         droop=round(droop, 3),
         max_low=None if max_low is None else round(max_low),
         aborted=len(aborted),
+        min_period=None if min_period is None else round(min_period, 2),
     )
 
 

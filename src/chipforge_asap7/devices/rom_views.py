@@ -5,10 +5,14 @@ The macro is ``build_rom(spec, ...)`` with ``spec.edge_pins``: its interface is
 reaching the bottom edge, so GDS labels, CDL, LEF, Verilog and Liberty all name
 the same pins, the way the B-ROM's do.
 
-Its read is a one-cycle registered read: ``CLK`` high precharges, ``CLK``
-falling closes the address latches and starts the read, and with ``register``
-``Q`` takes the word as ``CLK`` rises.  A read has to finish while ``CLK`` is
-low; if it does not, ``SAMPLE`` never rises and ``Q`` keeps the old word.
+Its read takes one cycle, in one of two ways.  With ``register`` it is
+two-phase: ``CLK`` high precharges, ``CLK`` falling closes the address latches
+and starts the read, and ``Q`` takes the word as ``CLK`` rises.  A read has to
+finish while ``CLK`` is low; if it does not, ``SAMPLE`` never rises and ``Q``
+keeps the old word.  With ``flow_through``, ``CLK`` rising closes the address
+latches and starts a read that ends itself, and ``Q`` takes the word before
+the next rise, holding it until the read after.  Its limit is the period, not
+either phase.
 
 **Without a timing report, the Liberty is an estimate.**  `estimate_timing` walks
 the macro's actual transistors with the logical-effort numbers
@@ -196,6 +200,8 @@ def rom_macro_verilog(
     memory = [0] * words
     for word, bit in programmed:
         memory[word] |= 1 << bit
+    if spec.flow_through:
+        return _flow_through_verilog(spec, memory, name)
     lines = [
         (
             f"// Behavioral model of {name}: {words} x {bits} NOR ROM, self-timed, "
@@ -248,6 +254,39 @@ def rom_macro_verilog(
     return "\n".join(lines)
 
 
+def _flow_through_verilog(spec: RomDecoderSpec, memory: list[int], name: str) -> str:
+    """A flow-through macro's model, at the clock edge rather than the switch
+    level: the controller's read ends itself, which a zero-delay model of its
+    gates would turn into a race.  ``CLK`` rising with ``RESETN`` high latches
+    ``A``, and ``Q`` holds that word until the next read's."""
+    words, bits, ab = spec.array.words, spec.array.bits, spec.address_bits
+    lines = [
+        (
+            f"// Behavioral model of {name}: {words} x {bits} NOR ROM, self-timed, "
+            "flow-through output. Zero delay; no timing."
+        ),
+        f"module {name} (A, CLK, RESETN, Q);",
+        f"  input [{ab - 1}:0] A;",
+        "  input CLK;",
+        "  input RESETN;",
+        f"  output [{bits - 1}:0] Q;",
+        "`ifndef SYNTHESIS",
+        f"  reg [{bits - 1}:0] mem [0:{words - 1}];",
+        "  initial begin",
+        *(f"    mem[{i}] = {bits}'h{w:x};" for i, w in enumerate(memory)),
+        "  end",
+        "  // CLK rising starts a read of A; the sample latches hold its word",
+        "  // until the next read's arrives. Q is unknown until the first read.",
+        f"  reg [{bits - 1}:0] sampled;",
+        "  always @(posedge CLK) if (RESETN) sampled <= mem[A];",
+        "  assign Q = sampled;",
+        "`endif",
+        "endmodule",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ── Liberty ───────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class RomTimingEstimate:
@@ -259,6 +298,7 @@ class RomTimingEstimate:
     hold: float
     min_low: float
     min_high: float
+    min_period: float
     clk_cap: float
     resetn_cap: float
     address_cap: float
@@ -287,6 +327,11 @@ def estimate_timing(
     capacitance of an inverter with the net's largest driver.  A pin's M5
     column length comes from `column_um`, in um, when known.  The bitline is
     every word of a half programmed, discharged by one selected bit.
+
+    A flow-through read starts on ``CLK`` rising through the edge latch
+    (``CLKB``, ``SET``, ``REQB``, ``REQ``), and ``Q`` follows the sample latch.
+    Its ``min_period`` is the read, the latch's open time and the precharge;
+    its pulses need only arm and set the latch.
     """
     _need(spec)
     model = model or LogicalEffortModel()
@@ -360,13 +405,39 @@ def estimate_timing(
     def pin_cap(net: str, port: str) -> float:
         return load(net, columns.get(port, 0.0))
 
+    min_low, min_high, min_period = read, precharge, read + precharge
+    if spec.flow_through:
+        # CLK rises: CLKB falls, SET rises, REQB falls and REQ rises; then the
+        # read as above.  The sample latch opens with SAMPLE and its two
+        # inverters drive Q.
+        edge = stage("C_CLKB") + stage("C_SET") + stage("C_REQB") + request
+        through = stage("C_EV0") + stage("C_EVB") + stage("EVAL", across_um)
+        ft_read = edge + through + decode + discharge + capture
+        clk_q = (
+            ft_read
+            + stage("S_SAMPLEL_R0", row_um)
+            + stage("S_LX0")
+            + stage("S_LY0")
+            + stage("Q[0]", q_um, OUTPUT_LOAD_FF)
+        )
+        hold = (
+            edge + stage("C_EN") + stage("PRECHN", across_um) + stage("LA_CK", row_um)
+        )
+        setup = line - (edge + through)
+        done = spec.done_delay * stage("C_DL0") + request
+        min_period = ft_read + done + precharge
+        # CLK low arms the latch (CLKB, ARMB, ARMED); CLK high sets it.
+        min_low = stage("C_CLKB") + stage("C_ARMB") + stage("C_ARMED")
+        min_high = edge
+
     return RomTimingEstimate(
         clk_q=MARGIN * clk_q,
         slew=MARGIN * slew,
         setup=max(MARGIN * setup, MIN_CONSTRAINT_PS),
         hold=max(MARGIN * hold, MIN_CONSTRAINT_PS),
-        min_low=MARGIN * read,
-        min_high=MARGIN * precharge,
+        min_low=MARGIN * min_low,
+        min_high=MARGIN * min_high,
+        min_period=MARGIN * min_period,
         clk_cap=pin_cap("CLK", "CLK"),
         resetn_cap=pin_cap("RESETN", "RESETN"),
         address_cap=max(
@@ -415,23 +486,28 @@ def rom_macro_liberty(
     estimate: RomTimingEstimate | None = None,
     measured: CornerTiming | None = None,
 ) -> str:
-    """Liberty of one corner, from `measured` if given and otherwise estimated;
-    ``A`` latches at ``CLK`` falling and ``Q`` launches at ``CLK`` rising, so this
-    needs ``register``.
+    """Liberty of one corner, from `measured` if given and otherwise estimated.
+    ``Q`` launches at ``CLK`` rising, so this needs ``register`` or
+    ``flow_through``.
 
-    ``CLK``'s minimum pulse widths carry the read itself: low for a read to
-    finish, high for the bitlines to recover.  ``RESETN`` carries no arc: it is
-    released once, after reset, while the clock runs.
+    With ``register``, ``A`` latches at ``CLK`` falling and ``CLK``'s minimum
+    pulse widths carry the read itself: low for a read to finish, high for the
+    bitlines to recover.  With ``flow_through``, ``A`` latches at ``CLK`` rising,
+    ``Q``'s arc is the whole read, and ``min_period`` carries the read and the
+    precharge after it.  ``RESETN`` carries no arc: it is released once, after
+    reset, while the clock runs.
     """
     _need(spec)
-    if not spec.register:
-        raise ValueError("the Liberty's Q arc is the output register's: needs register")
+    if not (spec.register or spec.flow_through):
+        raise ValueError(
+            "the Liberty's Q arc launches at CLK rising: needs register or flow_through"
+        )
     suffix, _ = CORNERS[corner]
     t = (estimate or estimate_timing(spec)).at(corner)
     ab, bits = spec.address_bits, spec.array.bits
     if measured is None:
         setup, hold = t.setup, t.hold
-        min_low, min_high = t.min_low, t.min_high
+        min_low, min_high, min_period = t.min_low, t.min_high, t.min_period
         q_arcs = (
             _scalar("cell_rise", t.clk_q)
             + _scalar("cell_fall", t.clk_q)
@@ -444,6 +520,11 @@ def rom_macro_liberty(
         setup, hold = _guarded(measured.setup), _guarded(measured.hold)
         min_low = MEASURED_MARGIN * measured.min_low
         min_high = MEASURED_MARGIN * measured.min_high
+        min_period = MEASURED_MARGIN * (
+            measured.min_period
+            if measured.min_period is not None
+            else measured.min_low + measured.min_high
+        )
         scaled = lambda values: [MEASURED_MARGIN * value for value in values]
         q_arcs = (
             _table("cell_rise", scaled(measured.clk_q_rise))
@@ -468,11 +549,12 @@ def rom_macro_liberty(
             " * (chipforge_asap7.devices.rom_timing).  Pin capacitances are estimates.\n"
             f" * CLK may stay low for {limit} before a bitline droops too far."
         )
+    edge = "rising" if spec.flow_through else "falling"
     a_pins = "".join(
         f"      pin(A[{i}]) {{\n        direction : input;\n"
         f"        capacitance : {t.address_cap:.3f};\n"
-        + _constraint("setup_falling", setup)
-        + _constraint("hold_falling", hold)
+        + _constraint(f"setup_{edge}", setup)
+        + _constraint(f"hold_{edge}", hold)
         + "      }\n"
         for i in range(ab)
     )
@@ -503,7 +585,7 @@ def rom_macro_liberty(
         f"      capacitance : {t.clk_cap:.3f};\n"
         f"      min_pulse_width_low : {min_low:.2f};\n"
         f"      min_pulse_width_high : {min_high:.2f};\n"
-        f"      min_period : {min_low + min_high:.2f};\n    }}\n"
+        f"      min_period : {min_period:.2f};\n    }}\n"
         "    pin(RESETN) {\n      direction : input;\n"
         f"      capacitance : {t.resetn_cap:.3f};\n    }}\n"
         f"    bus(A) {{\n      bus_type : ROM_A_{ab};\n"
@@ -522,12 +604,13 @@ def rom_macro_views(
     timing: dict[str, CornerTiming] | None = None,
 ) -> dict[str, str]:
     """The macro's views by file name: ``macro.lef``, ``macro.v`` and, with
-    ``register``, ``macro_{tt,ff,ss}.lib``, from `timing` for a corner it has."""
+    ``register`` or ``flow_through``, ``macro_{tt,ff,ss}.lib``, from `timing`
+    for a corner it has."""
     views = {
         "macro.lef": rom_macro_lef(spec, top),
         "macro.v": rom_macro_verilog(spec, programmed, top.name),
     }
-    if spec.register:
+    if spec.register or spec.flow_through:
         columns = {
             pin: max(r[3] - r[1] for r in rects) / 1000
             for pin, rects in _pin_columns(top).items()

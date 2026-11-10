@@ -27,6 +27,8 @@ SPECS = [
     RomControlSpec(),
     RomControlSpec(fingers=1),
     RomControlSpec(fingers=8, vt="lvt"),
+    RomControlSpec(edge=True),
+    RomControlSpec(edge=True, done_delay=1),
 ]
 
 
@@ -100,6 +102,45 @@ def test_resetn_drains_a_read_like_clk_high():
     assert c.outputs() == (0, 0, 0)
     c.step(CLK=0, RESETN=0, READY=0)
     assert c.outputs() == (0, 0, 0)  # no read while reset
+
+
+def test_an_edge_read_runs_once_per_rising_edge():
+    """With `edge`, CLK rising starts a read and the replica ends it."""
+    c = _Controller(RomControlSpec(edge=True))
+    c.step(CLK=0, RESETN=0, READY=0)
+    c.step(CLK=0, RESETN=1, READY=0)
+    assert c.outputs() == (0, 0, 0)  # idle: precharging
+    c.step(CLK=1, RESETN=1, READY=0)
+    assert c.outputs() == (1, 1, 0)  # the edge: precharge off, wordline on
+    c.step(CLK=1, RESETN=1, READY=1)
+    assert c.outputs() == (0, 0, 0)  # sampled, DONE, and drained by itself
+    assert c.value["REQ"] == 0 and c.value["ARMED"] == 0
+    # The replica precharges; CLK still high starts nothing.
+    c.step(CLK=1, RESETN=1, READY=0)
+    assert c.outputs() == (0, 0, 0)
+    c.step(CLK=0, RESETN=1, READY=0)
+    assert c.outputs() == (0, 0, 0) and c.value["ARMED"] == 1
+    c.step(CLK=1, RESETN=1, READY=0)
+    assert c.outputs() == (1, 1, 0)  # the next edge
+
+
+def test_an_edge_read_waits_out_reset():
+    c = _Controller(RomControlSpec(edge=True))
+    c.step(CLK=0, RESETN=0, READY=0)
+    c.step(CLK=1, RESETN=0, READY=0)
+    assert c.outputs() == (0, 0, 0)
+    # A read under way drains when RESETN falls.
+    c.step(CLK=0, RESETN=1, READY=0)
+    c.step(CLK=1, RESETN=1, READY=0)
+    assert c.outputs() == (1, 1, 0)
+    c.step(CLK=1, RESETN=0, READY=0)
+    assert c.outputs() == (0, 0, 0)
+
+
+def test_done_delay_is_odd():
+    with pytest.raises(ValueError, match="done_delay must be odd"):
+        RomControlSpec(edge=True, done_delay=2)
+    assert RomControlSpec(edge=True).cell_name.startswith("rom_control_edge15_")
 
 
 def test_levels_keep_tracks_on_one_level_apart():

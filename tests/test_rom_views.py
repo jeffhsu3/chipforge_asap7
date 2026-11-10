@@ -49,7 +49,7 @@ SIZES = [(16, 6), (64, 32), (128, 33)]
 
 
 def _spec(
-    words=16, bits=6, register=True, edge_pins=True, keeper=False
+    words=16, bits=6, register=True, edge_pins=True, keeper=False, flow_through=False
 ) -> RomDecoderSpec:
     return RomDecoderSpec(
         array=RomArraySpec(words, bits),
@@ -57,9 +57,10 @@ def _spec(
         enable=True,
         latch=True,
         sample=True,
-        register=register,
+        register=register and not flow_through,
         keeper=keeper,
         control=True,
+        flow_through=flow_through,
         edge_pins=edge_pins,
     )
 
@@ -420,6 +421,22 @@ def test_the_model_matches_the_extracted_layout(
     assert [m for _, m in known] == [s for s, _ in known]
 
 
+def test_a_flow_through_model_reads_on_the_rising_clock(tmp_path, external_tool):
+    external_tool(shutil.which("iverilog") is not None, "iverilog is not installed")
+    spec = _spec(flow_through=True)
+    sites = _sites(spec)
+    # In reset nothing reads; then each rise takes the word at A, which may
+    # change straight after, and Q holds it through the low phase.
+    steps = [(0, 1, 0), (2, 0, 0), (2, 1, 0), (2, 0, 1)]
+    words = list(range(16))
+    for address in words:
+        steps += [(address, 1, 1), (address ^ 5, 1, 1), (address ^ 5, 0, 1)]
+    q = _simulate(tmp_path, rom_macro_verilog(spec, sites, "m"), "m", steps, spec)
+    assert set(q[:4]) == {"x" * 6}
+    for i, address in enumerate(words):
+        assert q[4 + 3 * i : 7 + 3 * i] == [_word(sites, address, 6)] * 3, address
+
+
 def test_synthesis_sees_a_black_box():
     model = rom_macro_verilog(_spec(), {(0, 0)}, "m")
     head, body = model.split("`ifndef SYNTHESIS")
@@ -457,8 +474,30 @@ def test_the_liberty_says_it_is_an_estimate_and_needs_the_register():
     text = rom_macro_liberty(_spec(), "m", "typical", 1.0)
     assert "ESTIMATED, NOT CHARACTERIZED" in text
     assert "library(m_tt)" in text
-    with pytest.raises(ValueError, match="needs register"):
+    with pytest.raises(ValueError, match="needs register or flow_through"):
         rom_macro_liberty(_spec(register=False), "m", "typical", 1.0)
+
+
+def test_a_flow_through_estimate_is_one_read_per_period():
+    two_phase = estimate_timing(_spec(256, 64))
+    flow = estimate_timing(_spec(256, 64, flow_through=True))
+    assert two_phase.min_period == pytest.approx(two_phase.min_low + two_phase.min_high)
+    # Its period is the read, the latch's open time and the precharge; its Q
+    # arc is the whole read, so later than the register's.
+    assert flow.min_period > flow.clk_q > two_phase.clk_q
+    assert flow.min_low + flow.min_high < flow.min_period / 4
+    assert estimate_timing(_spec(1024, 64, flow_through=True)).min_period > (
+        flow.min_period
+    )
+
+
+def test_a_flow_through_liberty_holds_a_to_clk_rising():
+    spec = _spec(flow_through=True)
+    t = estimate_timing(spec)
+    text = rom_macro_liberty(spec, "m", "typical", 1.0, t)
+    assert text.count("setup_rising") == text.count("hold_rising") == 4
+    assert "falling" not in text
+    assert f"min_period : {t.min_period:.2f};" in text
 
 
 def test_the_views_are_named_by_file():
@@ -474,6 +513,9 @@ def test_the_views_are_named_by_file():
     latched = _spec(register=False)
     _, top = _build(latched)
     assert set(rom_macro_views(latched, (), top)) == {"macro.lef", "macro.v"}
+    flow = _spec(flow_through=True)
+    _, top = _build(flow)
+    assert {"macro_tt.lib", "macro.v"} <= set(rom_macro_views(flow, (), top))
 
 
 def test_opensta_reads_the_liberty_and_checks_the_read(tmp_path, external_tool):
@@ -509,3 +551,40 @@ def test_opensta_reads_the_liberty_and_checks_the_read(tmp_path, external_tool):
     assert "Endpoint: q[0]" in out
     assert "Startpoint: a[0]" in out
     assert "required pulse width (low)" in out
+
+
+def test_opensta_times_a_flow_through_read_from_the_rising_edge(
+    tmp_path, external_tool
+):
+    sta = shutil.which("sta")
+    external_tool(sta is not None, "OpenSTA is not installed")
+    spec = _spec(flow_through=True)
+    _, top = _build(spec)
+    views = rom_macro_views(spec, (), top)
+    (tmp_path / "macro.lib").write_text(views["macro_tt.lib"])
+    (tmp_path / "top.v").write_text(
+        "module top(input clk, input rn, input [3:0] a, output [5:0] q);\n"
+        f"  {top.name} u (.A(a), .CLK(clk), .RESETN(rn), .Q(q));\nendmodule\n"
+    )
+    script = tmp_path / "s.tcl"
+    script.write_text(
+        f"read_liberty {tmp_path / 'macro.lib'}\n"
+        f"read_verilog {tmp_path / 'top.v'}\n"
+        "link_design top\n"
+        "create_clock -name c -period 1000 [get_ports clk]\n"
+        "set_input_delay 20 -clock c [get_ports a]\n"
+        "set_output_delay 20 -clock c [get_ports q]\n"
+        "report_checks -to [get_ports q[0]] -format short\n"
+        "report_checks -from [get_ports a[0]] -format short\n"
+        "report_check_types -min_period -verbose\n"
+    )
+    out = subprocess.run(
+        [sta, "-no_init", "-exit", str(script)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "Warning" not in out and "Error" not in out
+    assert "Endpoint: q[0]" in out
+    assert "Startpoint: a[0]" in out
+    assert "period" in out.lower()
