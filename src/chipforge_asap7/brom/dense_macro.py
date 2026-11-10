@@ -638,6 +638,16 @@ def build_dense_macro(c, spec=None):
             ]
             if track == 1:
                 near += tips0
+            # A riser left of the rail extends the trunk past it, toward the
+            # lanes' candidate tips and the bank's header ends one pitch away.
+            # Drawn ends lie on or 24 nm past a route's end points.
+            near += [
+                t
+                for _, metal, (ax_, ay), (bx, by) in routes
+                if metal == "M4" and ay == by and abs(ay - y) == 48
+                for e in (min(ax_, bx), max(ax_, bx))
+                for t in (e - 24, e, e + 24)
+            ]
             # Only a riser end may move; a rail end is where the cell is.
             while len(ends) == 2 and lo > 0 and any(abs(lo - t) < 40 for t in near):
                 lo -= 48

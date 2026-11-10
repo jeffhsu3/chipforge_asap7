@@ -107,6 +107,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--replica-guard-pairs", type=int)
     parser.add_argument("--replica-extra-blocks", type=int)
+    parser.add_argument(
+        "--replica-share",
+        type=int,
+        help="Output latches per local SAMPLE receiver (default 1)",
+    )
     mode.add_argument(
         "--clocked",
         action="store_true",
@@ -130,7 +135,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     if not args.self_timed and (
-        args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
+        args.replica_guard_pairs is not None
+        or args.replica_extra_blocks is not None
+        or args.replica_share is not None
     ):
         parser.error("replica options require --self-timed")
     if args.registered_output and not (args.clocked or args.self_timed):
@@ -155,6 +162,7 @@ def main(argv: list[str] | None = None) -> None:
             replica=ReplicaSpec(
                 4 if args.replica_guard_pairs is None else args.replica_guard_pairs,
                 1 if args.replica_extra_blocks is None else args.replica_extra_blocks,
+                1 if args.replica_share is None else args.replica_share,
             ),
         )
         if args.self_timed
@@ -223,6 +231,10 @@ def main(argv: list[str] | None = None) -> None:
                 "dummy_loads": macro.replica.dummy_loads,
                 "guard_pairs": macro.replica.guard_pairs,
                 "extra_blocks": macro.replica.extra_blocks,
+                "latches_per_sample_receiver": max(
+                    len(bank["latch_groups"])
+                    for bank in macro.sample_distribution["banks"]
+                ),
                 "candidate": 15,
                 "selector_devices": len(macro.replica.selector.device_names) // 2,
                 "isolation_devices": len(macro.replica.selector.device_names) // 2,

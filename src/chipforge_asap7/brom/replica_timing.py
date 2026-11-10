@@ -280,12 +280,14 @@ def analyze_replica(time, traces, spec, words, vdd, *, phase_scale=1):
     if "SAMPLE_RX<0>" in traces:
         # Conservative envelope of all actual receiving TG controls, including
         # the dummy replica latch. Never substitute the unloaded command net.
+        # A shared receiver drives several latches, so count receivers.
         traces = dict(traces)
+        receivers = range(sum(name.startswith("SAMPLE_RX<") for name in traces))
         traces["SAMPLE"] = np.maximum.reduce(
-            [traces[f"SAMPLE_RX<{i}>"] for i in range(spec.bits + 1)]
+            [traces[f"SAMPLE_RX<{i}>"] for i in receivers]
         )
         traces["SAMPLEB"] = np.minimum.reduce(
-            [traces[f"SAMPLEB_RX<{i}>"] for i in range(spec.bits + 1)]
+            [traces[f"SAMPLEB_RX<{i}>"] for i in receivers]
         )
     if spec.registered_output:
         from dataclasses import replace
@@ -638,6 +640,9 @@ def main():
     p.add_argument("--temperature-c", type=float, default=25)
     p.add_argument("--guard-pairs", type=int, default=4)
     p.add_argument("--extra-blocks", type=int, default=1)
+    p.add_argument(
+        "--share", type=int, default=1, help="output latches per SAMPLE receiver"
+    )
     p.add_argument("--phase-scale", type=float, default=1)
     p.add_argument("--step-ps", type=float, default=0.5)
     p.add_argument("--bitline-load-ff", type=float, default=0)
@@ -661,7 +666,7 @@ def main():
         out=args.out,
         model_card=args.model_card,
         osdi=args.osdi,
-        replica=ReplicaSpec(args.guard_pairs, args.extra_blocks),
+        replica=ReplicaSpec(args.guard_pairs, args.extra_blocks, args.share),
         klu=args.klu,
         sized_controls=args.sized_controls,
         wire_rc_controls=args.wire_rc_controls,

@@ -28,9 +28,11 @@ LOAD_GATES = 8
 class ReplicaSpec:
     guard_pairs: int = 4
     extra_blocks: int = 1
+    #: Output latches each SAMPLE receiver drives; see `add_sample_receivers`.
+    share: int = 1
 
     def __post_init__(self):
-        for name in ("guard_pairs", "extra_blocks"):
+        for name in ("guard_pairs", "extra_blocks", "share"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -133,9 +135,12 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
     # and a closure return from every data/replica latch; their placement is
     # established before the optional distribution pass. PEX is still required.
     delay("PRECHN", "PRECHN_FAR", 2)
-    closed = add_sample_receivers(
-        c, [*(f"output_latch_{i}" for i in range(spec.bits)), "replica_sample_latch"]
-    )
+    latches = [f"output_latch_{i}" for i in range(spec.bits)]
+    groups = [
+        tuple(latches[i : i + replica.share])
+        for i in range(0, len(latches), replica.share)
+    ]
+    closed = add_sample_receivers(c, [*groups, "replica_sample_latch"])
     before = len(c.devices)
     delay(closed, "SAMPLE_CLOSED", 2)
     # Every inverter output on the acknowledgment return is a routed control.
@@ -159,6 +164,8 @@ def self_timed_macro_circuit(
     add_replica(c, spec, replica or ReplicaSpec())
     c.name = c.name.replace("brom_clocked_", "brom_selftimed_")
     c.name += f"_g{c.replica.guard_pairs}_e{c.replica.extra_blocks}"
+    if (replica or ReplicaSpec()).share > 1:
+        c.name += f"_s{replica.share}"
     feedback = {"PRECHN_FAR", "READ_READY", "SAMPLE_CLOSED", "CANDIDATE_BUSY"}
     c.pins = tuple(pin for pin in c.pins if pin not in feedback)
     return c

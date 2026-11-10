@@ -73,8 +73,11 @@ def _datapaths(units, anchors):
     return ways, shapes, controls, readouts
 
 
-def _readout_rows(readouts, anchors, packed, first, width):
-    """Align BL access trunks without crossing a tap gap or another cell."""
+def _readout_rows(readouts, anchors, packed, first, width, interleave=4):
+    """Align BL access trunks without crossing a tap gap or another cell.
+
+    Column ``c`` prefers row ``first + c % interleave``.
+    """
     segments = _segments(1, width)
     ordered = sorted(
         readouts,
@@ -109,7 +112,7 @@ def _readout_rows(readouts, anchors, packed, first, width):
                     x = min(max(target, -(-low // 54) * 54), high // 54 * 54)
                     if x < low:
                         continue
-                    score = (abs(x - target), row - first != column % 4, row, x)
+                    score = (abs(x - target), row - first != column % interleave, row, x)
                     if best is None or score < best:
                         best = score
         if best is None:
@@ -290,3 +293,183 @@ def sliced_rows(units, anchors, width, rows, *, sinks=(), spread_decoder=False):
     if not _readout_rows(readouts, anchors, packed, data_rows, width):
         return None
     return _place_controls(controls, anchors, packed, width, sinks, spread_decoder)
+
+
+#: Rows beyond ``spare`` that `banded_rows` adds for control logic.
+SPARE_LIMIT = 4
+_MUX = re.compile(r"output_mux_(\d+)$")
+_MASTER = re.compile(r"register_master_(\d+)$")
+_SLAVE = re.compile(r"register_slave_(\d+)$")
+
+
+def _bands(units, anchors):
+    """Group a datapath into function bands of per-bit blocks.
+
+    Return (readouts, bands, controls, centers) or None. ``bands`` lists,
+    nearest the array first, each band's blocks as (bit, units); ``centers``
+    maps a bit to the mean x of its bitlines.
+    """
+    bits = {int(m[1]) for u in units if (m := _LATCH.fullmatch(u.name))}
+    columns = {int(m[1]) for u in units if (m := _READOUT.fullmatch(u.name))}
+    if not bits or bits != set(range(len(bits))):
+        return None
+    ways = len(columns) // len(bits)
+    if ways not in (1, 4) or columns != set(range(len(bits) * ways)):
+        return None
+    if any(len(anchors.get(f"BL<{c}>", ())) != 1 for c in columns):
+        return None
+    centers = {
+        b: sum(anchors[f"BL<{b * ways + i}>"][0] for i in range(ways)) / ways
+        for b in bits
+    }
+    readouts, controls = [], []
+    mux, sample, master, slave = (defaultdict(list) for _ in range(4))
+    # A SAMPLE receiver block runs from its first receiver cell to its last,
+    # with its latches inside; keep it whole, in electrical order.
+    for block in _blocks(units):
+        members = [units[i] for i in block]
+        first = members[0].name
+        if (m := _BIT_UNIT.fullmatch(first)) and first.startswith("sample_receiver_"):
+            latched = [
+                int(k[1]) for u in members if (k := _LATCH.fullmatch(u.name))
+            ]
+            if latched:
+                sample[min(latched)].extend(members)
+                continue
+        for unit in members:
+            name = unit.name
+            if _READOUT.fullmatch(name):
+                readouts.append(unit)
+            elif m := _MUX.fullmatch(name):
+                mux[int(m[1])].append(unit)
+            elif (m := _LATCH.fullmatch(name)) and int(m[1]) in bits:
+                sample[int(m[1])].append(unit)
+            elif m := _MASTER.fullmatch(name):
+                master[int(m[1])].append(unit)
+            elif m := _SLAVE.fullmatch(name):
+                slave[int(m[1])].append(unit)
+            else:
+                controls.append(unit)
+    register = {
+        b: master.get(b, []) + slave.get(b, []) for b in set(master) | set(slave)
+    }
+    bands = [
+        sorted(band.items())
+        for band in (mux, sample, register)
+        if band
+    ]
+    return readouts, bands, controls, centers
+
+
+#: A bitline-free x range at least this wide (nm) between the arrays is
+#: left to control logic: the decoder's SEL and G drops land there.
+CONTROL_GAP = 4320
+
+
+def _control_gap(anchors):
+    """The widest bitline-free x range between the arrays, or None."""
+    xs = sorted(
+        x
+        for net, points in anchors.items()
+        if net.startswith("BL<")
+        for x in points
+        if x is not None
+    )
+    gaps = [(b - a, a, b) for a, b in zip(xs, xs[1:])]
+    if not gaps or max(gaps)[0] < CONTROL_GAP:
+        return None
+    _, lo, hi = max(gaps)
+    return lo, hi
+
+
+def _band_segments(rows, width, gap):
+    """Row segments for band cells, less the control gap and a spacer."""
+    segments = _segments(rows, width)
+    if gap is None:
+        return segments
+    lo = (gap[0] + 216) // 108 * 108
+    hi = -(-(gap[1] - 216) // 108) * 108
+    result = []
+    for row, a, b in segments:
+        for p, q in ((a, min(b, lo)), (max(a, hi), b)):
+            if q - p >= 432:
+                result.append((row, p, q))
+    return result
+
+
+def _band_rows(blocks, centers, width, rows, gap=None):
+    """Abacus-pack one band's blocks into ``rows`` rows under their bits."""
+    shapes = [_shape(members) for _, members in blocks]
+    widths = [w for _, w in shapes]
+    targets = [centers[bit] - w / 2 for (bit, _), w in zip(blocks, widths)]
+    placed = _legalize(
+        blocks,
+        widths,
+        targets,
+        _band_segments(rows, width, gap),
+        [0] * len(blocks),
+        lambda j, k: unit_gap(shapes[j][0][-1][0], shapes[k][0][0][0]),
+        lambda k: wall_gap(shapes[k][0][0][0].plan.edges[0]),
+    )
+    if placed is None:
+        return None
+    packed = [[] for _ in range(rows)]
+    for k, (cells, _) in enumerate(shapes):
+        row, x = placed[k]
+        packed[row].extend((unit, x + dx) for unit, dx in cells)
+    return packed
+
+
+def banded_rows(
+    units, anchors, width, *, fill=0.85, spare=1, sinks=(), spread_decoder=False
+):
+    """Pitch-matched function bands: each bit's cells sit under its bitlines.
+
+    Nearest the array: the readouts, then a band of mux cells, a band of
+    SAMPLE receiver and output latch blocks, and a band of register latches.
+    Bands stay out of a bitline-free gap between the arrays, where the
+    decoder's drops land; control logic fills it.
+    Each band has the fewest rows its cells fill to ``fill``; ``spare``
+    empty rows below take what control logic the bands' free space does
+    not. Return None for an unsupported circuit or insufficient space.
+    Routing is still required before accepting this placement.
+    """
+    width = width // 108 * 108
+    grouped = _bands(units, anchors)
+    if grouped is None:
+        return None
+    readouts, bands, controls, centers = grouped
+    gap = _control_gap(anchors)
+    capacity = sum(hi - lo for _, lo, hi in _band_segments(1, width, gap))
+    stacked = []
+    for blocks in bands:
+        need = sum(_shape(members)[1] for _, members in blocks)
+        rows = max(1, -(-need // int(capacity * fill)))
+        while (packed := _band_rows(blocks, centers, width, rows, gap)) is None:
+            rows += 1
+            if rows > len(blocks):
+                return None
+        stacked.append(packed)
+    need = sum(u.plan.width for u in readouts)
+    readout_rows = max(1, -(-need // int(capacity * fill))) if readouts else 0
+    # Rows are numbered from the bottom: the band nearest the array is last.
+    # Control logic takes the bands' free space, then up to SPARE_LIMIT
+    # further rows below them.
+    for extra in range(spare, spare + SPARE_LIMIT + 1):
+        packed = [[] for _ in range(extra)]
+        for band in reversed(stacked):
+            packed.extend([list(row) for row in band])
+        first = len(packed)
+        packed.extend([] for _ in range(readout_rows))
+        for row in packed:
+            row.sort(key=lambda p: p[1])
+        if readouts and not _readout_rows(
+            readouts, anchors, packed, first, width, readout_rows
+        ):
+            return None
+        placed = _place_controls(
+            list(controls), anchors, packed, width, sinks, spread_decoder
+        )
+        if placed is not None:
+            return [row for row in placed if row]
+    return None

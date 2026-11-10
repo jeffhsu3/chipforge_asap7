@@ -12,7 +12,7 @@ from chipforge_asap7.brom import BromSpec, self_timed_macro_circuit
 from chipforge_asap7.brom import dense_bank as db
 from chipforge_asap7.brom import dense_macro as dm
 from chipforge_asap7.brom.dense_place import TAP_PERIOD, TAP_SEGMENT, unit_gap
-from chipforge_asap7.brom.dense_slices import sliced_rows
+from chipforge_asap7.brom.dense_slices import banded_rows, sliced_rows
 from chipforge_asap7.brom.dense_units import dense_units
 
 
@@ -80,22 +80,68 @@ def test_slices_keep_data_local_and_every_cell_legal(monkeypatch, depth, bits, w
             assert abs(x - spans[f"BL<{column}>"][0]) <= 432
 
 
+@pytest.mark.parametrize("depth,bits,ways", [(16, 148, 1), (64, 148, 4), (16, 9, 4)])
+def test_bands_keep_each_bit_under_its_bitlines(monkeypatch, depth, bits, ways):
+    inputs = bank_inputs(monkeypatch, depth, bits, ways)
+    units = dense_units(inputs["circuit"])
+    width = inputs["width"]
+    usable = width - 324
+    spans = inputs["header_spans"](width)
+    packed = banded_rows(units, spans, usable, sinks=inputs["bottom"])
+    assert packed is not None
+    assert Counter(id(u) for row in packed for u, _ in row) == Counter(map(id, units))
+    locations, points = {}, defaultdict(list)
+    for r, row in enumerate(packed):
+        for unit, x in row:
+            assert x >= 0 and x % 54 == 0
+            assert x + unit.plan.width <= usable
+            assert x % TAP_PERIOD + unit.plan.width <= TAP_SEGMENT
+            locations[unit.name] = (r, x + unit.plan.width / 2)
+            mapping = dict(unit.nets)
+            for port, dx in unit.plan.trunks:
+                if port in unit.ports:
+                    points[mapping[port]].append((r, x + dx))
+        for (left, x), (right, y) in pairwise(row):
+            gap = y - x - left.plan.width
+            join, free = unit_gap(left, right)
+            assert gap == join or gap >= free
+    offsets = []
+    for bit in range(bits):
+        center = sum(spans[f"BL<{bit * ways + i}>"][0] for i in range(ways)) / ways
+        # Data flows down from the array: mux (or readout), latch, register.
+        mux = locations[f"output_mux_{bit}" if ways == 4 else f"readout_{bit}"]
+        latch = locations[f"output_latch_{bit}"]
+        slave = locations[f"register_slave_{bit}"]
+        assert slave[0] < latch[0] < mux[0]
+        for name in ("output_latch", "register_master", "register_slave"):
+            offsets.append(abs(locations[f"{name}_{bit}"][1] - center))
+    # Each bit sits under its bitlines: on average within a few cells, at
+    # worst where a full band pushes the last bits along their row.
+    assert sum(offsets) / len(offsets) < 2000
+    assert max(offsets) < usable / 2
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("depth,ways", [(16, 1), (64, 4), (1024, 4)])
 def test_wide_registered_macro_uses_slices_and_routes(monkeypatch, depth, ways):
-    called = []
-    original = db.sliced_rows
+    called, banded = [], []
 
-    def record(*args, **kwargs):
-        result = original(*args, **kwargs)
-        called.append(result is not None)
-        return result
+    def record(log, original):
+        def wrapped(*args, **kwargs):
+            result = original(*args, **kwargs)
+            log.append(result is not None)
+            return result
 
-    monkeypatch.setattr(db, "sliced_rows", record)
+        return wrapped
+
+    monkeypatch.setattr(db, "sliced_rows", record(called, db.sliced_rows))
+    monkeypatch.setattr(db, "banded_rows", record(banded, db.banded_rows))
     circuit = self_timed_macro_circuit(
         BromSpec(depth, 148, ways, registered_output=True), [0] * depth
     )
     top, plan = dm.dense_macro_layout(circuit)
+    # Bit tiles still compete with the function bands for wide words.
+    assert any(banded)
     assert called == ([True, True] if depth == 1024 else [True])
     if depth == 1024:
         assert plan["joint_optimization"]

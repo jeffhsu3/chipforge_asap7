@@ -35,6 +35,46 @@ def test_each_latch_has_local_controls_and_all_return_to_closure():
                 }
 
 
+def test_a_shared_receiver_drives_its_latches_and_closes_on_them():
+    from chipforge_asap7.brom import ReplicaSpec
+
+    spec = BromSpec(4, 6, registered_output=True)
+    c = self_timed_macro_circuit(spec, [0, 1, 2, 3], replica=ReplicaSpec(share=4))
+    assert c.name.endswith("_s4")
+    banks = c.sample_distribution["banks"]
+    assert [b["latch_groups"] for b in banks] == [
+        [f"output_latch_{i}" for i in range(4)],
+        ["output_latch_4", "output_latch_5"],
+        ["replica_sample_latch"],
+    ]
+    by_name = {d.name: d for d in c.devices}
+    assert len(by_name) == len(c.devices)
+    groups = dict(c.placement_groups)
+    for b in banks:
+        for name in b["latch_groups"]:
+            members = groups[name]
+            assert [
+                by_name[m].nodes[1]
+                for m in (members[0], members[1], members[6], members[7])
+            ] == [b["enable"], b["complement"], b["complement"], b["enable"]]
+    # Drivers scale with the latches they drive: two per base strength.
+    for b, strength in zip(banks, (2, 1, 1)):
+        drivers = [
+            d
+            for d in c.devices
+            if d.nodes[0] in (b["enable"], b["complement"])
+            and d.nodes[2] in ("VDD", "VSS")
+        ]
+        assert len(drivers) == 4
+        assert {d.spec.fins for d in drivers} == {c.n.fins * strength}
+    # Each receiver, its latches and its observer stay one ordered run.
+    order = [d.name for d in c.devices]
+    first = groups["sample_receiver_input_0"][0]
+    last = groups["sample_receiver_closed_0"][-1]
+    run = order[order.index(first) : order.index(last) + 1]
+    assert all(m in run for i in range(4) for m in groups[f"output_latch_{i}"])
+
+
 @pytest.mark.parametrize("bank_index", [0, 1, 2])
 @pytest.mark.parametrize("pending", ["enable", "complement", "command_inverted"])
 def test_any_unclosed_or_inflight_receiver_withholds_ack(bank_index, pending):

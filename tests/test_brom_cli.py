@@ -139,12 +139,22 @@ def test_self_timed_with_sizing_keeper_and_register(tmp_path):
     assert r["registered_output"]
     assert not r["output_register"]["setup_hold_qualified"]
     assert {"controller", "output_register"} <= set(r["artifacts"])
+    assert r["replica"]["latches_per_sample_receiver"] == 1
+
+
+def test_one_sample_receiver_can_drive_several_latches(tmp_path):
+    _, r = compile_words(
+        tmp_path, "--self-timed", "--registered-output", "--replica-share", "2"
+    )
+    assert r["replica"]["latches_per_sample_receiver"] == 2
+    assert r["top_cell"].endswith("_s2")
 
 
 @pytest.mark.parametrize(
     "flags",
     [
         ["--replica-guard-pairs", "4"],  # replica options need --self-timed
+        ["--replica-share", "2"],
         ["--registered-output"],  # the register needs a clock
         ["--sized-controls", "--wire-rc-controls"],
     ],

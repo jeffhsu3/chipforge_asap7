@@ -9,7 +9,7 @@ from ..layout.layers import require_gdspy
 from .dense_bank_router import BOTTOM, route_bank, route_header
 from .dense_cell import cell_routes, wall_gap
 from .dense_place import TAP_PERIOD, TAP_SEGMENT, anchored_rows, unit_gap
-from .dense_slices import sliced_rows
+from .dense_slices import banded_rows, sliced_rows
 from .dense_units import dense_units
 
 #: Placement spreads tried in turn for each row count; see `anchored_rows`.
@@ -18,6 +18,9 @@ SPREAD = (0.0, 0.5)
 FILL = (1.0, 0.75, 0.5)
 #: Prefer local bit tiles once flat placement has a wide parallel datapath.
 SLICE_FIRST_BITS = 64
+#: Band fills, and spare rows below the bands, that `banded_rows` tries.
+BAND_FILL = (1.0, 0.85, 0.7)
+BAND_SPARE = 6
 
 
 def ceil_grid(n, grid):
@@ -150,7 +153,7 @@ def _anchored(
     bottom=(),
     blocked=(),
 ):
-    """Route local bit tiles for wide words, or an anchor-driven flat bank.
+    """Route function bands, else local bit tiles or an anchor-driven flat bank.
 
     ``cost(header_top, height)`` ranks candidates; by default the bank
     height. A parent whose array origin rounds up to a grid passes its own.
@@ -159,8 +162,10 @@ def _anchored(
     parent's width and the drop positions remain valid. Each candidate row
     count is fully routed. If a placement crowds more escapes into a row
     than its M4 tracks hold, it is retried with its cells spread toward
-    uniform density. Wide words try bit tiles first; smaller banks try them
-    if flat placement fails. Return None if neither placement routes.
+    uniform density. A wide word keeps the cheaper of function bands
+    (`banded_rows`) and bit tiles, else flat rows. A smaller bank keeps the
+    cheaper of bands and flat rows, and tries bit tiles only if neither
+    routes. Return None if no placement routes.
     """
     usable = width - 324
     anchors = spans(width) or {}
@@ -168,7 +173,7 @@ def _anchored(
     total = sum(u.plan.width for u in units)
     first = max(1, -(-total // usable))
 
-    def routed(packed, joint=False):
+    def routed(packed, joint=False, repair=True):
         if packed is None:
             return None
         occupied = max((x + u.plan.width for row in packed for u, x in row), default=0)
@@ -187,6 +192,8 @@ def _anchored(
             diagnostics=joint,
         )
         if plan is not None and "overfull" in plan:
+            if not repair:
+                return None
             from .dense_joint import refine_route
 
             repaired = refine_route(packed, plan)
@@ -215,12 +222,46 @@ def _anchored(
                 return result
         return None
 
+    def bands():
+        """Each distinct function-band placement, fewest rows first.
+
+        The first that routes without joint repair wins: repair can take
+        minutes, while a band placement with one more row routes in seconds.
+        """
+        seen, candidates = set(), []
+        for fill in BAND_FILL:
+            for spare in range(BAND_SPARE):
+                packed = banded_rows(
+                    units, anchors, usable, fill=fill, spare=spare, sinks=bottom
+                )
+                if packed is None:
+                    continue
+                key = tuple(tuple((u.name, x) for u, x in row) for row in packed)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(packed)
+        for packed in sorted(candidates, key=len):
+            result = routed(packed, repair=False)
+            if result is not None:
+                return result
+        return None
+
+    def price(result):
+        _, _, _, header, height, _ = result
+        header_top = max((y for y, _, _ in header.values()), default=0)
+        return (cost or (lambda _top, h: h))(header_top, height), height
+
+    # Pitch-matched function bands: each bit's cells stack under its
+    # bitlines, so the bank needs few rows and its columns stay short.
+    banded = bands()
     wide = sum(u.name.startswith("output_latch_") for u in units) >= SLICE_FIRST_BITS
     if wide:
-        result = slices()
-        if result is not None:
-            return result
-    best = None
+        # Bands leave rows part-empty when bits are sparse across the
+        # array; bit tiles pack them. Keep the cheaper.
+        found = [r for r in (banded, slices()) if r is not None]
+        if found:
+            return min(found, key=price)
+    best = None if banded is None else (price(banded), banded)
     for rows in range(first, first + 1 + extra_rows):
         for spread in SPREAD:
             packed = anchored_rows(
@@ -232,11 +273,8 @@ def _anchored(
             result = routed(packed)
             if result is None:
                 continue
-            _, _, _, header, height, _ = result
-            header_top = max((y for y, _, _ in header.values()), default=0)
-            price = (cost or (lambda _top, h: h))(header_top, height), height
-            if best is None or price < best[0]:
-                best = price, result
+            if best is None or price(result) < best[0]:
+                best = price(result), result
             break
     if best is not None:
         return best[1]
