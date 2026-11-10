@@ -9,6 +9,7 @@ from chipforge_asap7.brom import (
     build_macro,
     self_timed_macro_circuit,
 )
+from chipforge_asap7.brom.dense_units import dense_units
 from chipforge_asap7.brom.dense_macro import (
     bank_circuit,
     dense_macro_layout,
@@ -16,10 +17,8 @@ from chipforge_asap7.brom.dense_macro import (
 )
 
 
-@pytest.mark.parametrize(
-    "ways,depth,bits,dummy_columns", [(1, 8, 2, 0), (4, 32, 2, 1), (1, 8, 32, 5)]
-)
-def test_replica_loads_and_public_interface(ways, depth, bits, dummy_columns):
+@pytest.mark.parametrize("ways,depth,bits", [(1, 8, 2), (4, 32, 2), (1, 8, 32)])
+def test_replica_loads_and_public_interface(ways, depth, bits):
     spec = BromSpec(depth, bits, ways=ways)
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(depth)])
     assert set(c.pins) == {
@@ -32,28 +31,35 @@ def test_replica_loads_and_public_interface(ways, depth, bits, dummy_columns):
     }
     replica = c.replica
     rows = spec.blocks + 1
-    mapping = replica.selector.mapping
-    assert len(mapping) == rows
-    assert all(len(row) == dummy_columns + 1 for row in mapping)
-    # The observed bitline has one live selector, in the last block.
-    assert [row[-1] for row in mapping] == [0] * (rows - 1) + [15]
-    assert replica.port_nets[f"BL<{dummy_columns}>"] == "RBL"
-    assert replica.dummy_loads == spec.half_columns - 1
-    devs = [d for d in c.devices if d.name in replica.selector.device_names]
-    observed = [d for d in devs if d.nodes[0] == "RBL"]
-    assert len(observed) == 2 * rows
+    # One full-height column, the observed bitline. Its candidate is live
+    # only in the last block; every block keeps a selector and isolation gate.
+    assert replica.selector.mapping == ((0,),) * (rows - 1) + ((15,),)
+    assert replica.port_nets["BL<0>"] == "RBL"
     candidate = f"RC<{rows - 1},15>"
-    assert [d.nodes[1] for d in observed if d.nodes[1] != "VSS"] == [candidate]
-    # The replica candidate carries as many gates as one real half's
-    # candidate can; the rest of its load is grounded-drain dummies.
-    gates = [d for d in devs if d.nodes[1] == candidate]
-    assert len(gates) == spec.half_columns
-    assert all(d.nodes[0] == "VSS" for d in gates if d.nodes[0] != "RBL")
-    drains = {"RBL", "VSS"} if dummy_columns else {"RBL"}
-    assert {d.nodes[0] for d in devs} == drains
-    # Dummies fill the top blocks, so the strip is no wider than needed.
-    if dummy_columns:
-        assert set(mapping[-1]) == {15}
+    assert replica.port_nets[f"C<{rows - 1},15>"] == candidate
+    strip = [d for d in c.devices if d.name in replica.selector.device_names]
+    assert len(strip) == 2 * rows
+    assert all(d.nodes[0] == "RBL" and d.nodes[2] == "VSS" for d in strip)
+    assert sorted(d.nodes[1] for d in strip) == [candidate] + ["VSS"] * (2 * rows - 1)
+    # The candidate carries as many gates as one real half's candidate:
+    # the live one, and dummy gates in bank cells with drain and source on
+    # VSS, each the selector's size.
+    assert replica.dummy_loads == spec.half_columns - 1
+    dummies = [
+        d
+        for d in c.devices
+        if d.nodes[1] == candidate and d.name not in replica.selector.device_names
+        and d.nodes[0] == d.nodes[2] == "VSS"
+    ]
+    assert len(dummies) == replica.dummy_loads
+    assert all(d.spec.fins == c.array.plan.fins for d in dummies)
+    # No device has every terminal on VSS: they add only solver nodes.
+    assert not [d for d in c.devices if set(d.nodes) == {"VSS"}]
+    groups = dict(c.placement_groups)
+    loads = [n for n in groups if n.startswith("replica_candidate_load_")]
+    assert sum(len(groups[n]) for n in loads) == replica.dummy_loads
+    units = {u.name: u for u in dense_units(bank_circuit(c))}
+    assert all(len(units[n].members) == len(groups[n]) for n in loads)
     readouts = [n for n, _ in c.placement_groups if n.startswith("replica_readout")]
     assert readouts == ["replica_readout"]
     assert {d.name for d in bank_circuit(c).devices}.isdisjoint(

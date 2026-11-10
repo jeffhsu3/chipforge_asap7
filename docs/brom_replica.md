@@ -22,22 +22,28 @@ experiments. Omitting both options retains the external three-phase interface.
 The replica uses the same compact 108 × 432 nm selector geometry, fin count,
 threshold flavor and isolation devices as the data array. One observed bitline,
 `RBL`, spans the data array's blocks plus one extra four-word block by default,
-adding intrinsic bitline loading. It discharges through one live selector in
-the final block, driven by candidate 15 (`RC<last,15>`); its other selectors
-are grounded. It has its own precharger and inverter.
+adding intrinsic bitline loading. Every block of the strip keeps one selector
+and one isolation gate on `RBL`, so `RBL` sees the junction and gate loading of
+a data bitline. Only the selector in the final block is live, driven by
+candidate 15 (`RC<last,15>`); the others have grounded gates. It has its own
+precharger and inverter. The strip is one selector column wide and has no
+other columns, isolation devices or selector positions.
 
 The replica candidate carries as many selector gates as one real candidate can:
 `spec.half_columns`, the wider half's column count, since each half has its own
 candidate drivers. That is the worst case, a half whose every column selects
 the same candidate. Besides the observed gate these are `dummy_loads`
-(`half_columns - 1`) selectors whose drains are tied to VSS, filling dummy
-columns from the last block down. A dummy switching on with its drain and
-source tied stays in the linear region, so its gate charge is at least that of
-a real selector discharging a bitline. One riser on the strip's near side joins
-the dummy rows, so the observed gate sits at the candidate's far end. The
-dummy bitlines tie to the selector's substrate rail and have no readouts. For a
-256×30 mux1 macro that is 14 dummies in one column: the replica strip is two
-selector columns wide, where it used to be thirty, all discharging.
+(`half_columns - 1`) selector-sized gates whose drain and source are tied to VSS.
+A dummy that switches on inverts its channel, so its gate charge is at least
+that of a real selector discharging a bitline. The dummies are bank cells, not
+array positions: eight gates share diffusion in each
+`replica_candidate_load_*` cell, placed and routed with the bank's logic. The
+candidate reaches the strip only in the last block. For a 256×30 mux1 macro
+that is 14 dummies in two bank cells.
+
+Grounding every terminal of an unused strip device left undriven BSIM-CMG
+internal nodes. That made the transient bench's matrix singular, and the bench
+stopped with "Timestep too small". The redesign removes those devices.
 
 The replicated control path includes evaluation, block selection and all sixteen
 candidate AND gates. `RBL` feeds a matching mux path for mux4 macros,

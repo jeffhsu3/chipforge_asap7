@@ -189,7 +189,7 @@ def build_dense_macro(c, spec=None):
         if lo != hi
     ]
 
-    # The replica strip: dummy-load columns, then the observed bitline.
+    # The replica strip: one column, the observed bitline RBL.
     replica_columns = len(c.replica.selector.mapping[0]) if c.replica else 0
     replica_bitlines = [
         c.replica.port_nets[f"BL<{col}>"] for col in range(replica_columns)
@@ -661,8 +661,8 @@ def build_dense_macro(c, spec=None):
                 (net, "V5", (cx, y6), (cx, y6)),
                 (net, "M5", (cx, row_top - 24), (cx, y6)),
             ]
-    # Independent replica columns occupy the far edge. Only selected native
-    # candidate tracks need a connection: unselected tracks contain no gates.
+    # The replica strip occupies the far edge. Only selected native candidate
+    # tracks need a connection: unselected tracks contain no gates.
     if c.replica:
         inst = c.replica.selector
         array = build_selector_array(inst.plan, inst.mapping)
@@ -708,8 +708,8 @@ def build_dense_macro(c, spec=None):
                     m4(top, x, ox, y)
                     routes.append((net, "M4", (x, y), (ox, y)))
                     join(net, x, y, source="M4", local_x=x)
-        # A driven candidate's dummy-load rows share one riser on the strip's
-        # near side, so the observed gate in the last block is at its far end.
+        # The live candidate track rises on the strip's near side. Its dummy
+        # gates are bank cells, so it reaches the strip only in the last block.
         x = ox - 132
         for net, rows in driven.items():
             for b, layer, y in rows:
@@ -740,16 +740,6 @@ def build_dense_macro(c, spec=None):
                 join(net, x, py, source="M4", local_x=x)
         for col, net in enumerate(replica_bitlines):
             x = ox + 108 * col + 81
-            if net == "VSS":
-                # A dummy-load bitline ties up to the selector's substrate rail.
-                box(top, "M3", x - 9, oy + len(inst.mapping) * 432 - 14, x + 9, sy + 17)
-                square(top, "V2", x, sy)
-                routes += [
-                    (net, "M3", (x, oy + len(inst.mapping) * 432), (x, sy)),
-                    (net, "V2", (x, sy), (x, sy)),
-                ]
-                checkpoints.append((net, "M3", x, oy + 216))
-                continue
             py = oy - 36 - 96 * (col % 2)
             box(top, "M3", x - 9, py - 17, x + 9, oy + 14)
             routes.append((net, "M3", (x, py), (x, oy + 14)))

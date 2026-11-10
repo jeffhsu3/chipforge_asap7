@@ -1,7 +1,10 @@
 """Loaded selector replica and internal completion feedback for BROM.
 
-The replica is a separate compact selector array, not a fixed-time behavioral
-source. Geometry and intrinsic device loads track the requested macro shape.
+The replica is a one-column selector strip as tall as the array, not a
+fixed-time behavioral source: the observed bitline RBL keeps a data bitline's
+length and its selector and isolation gates in every block. The candidate's
+other gates are bank cells (`LOAD_GATES` dummy gates each), so the strip has
+no dummy columns, grounded isolation gates or unused selector positions.
 Guard stages provide explicit transistor delay; their adequacy still requires
 transient checks and, for physical timing, extracted interconnect qualification.
 """
@@ -15,6 +18,10 @@ from .circuit import Circuit, ReplicaInstance, SelectorInstance
 from .compiler import BromSpec, add_readout
 from .controller import clocked_macro_circuit
 from .sample_distribution import add_sample_receivers
+
+
+#: Dummy candidate gates per bank cell.
+LOAD_GATES = 8
 
 
 @dataclass(frozen=True)
@@ -40,26 +47,15 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
             "replica exceeds single tap row reach; reduce depth or extra_blocks"
         )
     last = blocks - 1
-    # One observed bitline, the full array height plus extra blocks. Its
-    # candidate carries as many selector gates as a real candidate can in one
-    # half: the observed gate in the last block, the rest dummies. A dummy
-    # drains to VSS, so it is only gate load; switching on with its drain and
-    # source tied keeps it in the linear region, at least the gate charge of a
-    # real selector discharging a bitline. The dummies fill dummy columns from
-    # the last block down, so the replica stays a narrow strip.
-    dummies = spec.half_columns - 1
-    width = -(-dummies // blocks)
-    loads = {(last - i // width, i % width) for i in range(dummies)}
-    loads.add((last, width))
-    mapping = tuple(
-        tuple(15 if (b, col) in loads else 0 for col in range(width + 1))
-        for b in range(blocks)
-    )
+    # One observed bitline, the full array height plus extra blocks: a
+    # one-column selector strip whose every block keeps a real selector and
+    # isolation gate on RBL, as a data bitline has. Only the selector in the
+    # last block is live, on the replica candidate.
+    mapping = tuple((15 if b == last else 0,) for b in range(blocks))
     candidate = f"RC<{last},15>"
     aliases = {f"C<{b},{k}>": "VSS" for b in range(blocks) for k in range(16)}
-    aliases.update({f"C<{b},15>": candidate for b, _ in loads})
-    aliases.update({f"BL<{col}>": "VSS" for col in range(width)})
-    aliases[f"BL<{width}>"] = "RBL"
+    aliases[f"C<{last},15>"] = candidate
+    aliases["BL<0>"] = "RBL"
     aliases["VSS"] = "VSS"
 
     def gate(kind, *nets):
@@ -81,13 +77,26 @@ def add_replica(c: Circuit, spec: BromSpec, replica: ReplicaSpec) -> None:
     for k in range(16):
         gate("and2", "VDD" if k == 15 else "VSS", sel, f"RC<{last},{k}>")
     devices = set()
-    for b, row in enumerate(mapping):
-        for col, k in enumerate(row):
-            drain = aliases[f"BL<{col}>"]
-            c.fet(False, drain, aliases[f"C<{b},{k}>"], "VSS")
-            devices.add(c.devices[-1].name)
-            c.fet(False, drain, "VSS", "VSS")
-            devices.add(c.devices[-1].name)
+    for b, (k,) in enumerate(mapping):
+        c.fet(False, "RBL", aliases[f"C<{b},{k}>"], "VSS")
+        devices.add(c.devices[-1].name)
+        c.fet(False, "RBL", "VSS", "VSS")
+        devices.add(c.devices[-1].name)
+    # The candidate carries as many selector gates as a real candidate can
+    # in one half: the observed one above, and half_columns - 1 dummy gates.
+    # A dummy is a selector-sized gate with drain and source on VSS, so on
+    # a high candidate its channel inverts: at least the gate charge of a
+    # real selector discharging a bitline. They are bank cells, not array
+    # positions, so no grounded isolation gate or unused position remains.
+    dummies = spec.half_columns - 1
+    for i in range(0, dummies, LOAD_GATES):
+        start = len(c.devices)
+        for _ in range(min(LOAD_GATES, dummies - i)):
+            c.fet(False, "VSS", candidate, "VSS")
+        group = f"replica_candidate_load_{i // LOAD_GATES}"
+        c.group_since(group, start)
+        # One dense cell: the gates share VSS diffusion between them.
+        c.logic_units.append(("replica_candidate_load", c.placement_groups[-1][1]))
     start = len(c.devices)
     add_readout(
         c,
