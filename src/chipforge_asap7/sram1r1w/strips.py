@@ -17,9 +17,19 @@ which this follows, the two strips are a pair:
     ── bottom ─────────────────────────────────────────────────────────
 
 The pair abuts the column's bottom with no margin: the column's fins already
-sit on a slice's grid.  Each slice's ``SEL`` and ``B[j]`` are its own pins,
-labelled ``SEL_A[k]`` and ``B_A[k][j]`` (``_B`` for port B): the macro's
-router joins them to the decoder.
+sit on a slice's grid.
+
+Its decoder inputs all come in from its bottom edge, where the macro's ``PS``
+rank stands:
+
+* each strip's ``B[j]`` are joined across its slices on an M4 rail, as
+  OpenFinRAM's ``_predecode_rails`` does, which runs on to the strip's right
+  end: pins ``B_A[j]`` and ``B_B[j]``;
+* port B's ``SEL`` (the nearer strip's) is the slice's own M3, carried
+  straight down to the bottom edge: pin ``SEL_B[k]`` on M3;
+* port A's ``SEL`` comes up on M5 over port B's strip, on the free track
+  between the slice's second and third read wordlines, and drops onto the
+  slice's M3 through a V4 and a V3: pin ``SEL_A[k]`` on M5.
 
 Coordinates are um.
 """
@@ -46,6 +56,7 @@ __all__ = ["build_strip_pair", "strip_pair_netlist", "strip_pair_pins"]
 M3 = LAYERS["M3"]["layer"]
 M4 = LAYERS["M4"]["layer"]
 M5 = LAYERS["M5"]["layer"]
+V2 = LAYERS["V2"]["layer"]
 V3 = LAYERS["V3"]["layer"]
 V4 = LAYERS["V4"]["layer"]
 BOUNDARY = LAYERS["BOUNDARY"]["layer"]
@@ -56,6 +67,22 @@ SLICE_WIDTH = 4 * WORDLINE_PITCH
 #: its edge for an abutting neighbour, so a tap beside one breaks the tap's
 #: select enclosure: the tap stands past a filler, and fillers fill the gaps.
 SUPPORT = {"filler": ("filler", 1), "tap": ("tap", 1)}
+#: Each ``B[j]``'s join to its M4 rail, in the slice: (x of the V2 + V3
+#: stack, the rail's offset from the pin's M2 row).  OpenFinRAM's
+#: ``PREDECODE_JOIN``: B0 and B1 stack straight up; B2 and B3, which share
+#: those rows, step 48 nm down on an M3 stub between the slice's SEL line
+#: and its next M3 line.  B2's and B3's offsets are from B0's and B1's
+#: rails, not snapped on their own: a pin half a track off would round
+#: both of a row's rails onto one track.
+B_JOIN = {
+    "B0": (0.108, 0.0),
+    "B1": (0.036, 0.0),
+    "B2": (0.254, -0.048),
+    "B3": (0.254, -0.048),
+}
+#: Where port A's ``SEL`` drops from M5 to the slice's M3: this far past the
+#: slice's SEL pin, then onto the nearest M4 track, between the B rails.
+SEL_DROP = 0.024
 
 
 def _support(spec: DriverSliceSpec, kind: str, slots: int, name: str, lib: Any) -> Any:
@@ -118,9 +145,8 @@ def _slice_cells(spec: DriverSliceSpec, library: Any) -> dict[str, Any]:
 def strip_pair_pins(slices: int, wordlines: int) -> list[str]:
     pins = []
     for port in ("A", "B"):
-        for k in range(slices):
-            pins.append(f"SEL_{port}[{k}]")
-            pins += [f"B_{port}[{k}][{j}]" for j in range(4)]
+        pins += [f"SEL_{port}[{k}]" for k in range(slices)]
+        pins += [f"B_{port}[{j}]" for j in range(4)]
     pins += [f"WWL[{i}]" for i in range(wordlines)]
     pins += [f"RWL[{i}]" for i in range(wordlines)]
     return [*pins, "VDD", "VSS"]
@@ -189,13 +215,7 @@ def build_strip_pair(cells: CellLibrary, column: Any, spec: DriverSliceSpec) -> 
     x_left, x_right = array_x0 - 2 * WORDLINE_PITCH, fill[-1][1]
     if spans[-1][1] - x_left > 28.0:
         raise ValueError("a strip this long needs a second tap (ACTIVE.LUP.1, 30 um)")
-
-    via34 = _via_cell(library, "wl_via34", ((-0.020, -0.012, 0.020, 0.012, M4),
-                                            (-0.009, -0.017, 0.009, 0.017, M3),
-                                            (-0.009, -0.012, 0.009, 0.012, V3)))  # fmt: skip
-    via45 = _via_cell(library, "wl_via45", ((-0.012, -0.023, 0.012, 0.023, M5),
-                                            (-0.023, -0.012, 0.023, 0.012, M4),
-                                            (-0.012, -0.012, 0.012, 0.012, V4)))  # fmt: skip
+    via34, via45 = _via_cells(library)
 
     pair = library.new_cell(f"wl_strips_{spec.cell_name}_x{wordlines // 4}")
     # No margin to the column: OpenFinRAM's tile needs half a fin pitch, but
@@ -205,15 +225,62 @@ def build_strip_pair(cells: CellLibrary, column: Any, spec: DriverSliceSpec) -> 
     seam = height  # the shared VSS rail
     pair.add(gdstk.Reference(strip, (0, seam)))
     pair.add(gdstk.Reference(strip, (0, seam), x_reflection=True))
+    sx, sy, layer = pins["SEL"]
+    if layer != M3:
+        raise RuntimeError("the slice's SEL pin is not on M3")
+
+    def track(y: float, sign: int) -> float:
+        """The strip-local y nearest `y` whose M4 is on a track, `sign` the
+        strip's orientation in the pair (the pair's top on the column's 0)."""
+        abs_y = seam + sign * y - top
+        return round(y + sign * (_snap(abs_y) - abs_y), 4)
+
     for port, sign in (("A", 1), ("B", -1)):
-        for k, x0 in enumerate(starts):
-            sx, sy, layer = pins["SEL"]
-            pair.add(gdstk.Label(f"SEL_{port}[{k}]", (x0 + sx, seam + sign * sy), layer=layer,
+        # Each B[j]: a V2 + V3 stack on every slice, to an M4 rail on a track
+        # that runs on to the strip's right end.
+        rails: dict[int, float] = {}
+        for j in range(4):
+            jx, dy = B_JOIN[f"B{j}"]
+            _, pin_y, _ = pins[f"B{j}"]
+            if j < 2:
+                rail = track(pin_y + dy, sign)
+            elif abs(pin_y - pins[f"B{j - 2}"][1]) > 1e-6:
+                raise RuntimeError(f"B{j} is not on B{j - 2}'s row")
+            else:
+                rail = round(rails[j - 2] + dy, 4)
+            rails[j] = rail
+            py, ry = seam + sign * pin_y, seam + sign * rail
+            lo, hi = min(py - 0.014, ry - 0.017), max(py + 0.014, ry + 0.017)
+            for x in (x0 + jx for x0 in starts):
+                rect(pair, (x - 0.009, py - 0.009, x + 0.009, py + 0.009), V2)
+                rect(pair, (x - 0.009, ry - 0.012, x + 0.009, ry + 0.012), V3)
+                rect(pair, (x - 0.009, lo, x + 0.009, hi), M3)
+            rect(pair, (starts[0] + jx - 0.020, ry - 0.012, x_right, ry + 0.012), M4)
+            pair.add(gdstk.Label(f"B_{port}[{j}]", (x_right - 0.010, ry), layer=M4,
                                  texttype=PIN_TEXTTYPE))  # fmt: skip
-            for j in range(4):
-                bx, by, layer = pins[f"B{j}"]
-                pair.add(gdstk.Label(f"B_{port}[{k}][{j}]", (x0 + bx, seam + sign * by),
-                                     layer=layer, texttype=PIN_TEXTTYPE))  # fmt: skip
+    drop = seam + track(sy + SEL_DROP, 1)
+    for k, x0 in enumerate(starts):
+        x = x0 + sx
+        # Port B's: its own M3, on to the bottom edge.
+        rect(pair, (x - 0.009, 0, x + 0.009, seam - sy), M3)
+        pair.add(
+            gdstk.Label(f"SEL_B[{k}]", (x, 0.005), layer=M3, texttype=PIN_TEXTTYPE)
+        )
+        # Port A's: up on M5 on a track, the slice's middle one or its right
+        # edge, then over on M4 and down onto its M3.
+        x5 = next((c for c in (x, x0 + 2 * sx) if abs(_snap(c) - c) < 1e-6), None)
+        if x5 is None:
+            raise RuntimeError(f"slice {k}: no M5 track for SEL_A")
+        pair.add(gdstk.Reference(via34, (x, drop)), gdstk.Reference(via45, (x5, drop)))
+        rect(
+            pair,
+            (min(x, x5) - 0.020, drop - 0.012, max(x, x5) + 0.020, drop + 0.012),
+            M4,
+        )
+        rect(pair, (x5 - 0.012, 0, x5 + 0.012, drop + 0.023), M5)
+        pair.add(
+            gdstk.Label(f"SEL_A[{k}]", (x5, 0.005), layer=M5, texttype=PIN_TEXTTYPE)
+        )
     # Port B's via row: the first M4 track (12 nm past a multiple of 48 in the
     # column's frame, the pair abutting its bottom) at or above the drivers'
     # output pins, where the V3 lands on their M3.
@@ -225,6 +292,9 @@ def build_strip_pair(cells: CellLibrary, column: Any, spec: DriverSliceSpec) -> 
             gdstk.Label(f"WWL[{i}]", (x, top - 0.005), layer=M3, texttype=PIN_TEXTTYPE)
         )
         y_via = via_row
+        # The driver's output M3 runs on up to the via: a taller slice puts
+        # the track past the output stub's tip.
+        rect(pair, (x - 0.009, 0.025, x + 0.009, y_via), M3)
         pair.add(gdstk.Reference(via34, (x, y_via)))
         pair.add(gdstk.Reference(via45, (x5, y_via)))
         rect(pair, (x5 - 0.012, y_via - 0.023, x5 + 0.012, top), M5)
@@ -235,6 +305,11 @@ def build_strip_pair(cells: CellLibrary, column: Any, spec: DriverSliceSpec) -> 
     return pair
 
 
+def _snap(v: float) -> float:
+    """The nearest M4/M5 track to `v` (um): 12 nm past a multiple of 48."""
+    return round(round((v - 0.012) / 0.048) * 0.048 + 0.012, 4)
+
+
 def _array_right(column: Any, array_x0: float) -> float:
     """The array's right edge in `column`: where its read IO block begins."""
     refs = [r for r in column.references if r.cell.name.startswith("array_")]
@@ -242,6 +317,17 @@ def _array_right(column: Any, array_x0: float) -> float:
         raise RuntimeError(f"{column.name}: expected one array")
     x0, _, x1, _ = edge_boundary(refs[0].cell)
     return float(refs[0].origin[0]) + x1  # the array is placed with its x0 at array_x0
+
+
+def _via_cells(library: Any) -> tuple[Any, Any]:
+    """OpenROAD's ASAP7 default M3-M4 and M4-M5 via stacks, as cells."""
+    via34 = _via_cell(library, "wl_via34", ((-0.020, -0.012, 0.020, 0.012, M4),
+                                            (-0.009, -0.017, 0.009, 0.017, M3),
+                                            (-0.009, -0.012, 0.009, 0.012, V3)))  # fmt: skip
+    via45 = _via_cell(library, "wl_via45", ((-0.012, -0.023, 0.012, 0.023, M5),
+                                            (-0.023, -0.012, 0.023, 0.012, M4),
+                                            (-0.012, -0.012, 0.012, 0.012, V4)))  # fmt: skip
+    return via34, via45
 
 
 def _via_cell(library: Any, name: str, shapes: tuple) -> Any:
@@ -263,7 +349,7 @@ def strip_pair_netlist(spec: DriverSliceSpec, wordlines: int, name: str) -> str:
     for port, wl in (("A", "WWL"), ("B", "RWL")):
         for k in range(slices):
             nets = {"SEL": f"SEL_{port}[{k}]", "VDD": "VDD", "VSS": "VSS"}
-            nets |= {f"B{j}": f"B_{port}[{k}][{j}]" for j in range(4)}
+            nets |= {f"B{j}": f"B_{port}[{j}]" for j in range(4)}
             nets |= {f"WL{j}": f"{wl}[{4 * k + j}]" for j in range(4)}
             lines.append(
                 f"X{port}{k} {' '.join(nets[p] for p in DRIVER_SLICE_PINS)} {spec.cell_name}"

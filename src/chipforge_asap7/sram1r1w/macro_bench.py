@@ -172,7 +172,11 @@ def render_deck(
         ".include models.pm",
         netlist,
         f".temp {corner.temperature_c:g}",
-        ".options reltol=1e-3 abstol=1e-12 vntol=1e-6 method=gear rshunt=1e10",
+        # A tighter charge tolerance and a looser truncation-error factor: with
+        # the defaults the typical corner's timestep collapses where a write
+        # and a read switch together (at 3.6 ns of the 0.5 ns bench).
+        ".options reltol=1e-3 abstol=1e-12 vntol=1e-6 chgtol=1e-16 trtol=3 "
+        "method=gear rshunt=1e10",
         f"Vsupply vdd 0 {vdd:g}",
         "Xm "
         + " ".join(
@@ -188,22 +192,27 @@ def render_deck(
         for prefix in ("wbl", "wbln", "rbl", "rbln"):
             for k in range(MUX_ROWS):
                 lines.append(f"C{prefix}{b}_{k} xm.xbit{b}.{prefix}_{k} 0 {wire:.3f}f")
-    wordline_ff = spec.bits * 2.376 * spec.model.wire_cap_fF_per_um
-    for i in range(spec.wordlines):
-        for wl in ("wwl", "rwl"):
-            lines.append(f"C{wl}{i} xm.{wl}_{i} 0 {wordline_ff:.3f}f")
+    for half, bits in spec.halves.items():
+        wordline_ff = len(bits) * 2.376 * spec.model.wire_cap_fF_per_um
+        for i in range(spec.wordlines):
+            for wl in ("wwl", "rwl"):
+                net = f"{wl}{half.lower()}_{i}"
+                lines.append(f"C{net} xm.{net} 0 {wordline_ff:.3f}f")
+    # Each cell's state is set on qb alone; its inverter sets q.  With both
+    # held, the fast corner's operating point does not converge in hours.
     for address in range(spec.words):
         for b in range(spec.bits):
             v = initial_bit(address, b)
-            cell = _cell(address, b)
-            lines.append(f".ic v({cell}.q)={v * vdd:g} v({cell}.qb)={(1 - v) * vdd:g}")
+            lines.append(f".ic v({_cell(address, b)}.qb)={(1 - v) * vdd:g}")
     for net, level in idle_state(spec).items():
         lines.append(f".ic v({net})={level * vdd:g}")
     watch = [*(f"dout_{b}" for b in range(spec.bits)), "clk"]
     watch += [
         f"xm.{n}" for n in ("sae", "ren", "wen", "wrena", "wprechn", "rprechn", "rblr")
     ]
-    watch += [f"xm.wwl_{i}" for i in range(spec.wordlines)]
+    watch += [
+        f"xm.wwl{h.lower()}_{i}" for h in spec.halves for i in range(spec.wordlines)
+    ]
     watch += [
         f"{_cell(a, b)}.{n}"
         for a in range(spec.words)
@@ -241,13 +250,18 @@ def idle_state(spec: MacroSpec) -> dict[str, int]:
         ("W", spec.write_delay, ("wprechn", "wrena", "WEN")),
         ("R", spec.read_delay, ("rprechn", "REN", "sae")),
     ):
-        local = {"CLKB": 1, "ARMED": 1, "ARMB": 0, "SET": 0, "REQB": 1, "REQ": 0, "RN": 0,
-                 "EN": 1, "PN": 1, "ERN": 1, "EV0": 0, "EVB": 1, "SN": 1, "DONE": 0}  # fmt: skip
+        local = {"CLKB": 1, "ARMED": 1, "ARMB": 0, "SET": 0, "REQB": 1, "REQ": 0,
+                 "EN": 1, "PN": 1, "ERN": 1, "EV0": 0, "SN": 1, "DONE": 0}  # fmt: skip
         local |= {f"DL{i}": i % 2 for i in range(delay - 1)}
+        # The write controller's EVB is the wrenan pin; the read's is its own.
+        local |= {"EVB": 1, "READY": 0} if port == "R" else {}
         state |= {f"xm.c{port.lower()}_{n.lower()}": v for n, v in local.items()}
         state |= {f"xm.{n.lower()}": 0 for n in outs}
+    state["xm.wrenan"] = 1
+    # One node of each output latch, as of each cell: with both held, the
+    # fast corner's operating point does not converge.
     for b in range(spec.bits):
-        state |= {f"xm.xbit{b}.xread.ol_y1": 1, f"xm.xbit{b}.xread.ol_y2": 0}
+        state[f"xm.xbit{b}.xread.ol_y2"] = 0
     return state
 
 
@@ -335,10 +349,11 @@ def run_macro_bench(
                 memory[(cycle.write, b)] = cycle.data >> b & 1
             landed = sum(stored(cycle.write, b, end) << b for b in range(spec.bits))
             i = cycle.write >> 2
-            falls = _crossings(time, trace[f"xm.wwl_{i}"], half)
-            falls = falls[(falls > edge) & (falls < end)]
             margin = None
             for b in range(spec.bits):
+                line = f"xm.wwl{spec.half_of(b).lower()}_{i}"
+                falls = _crossings(time, trace[line], half)
+                falls = falls[(falls > edge) & (falls < end)]
                 q = (
                     trace[f"{_cell(cycle.write, b)}.q"]
                     - trace[f"{_cell(cycle.write, b)}.qb"]
