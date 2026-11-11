@@ -1,4 +1,4 @@
-# 8T 1R1W SRAM: the column
+# 8T 1R1W SRAM
 
 `chipforge_asap7.sram1r1w` is the start of a one-read, one-write SRAM
 compiler. It follows the structure of GT2N's rd8t macro
@@ -6,8 +6,10 @@ compiler. It follows the structure of GT2N's rd8t macro
 `sram_cell_8t`, a true dual-port cell of 108 x 594 nm. Port A of the cell is
 the write port and port B is the read port. This first milestone is one data
 bit's column: the cell, its array, a write IO and a read IO. It is DRC
-checked, LVS checked and simulated. Decoders, control, the macro tile, and
-the LEF and Liberty views come next.
+checked, LVS checked and simulated. The second is the macro's periphery:
+decoders, wordline driver strips and a one-clock controller, as a netlist
+simulated with the columns, and the strips as layout. The macro tile, and
+the LEF and Liberty views, come next.
 
 ```
 write IO | edge cap | array: N wordlines x 4 mux rows, a tap every gcd(N,16) | read IO
@@ -128,13 +130,159 @@ almost fully. With the 4:1 mux, a read and a write may therefore share a
 wordline in one cycle without disturbing either word. Only a read of the
 word being written returns X.
 
+## The macro's periphery: one clock, two self-timed ports
+
+`MacroSpec(wordlines, bits)` (`sram1r1w/periphery.py`) is a macro of
+`4 * wordlines` words by `bits`. Its pins:
+
+| pin | |
+|---|---|
+| `CLK` | the one clock; each port's access starts at its rise |
+| `WEB`, `WADDR<k>`, `DIN<i>` | write enable (active low), address, data |
+| `REB`, `RADDR<k>` | read enable (active low), address |
+| `DOUT<i>` | the word read; held until the next read |
+
+Address bits 0 and 1 choose the mux row and the rest choose the wordline
+slot. A read and a write may share a cycle, on any two addresses. When both
+name the same word, the read returns X.
+
+### Clocking
+
+`WEB` and `REB` are latched while `CLK` is low. Each port's clock is
+`CLK . !EB`. It drives that port's controller, which is the NOR ROM's
+edge-triggered `RomControlSpec(edge=True)`
+(`chipforge_asap7.devices.rom_control`). The controller latches a request at
+the rise, raises three phases in order, and lowers them in reverse once its
+`DONE` falls:
+
+| controller output | write port | read port |
+|---|---|---|
+| `PRECHN` | `wprechn`: bitline precharge off | `rprechn`: bitline precharge off |
+| `EVAL` | `wrena`: write driver on | `REN`: read wordline enable |
+| `SAMPLE` | `WEN`: write wordline enable | `sae`: sense, once `READY` is high |
+| `READY` | tied high | the replica bitline, inverted |
+| `DONE` delay | `write_delay` = 21 inverters: the write pulse | `read_delay` = 7 inverters: how long `sae` stays high |
+
+So a write turns its wordline off before its driver, and its driver off
+before the precharge. A read's sense is timed by a replica:
+- `replica_cells` = 2 cells hold 0 on one bitline that is loaded like a real
+  one;
+- a replica wordline is driven like a real one from `REN`;
+- the replica bitline therefore discharges twice as fast as a real one, so
+  `sae` fires once a real bitline has fallen about `VDD / 4`.
+
+The read IO's output latch takes the word at `sae` and holds it until the
+next read.
+
+Each port's address latches, and the write port's `DIN` latches, are the NOR
+ROM's (`chipforge_asap7.devices.rom_latch`). They are open while the port's
+`PRECHN` is low, and closed from just after `CLK`'s rise to the end of the
+access.
+
+### Decode
+
+Under its latches, each port has:
+- a column select, `ysel[k]` with complement `yseln[k]`: a buffered one-hot
+  decode of address bits 0 and 1;
+- a wordline decoder of `DriverSliceSpec` slices, with
+  `WL[4s + j] = SEL[s] . B[j]`:
+  - `B[j]` decodes wordline-index bits 0 and 1;
+  - `SEL[s] = EN . PS[s]`, with `PS[s]` the one-hot decode of the remaining
+    bits;
+  - `EN` is `WEN` for the write port and `REN` for the read port.
+
+`size_decoder` sizes the slices for the wordline's load. That load is
+0.181 fF per cell along the wordline, wire included (OpenFinRAM's figure),
+times `4 * bits` cells. No device has more than 12 active fins.
+
+`macro_cdl(spec, cells)` is the macro's netlist:
+- flat outside the columns: one transistor per device on the macro's nets,
+  1623 devices at 32 wordlines by 2 bits;
+- one `column_netlist` instance per bit.
+
+### Wordline strips
+
+`build_strip_pair(cells, column, slice)` (`sram1r1w/strips.py`) lays out
+both ports' drivers. It follows OpenFinRAM's `build_wordline_strips`: two
+strips on a shared VSS rail, abutted below the column stack.
+
+```
+── column stack: WWL[i] on M3, RWL[i] on M5 ──
+   port A strip: drivers, then NANDs       WWL on M3 straight up
+══ shared VSS rail ══
+   port B strip, flipped: NANDs, then drivers
+   RWL: V3 + V4 on the driver's output, M5 straight up
+```
+
+Each strip has one slice per four wordlines, on the array's 108 nm pitch.
+Every other slot under the array holds a filler, including the slot under
+the array's last tap, so the tap's gates end on poly.
+
+The strips' placement is constrained by DRC:
+- There is no edge margin: the column's fins already sit on a slice's fin
+  grid.
+- Each strip has one tap, past a filler beyond the array's left end. A tap
+  beside a slice breaks the tap's select enclosure, and a tap under the
+  array trips `SRAM.LISD.AUX.1`. `ACTIVE.LUP.1` allows 30 um to a tap, about
+  256 wordlines. A longer strip is refused until it has a second tap.
+- Port B's via row is on an M4 track.
+
+Each slice's `SEL` and `B[j]` are its own pins, `SEL_A[k]` and `B_A[k][j]`,
+with `_B` for port B. A router joins them to the decoder.
+
+### Verification
+
+- **Rows**:
+  - Both controllers and the three latch rows (enables, write address and
+    `DIN`, read address), as `MacroSpec()` sizes them, are DRC clean when
+    terminated.
+  - Each matches its reference netlist in LVS.
+- **Strips** at 32 wordlines (8 slices per port, 1.512 um tall):
+  - every `WWL[i]` and `RWL[i]` is on the column's pin, layer and x;
+  - LVS matches `strip_pair_netlist`;
+  - abutted under a column, the pair adds no DRC finding. It also closes the
+    `GATE.S.3` findings that the column's taps had on its bottom edge.
+- **Bench** (`python -m chipforge_asap7.sram1r1w.macro_bench`). This is an
+  ngspice transient on `macro_cdl` for 128 words by 2 bits, with the same
+  models and wire capacitance as the column bench. It drives only the macro's
+  pins, over 11 cycles:
+  - writes and reads of both values, some in the same cycle;
+  - a read and a write on one wordline in one cycle;
+  - a read of the word being written, which must return X;
+  - an idle cycle.
+
+  Every read is checked against the model, every written cell is checked
+  after its write, and every cell is checked at the end. A full run takes
+  about 40 min at a 2 ns period. A switch-level test of both decoders
+  (`test_each_decoder_selects_one_row_and_one_wordline`) checks the selects
+  and wordlines for every address in a fraction of a second.
+
+  Typical (TT, 0.70 V, 25 C), 2 ns: every check passes.
+
+  | after CLK rises | write port | read port |
+  |---|---|---|
+  | precharge off | 86 ps | 86 ps |
+  | wordline on (`WEN` / `REN`) | 132 ps | 109 ps |
+  | `sae` | | 166 ps |
+  | wordline off / `sae` low | 215 ps | 208 ps |
+  | precharge on again | 259 ps | 254 ps |
+
+  - CLK to `DOUT`: 200–204 ps.
+  - Write margin (the cell flips, then its wordline falls): 69–70 ps.
+  - Both ports are idle again about 260 ps after the rise, so the cycle is
+    far shorter than 2 ns. The minimum period, and the fast and slow
+    corners, are still to be measured.
+
+The rest of the periphery is small logic, about 110 gates per macro:
+- the enable gating;
+- the one-hot decodes and the `SEL` gates;
+- the replica.
+
+It has no layout yet.
+
 ## Next
 
-- Decoders, a one-clock controller and the macro tile, as decided on
-  2026-11-10:
-  - both ports are captured at CLK's rise;
-  - the write is timed by an inverter chain;
-  - the read self-times from a replica bitline, as the NOR ROM's
-    flow-through controller does;
-  - the tile has dummy end rows that close the tap `GATE.S.3` findings.
+- Lay out the small logic and the macro tile:
+  - the tile's dummy end rows close the column's top `GATE.S.3` findings;
+  - then the floorplan, LEF and Liberty.
 - Redraw the IO cells on taller rows for gdscheck v0.2.1's `M1.S.2`/`M2.S.2`.

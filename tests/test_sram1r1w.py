@@ -198,7 +198,7 @@ def test_the_column_is_drc_clean_but_for_known_findings(
     rows close."""
     from chipforge_asap7.verification.drc import run_drc
 
-    from .conftest import find_gdscheck_or_none
+    from conftest import find_gdscheck_or_none
 
     external_tool(find_gdscheck_or_none() is not None, "gdscheck is not installed")
     spec, column, _ = column32
@@ -274,3 +274,186 @@ def test_a_column_matches_its_netlist(tmp_path: Path, require_klayout):
         gds, cdl, tmp_path / "lvs", cell_name=column.name, flatten_circuits=flatten
     )
     assert result.matched, result.failing
+
+
+# ── Periphery rows: the NOR ROM's, at this macro's parameters ────────────────
+def _macro_rows():
+    from chipforge_asap7.sram1r1w.periphery import MacroSpec
+
+    spec = MacroSpec()
+    return [*spec.controllers.values(), *spec.latch_rows.values()]
+
+
+def _build_row(row, library):
+    from chipforge_asap7.devices.rom_control import (
+        RomControlSpec,
+        build_rom_control_row,
+    )
+    from chipforge_asap7.devices.rom_latch import build_rom_address_latch_row
+
+    if isinstance(row, RomControlSpec):
+        return build_rom_control_row(row, lib=library)
+    return build_rom_address_latch_row(row, lib=library)
+
+
+@pytest.mark.parametrize("row", _macro_rows(), ids=lambda row: row.cell_name)
+def test_each_periphery_row_is_drc_clean_terminated(row, asap7_drc):
+    import gdspy
+
+    from chipforge_asap7.devices.row_support import RowSupportSpec, build_row_support
+
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    cell = _build_row(row, library)
+    support = {
+        kind: build_row_support(RowSupportSpec(stack=row.stack, kind=kind), lib=library)
+        for kind in ("filler", "tap")
+    }
+    top = library.new_cell("terminated")
+    cursor = 0
+    for item in ("filler", "row", "filler", "tap", "filler"):
+        part = cell if item == "row" else support[item]
+        top.add(gdspy.CellReference(part, origin=(cursor, 0)))
+        cursor += row.width if item == "row" else part.get_bounding_box()[1][0]
+    assert asap7_drc(library, top, tag="terminated") == []
+
+
+@pytest.mark.parametrize("row", _macro_rows(), ids=lambda row: row.cell_name)
+def test_each_periphery_row_matches_its_reference(row, tmp_path: Path, require_klayout):
+    import gdspy
+
+    from chipforge_asap7.verification.lvs import run_lvs
+
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    _build_row(row, library)
+    gds = tmp_path / "row.gds"
+    library.write_gds(str(gds))
+    reference = tmp_path / "reference.spice"
+    reference.write_text(row.lvs_reference())
+    result = run_lvs(
+        gds, reference, tmp_path / "lvs", cell_name=row.cell_name, tie_bodies=True
+    )
+    assert result.matched
+    assert result.extracted_netlist.read_text().count("M$") == sum(
+        d[5] for d in row.devices
+    )
+
+
+# ── Wordline driver strips ───────────────────────────────────────────────────
+def _stack(wordlines: int = 32):
+    from chipforge_asap7.layout.transform import edge_boundary
+    from chipforge_asap7.sram1r1w.periphery import MacroSpec
+    from chipforge_asap7.sram1r1w.strips import build_strip_pair
+
+    cells = load_cell_library()
+    column = build_column(cells, ColumnSpec(wordlines))
+    spec = MacroSpec(wordlines).slice
+    pair = build_strip_pair(cells, column, spec)
+    top = cells.library.new_cell("stack")
+    top.add(
+        gdstk.Reference(column), gdstk.Reference(pair, (0, -edge_boundary(pair)[3]))
+    )
+    return cells, column, pair, spec, top
+
+
+def test_the_strips_drive_every_wordline_from_below():
+    _, column, pair, _, _ = _stack()
+    ours = {lb.text: lb for lb in pair.labels if lb.text.startswith(("WWL", "RWL"))}
+    theirs = {lb.text: lb for lb in column.labels if lb.text.startswith(("WWL", "RWL"))}
+    assert set(ours) == set(theirs)
+    for name, label in ours.items():
+        assert label.layer == theirs[name].layer
+        assert float(label.origin[0]) == pytest.approx(float(theirs[name].origin[0]))
+
+
+def test_the_strip_pair_matches_its_netlist(tmp_path: Path, require_klayout):
+    from chipforge_asap7.sram1r1w.strips import strip_pair_netlist
+    from chipforge_asap7.verification import run_hierarchical_lvs
+
+    cells, _, pair, spec, _ = _stack()
+    gds, cdl = tmp_path / "strips.gds", tmp_path / "strips.cdl"
+    cells.library.write_gds(str(gds))
+    cdl.write_text(strip_pair_netlist(spec, 32, pair.name))
+    flatten = ("wl_slice_*", "wl_strip_*", "wl_via*", "nand_fin*", "inv_fin*", "*__nand",
+               "*__inv", "*__drv", "tap_fin*", "filler_fin*")  # fmt: skip
+    result = run_hierarchical_lvs(gds, cdl, tmp_path / "lvs", cell_name=pair.name,
+                                  flatten_circuits=flatten)  # fmt: skip
+    assert result.matched, result.failing
+
+
+@pytest.mark.slow
+def test_the_strips_add_no_drc_finding_under_a_column(tmp_path: Path, external_tool):
+    """Abutted, the pair closes the taps' gate ends on the column's bottom and
+    adds nothing: what is left is the column's own (its IO cells', and the
+    open top edge's gate ends)."""
+    from chipforge_asap7.verification.drc import run_drc
+
+    from conftest import find_gdscheck_or_none
+
+    external_tool(find_gdscheck_or_none() is not None, "gdscheck is not installed")
+    cells, *_, top = _stack()
+    gds = tmp_path / "stack.gds"
+    cells.library.write_gds(str(gds))
+    findings = run_drc(gds, tmp_path / "drc", cell_name=top.name)
+    assert {f.category for f in findings} <= {
+        "M1.S.2", "M2.S.2", "M4.AUX.1", "M4.AUX.2", "GATE.S.3",
+    }  # fmt: skip
+    assert {round(f.bbox[1], 1) for f in findings if f.category == "GATE.S.3"} == {
+        2389.8
+    }
+    assert all(f.bbox[1] >= 0 for f in findings if f.category.startswith("M4"))
+
+
+def _settle(devices, inputs):
+    """Every net static CMOS `devices` drive from `inputs` (net -> 0/1), switch level."""
+    values = {"VDD": 1, "VSS": 0, **inputs}
+    by_net = {}
+    for d in devices:
+        for net in (d.drain, d.source):
+            by_net.setdefault(net, []).append(d)
+
+    def reaches(net, rail, kind, seen):
+        if net == rail:
+            return True
+        seen.add(net)
+        for d in by_net.get(net, ()):
+            on = values.get(d.gate) == (1 if kind == "n" else 0)
+            other = d.source if d.drain == net else d.drain
+            if d.model.startswith(kind + "mos") and on and other not in seen:
+                if reaches(other, rail, kind, seen):
+                    return True
+        return False
+
+    for _ in range(64):
+        changed = False
+        for net in by_net:
+            if net in values:
+                continue
+            up, down = reaches(net, "VDD", "p", set()), reaches(net, "VSS", "n", set())
+            if up != down:
+                values[net], changed = int(up), True
+        if not changed:
+            return values
+    raise AssertionError("the logic did not settle")
+
+
+@pytest.mark.parametrize("port", ["W", "R"])
+def test_each_decoder_selects_one_row_and_one_wordline(port):
+    from chipforge_asap7.sram1r1w.periphery import MacroSpec, _decoder
+
+    spec = MacroSpec(wordlines=16)
+    select = "wysel" if port == "W" else "rysel"
+    devices = _decoder(spec, port, "EN", "WL", select)
+    for address in range(spec.words):
+        for enable in (0, 1):
+            latched = {
+                f"{port}AL<{k}>": address >> k & 1 for k in range(spec.address_bits)
+            }
+            v = _settle(devices, {"EN": enable, **latched})
+            row, slot = address & 3, address >> 2
+            for k in range(4):
+                assert v[f"{select}[{k}]"] == (k == row), (address, k)
+                assert v[f"{select}n[{k}]"] == (k != row), (address, k)
+            on = [i for i in range(spec.wordlines) if v[f"WL[{i}]"]]
+            assert on == ([slot] if enable else []), (address, enable)
