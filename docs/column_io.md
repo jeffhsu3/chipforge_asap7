@@ -224,6 +224,15 @@ the amplifier's `SAPRECHN` to `SAE` on M3 and leaves one `SAE` pin, on the
 top stub; `block_netlist(spec)` is the whole block as one flat BSIM-CMG
 subcircuit, which is how OpenFinRAM's deck carries it.
 
+A port that only reads or only writes keeps less of the logic column:
+`IoColumnSpec(role="read")` places the amplifier and the latch, and
+`role="write"` places the driver alone.  The pairs they leave empty are
+support fill. The block loses the other cells' pins, routes and devices, and
+its name gains `_rd` or `_wr`. The write block is 1404 nm wide, because the
+driver is narrower than the amplifier, and the read block 1620 nm. The
+1R1W column (`docs/sram_1r1w.md`) uses one of each. A two-sided block must
+read and write.
+
 `tests/test_io_column_physical.py` holds the port-A and port-B blocks and an
 8:1 one with a bigger amplifier and driver to the public runset (nothing
 fires; without the tap, `ACTIVE.LUP.1` alone) and to a flat unit-fin LVS
