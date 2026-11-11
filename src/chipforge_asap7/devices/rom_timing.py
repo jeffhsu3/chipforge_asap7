@@ -760,9 +760,10 @@ def characterize_corner(
     # The phase the address is set up and held across.
     window = high if edge else low
 
-    # CLK to Q at each load.
+    # CLK to Q at each load.  The base cycle reads at the nominal load; a
+    # heavier one may carry the last read past the stop, so it gets a tail.
     def measure(load: float) -> tuple[tuple[float, float], tuple[float, float]]:
-        stimulus = replace(base, load_ff=load)
+        stimulus = replace(base, load_ff=load, tail=high)
         w = run(stimulus)
         errors = read_errors(w, stimulus, expected)
         if errors:
