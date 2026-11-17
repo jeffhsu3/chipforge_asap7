@@ -54,8 +54,9 @@ asap7 rom nor --array.words 64 --array.bits 8
 asap7 sram macro-bench --wordlines 32 --word-bits 2
 ```
 
-Groups: `cell`, `lane`, `sram`, `rom` (`nor`, `brom`, `brom-timing`), `verify`
-and `reduce`. Shape options use gt2n's names (`--word-bits`, `--column-mux`,
+Groups: `cell`, `lane`, `sram` (`6t-read`, `column-bench`, `macro-bench`), `rom`
+(`nor`, `brom`, `brom-timing`, `nor-read`, `nor-address-search`), `verify` and
+`reduce`. Shape options use gt2n's names (`--word-bits`, `--column-mux`,
 `--words-json`, `--output-dir`, and `--output` for a single GDS); the old
 names (`--bits`, `--ways`, `--out`, a positional words file) still work, and so
 do the single-purpose `asap7-*` scripts. The B-ROM manifest carries gt2n's

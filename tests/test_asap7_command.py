@@ -23,7 +23,7 @@ def test_help_lists_the_groups_and_a_groups_generators(capsys):
     assert all(group in out for group in cli.GROUPS)
     assert cli.main(["rom"]) == 2
     out = capsys.readouterr().out
-    assert "usage: asap7 rom {nor,brom,brom-timing}" in out
+    assert "usage: asap7 rom {nor,brom,brom-timing,nor-read,nor-address-search}" in out
 
 
 @pytest.mark.parametrize(

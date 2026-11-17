@@ -46,8 +46,9 @@ GROUPS: dict[str, tuple[str, dict[str, tuple[str, str]] | str]] = {
         },
     ),
     "sram": (
-        "the 8T 1R1W SRAM",
+        "SRAM benches: the 8T 1R1W macro and the 6T read",
         {
+            "6t-read": ("chipforge_asap7.devices.sram6t_read_spice", "6T SRAM read transient bench"),
             "column-bench": ("chipforge_asap7.sram1r1w.column_bench", "1R1W column transient bench"),
             "macro-bench": ("chipforge_asap7.sram1r1w.macro_bench", "1R1W macro transient bench"),
         },
@@ -58,6 +59,11 @@ GROUPS: dict[str, tuple[str, dict[str, tuple[str, str]] | str]] = {
             "nor": ("chipforge_asap7.devices.rom_decoder", "NOR ROM array with its decoder"),
             "brom": ("chipforge_asap7.brom.__main__", "programmed B-ROM macro and views"),
             "brom-timing": ("chipforge_asap7.brom.timing", "B-ROM transistor-level timing"),
+            "nor-read": ("chipforge_asap7.devices.rom_read_spice", "NOR ROM read transient bench"),
+            "nor-address-search": (
+                "chipforge_asap7.devices.rom_address_search",
+                "search the NOR ROM decoder for its slowest address step",
+            ),
         },
     ),
     "verify": ("LVS, PEX and model validation", "chipforge_asap7.verification.__main__"),
