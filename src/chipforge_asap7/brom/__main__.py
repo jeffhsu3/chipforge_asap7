@@ -25,6 +25,7 @@ from . import (
     macro_circuit,
     output_circuit,
     output_register_circuit,
+    pruned_macro_circuit,
     selector_map,
     self_timed_macro_circuit,
     size_control_distribution,
@@ -143,6 +144,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Integrate clock controller; completion feedback remains external",
     )
+    mode.add_argument(
+        "--pruned",
+        action="store_true",
+        help="Data-pruned single-sided CGEN and decoupled-BL custom-mask macro",
+    )
     parser.add_argument(
         "--output-dir",
         "--out",
@@ -175,6 +181,10 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("replica options require --self-timed")
     if args.registered_output and not (args.clocked or args.self_timed):
         parser.error("--registered-output requires --clocked or --self-timed")
+    if args.pruned and (args.wire_rc_controls or args.sized_controls):
+        parser.error("--pruned sizes its own controls and cannot combine with --sized-controls/--wire-rc-controls")
+    if args.pruned and args.keeper_fins and args.ways != 1:
+        parser.error("--pruned ways=4 uses gated tristate sense without bitline keeper")
     if (args.words is None) == (args.words_json is None):
         parser.error("give the words file once: positionally or as --words-json")
     words = json.loads((args.words or args.words_json).read_text())
@@ -201,7 +211,11 @@ def main(argv: list[str] | None = None) -> None:
             ),
         )
         if args.self_timed
-        else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
+        else clocked_macro_circuit(spec, words)
+        if args.clocked
+        else pruned_macro_circuit(spec, words)
+        if args.pruned
+        else macro_circuit(spec, words)
     )
     if args.compact_periphery:
         compact_periphery(macro)
@@ -209,17 +223,21 @@ def main(argv: list[str] | None = None) -> None:
         size_wire_rc_distribution(macro)
     elif args.sized_controls:
         size_control_distribution(macro)
-    circuits = {
-        "macro": macro,
-        "cgen": cgen_circuit(spec.fins, spec.vt),
-        "decoder": decoder_circuit(spec),
-        "output": output_circuit(
-            spec.fins,
-            spec.vt,
-            keeper_fins=spec.keeper_fins,
-            keeper_stack=spec.keeper_stack,
-        ),
-    }
+    circuits = (
+        {"macro": macro}
+        if args.pruned
+        else {
+            "macro": macro,
+            "cgen": cgen_circuit(spec.fins, spec.vt),
+            "decoder": decoder_circuit(spec),
+            "output": output_circuit(
+                spec.fins,
+                spec.vt,
+                keeper_fins=spec.keeper_fins,
+                keeper_stack=spec.keeper_stack,
+            ),
+        }
+    )
     if args.registered_output:
         circuits["output_register"] = output_register_circuit(
             spec.bits, spec.fins, spec.vt
@@ -288,7 +306,7 @@ def main(argv: list[str] | None = None) -> None:
             if macro.replica
             else None
         ),
-        "layout": "dense_cmos_split_selector",
+        "layout": "pruned_dense_cmos" if args.pruned else "dense_cmos_split_selector",
         "selector_plan": asdict(macro.array.plan),
         "array_core_nm": [spec.columns * 108, spec.blocks * 432],
         "periphery_layout": "shared_diffusion_cmos",
@@ -355,7 +373,9 @@ def main(argv: list[str] | None = None) -> None:
             (args.out / "macro.lef").write_text(macro_lef(circuit, top))
             (args.out / "macro.v").write_text(macro_verilog(circuit, spec, words))
             record["lef"], record["verilog"] = "macro.lef", "macro.v"
-            report["abstract"] = _write_abstract(args.out, circuit, top, lib)
+            report["abstract"] = (
+                None if args.pruned else _write_abstract(args.out, circuit, top, lib)
+            )
         report["artifacts"][role] = record
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         if args.drc:

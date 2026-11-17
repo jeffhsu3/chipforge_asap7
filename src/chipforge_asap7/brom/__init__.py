@@ -22,6 +22,12 @@ from .dense_macro import build_macro
 from .distribution import DistributionSpec, size_control_distribution
 from .output_register import output_register_circuit
 from .periphery import build_periphery
+from .pruned_macro import (
+    build_pruned_macro,
+    build_pruned_selector_array,
+    pruned_macro_circuit,
+    pruned_macro_layout,
+)
 from .replica import ReplicaSpec, self_timed_macro_circuit
 from .selector import SelectorPlan, build_selector_array, default_selector_plan
 from .wire_rc import WireRCSpec, routed_control_rc, size_wire_rc_distribution
@@ -34,6 +40,8 @@ __all__ = [
     "WireRCSpec",
     "build_macro",
     "build_periphery",
+    "build_pruned_macro",
+    "build_pruned_selector_array",
     "build_selector_array",
     "cgen_circuit",
     "clocked_macro_circuit",
@@ -44,6 +52,8 @@ __all__ = [
     "macro_circuit",
     "output_circuit",
     "output_register_circuit",
+    "pruned_macro_circuit",
+    "pruned_macro_layout",
     "routed_control_rc",
     "selector_map",
     "self_timed_macro_circuit",

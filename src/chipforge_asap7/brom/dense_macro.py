@@ -824,6 +824,10 @@ def dense_macro_layout(c):
     from copy import deepcopy
     from hashlib import sha256
 
+    if getattr(c, "pruned_spec", None) is not None:
+        from .pruned_macro import pruned_macro_layout
+
+        return pruned_macro_layout(c)
     if c.array is None or getattr(c, "dense_spec", None) is None:
         raise ValueError("dense layout requires a macro_circuit")
     key = sha256(

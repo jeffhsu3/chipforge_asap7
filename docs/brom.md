@@ -92,6 +92,32 @@ The tests XOR the written GDS files of two images to check this independently of
 the hashes. Timing still varies with contents, so a shared timing model has to
 cover the worst image.
 
+### Data-pruned custom-mask macro (`--pruned`)
+
+When word contents are fixed before tapeout and a shared V2/V3-reprogrammable
+abstract is not required, `pruned_macro_circuit(spec, words)` (or `asap7-brom
+--pruned`) trades frozen base layers for lower area, access delay, and read
+energy:
+
+- **Data-pruned single-sided 1-stage `NOR2` CGEN:** emits CGEN cells only for
+  active `(block, k)` pairs (`k != 0`) in 216 nm slots (`NOR2(GB<k>, SELB<b>)`
+  for `k = 1..14`, `INV(SELB<b>)` for `k = 15`), packing per-block tracks onto
+  left-entering `M4` (`8..15`) and direct `M2` (`{0/1, 6}`) before using
+  right-dropped `M6` lifts.
+- **Decoupled `k = 0` bitcells & trimmed candidate tracks:** ties unprogrammed
+  selector gates and middle diffusions locally to `VSS` `M1` without bridging
+  `V1/M2/V2` onto `BL<col>`, and trims horizontal `M2/M4` candidate tracks to
+  the active column span in each block.
+- **2-gate critical `EVAL` path & merged `ways = 4` readout:** precomputes
+  active-low `GB<1..14>` and `BLOCK<b>` during precharge with singleton 1-fin
+  off-critical sizing, leaving `NAND3 -> SELB<b>` and `NOR2 -> C<b,k>` on the
+  `EVAL` edge, and merges precharge, hi-skewed sense, and 4:1 column selection
+  into a 5T gated-tristate way receiver driving an isolated-keeper Q latch.
+
+`build_macro(circuit)`, `macro_lef(circuit, top)`, and
+`macro_verilog(circuit, spec, words)` accept `pruned_macro_circuit` directly;
+`manifest.json` records `"layout": "pruned_dense_cmos"` and `"abstract": null`.
+
 ### Wide words
 
 Words with at least 64 output bits use local bit tiles before trying flat
