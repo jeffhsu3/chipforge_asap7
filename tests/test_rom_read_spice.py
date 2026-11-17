@@ -80,7 +80,9 @@ def test_both_lines_carry_every_other_word_as_an_off_device(tmp_path: Path, fins
 
 
 def test_the_bitline_is_a_distributed_m2_ladder(tmp_path: Path):
-    deck = deck_for(tmp_path, words=1024)
+    # An ideal WL edge: 1024-word halves make a 2048-word decoder, which the
+    # decoder refuses (no N-well tap reaches its rows; ACTIVE.LUP.1).
+    deck = deck_for(tmp_path, words=1024, driver="ideal")
     for line in ("P", "U"):
         _, rs, cs = ladder(deck, line)
         # 1024 words x 81 nm x 0.2 fF/um; 1023 segments of 81 nm of 18 nm M2.
