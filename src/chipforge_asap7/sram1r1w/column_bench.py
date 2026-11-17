@@ -439,7 +439,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--corners", nargs="+", choices=sorted(CORNERS), default=["typical"]
     )
-    parser.add_argument("--out", type=Path, default=Path("build/sram1r1w/bench"))
+    parser.add_argument(
+        "--output-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        default=Path("build/sram1r1w/bench"),
+    )
     args = parser.parse_args(argv)
     spec = ColumnSpec(args.wordlines)
     osdi = default_osdi(args.out)

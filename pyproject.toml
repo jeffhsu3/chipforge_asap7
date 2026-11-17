@@ -32,8 +32,13 @@ plot = ["matplotlib>=3.7"]
 timing = ["numpy>=1.24"]
 optimize = ["ortools>=9.10,<10"]
 pex = ["klayout-pex>=0.3.12,<0.4; python_version >= '3.12'"]
+# The ROM macro backends (`chipforge_asap7.chipforge_backend`), as
+# chipforge_gt2n's chipforge extra. chipforge is private; the source below pins
+# the branch chipforge_gt2n uses.
+chipforge = ["chipforge"]
 
 [project.scripts]
+asap7 = "chipforge_asap7.cli:main"
 asap7-finfet = "chipforge_asap7.devices.finfet:main"
 asap7-bitline-mux = "chipforge_asap7.devices.bitline_mux:main"
 asap7-brom = "chipforge_asap7.brom.__main__:main"
@@ -81,3 +86,6 @@ testpaths = ["tests"]
 markers = [
     "slow: builds many layouts or runs a long simulation; skipped unless --runslow",
 ]
+
+[tool.uv.sources]
+chipforge = { git = "ssh://git@github.com/jeffhsu3/chipforge.git", branch = "feat/mamba-layer-banks" }

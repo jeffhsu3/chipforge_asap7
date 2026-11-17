@@ -109,7 +109,11 @@ def parse_spec(
             "out",
             Annotated[
                 Path | None,
-                tyro.conf.arg(help="Output GDS path; the cell name when omitted."),
+                # --output is chipforge_gt2n's name for a GDS path.
+                tyro.conf.arg(
+                    aliases=("--output",),
+                    help="Output GDS path; the cell name when omitted.",
+                ),
             ],
             dataclasses.field(default=None),
         )

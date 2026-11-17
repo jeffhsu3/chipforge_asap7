@@ -165,3 +165,59 @@ def test_rejected_option_combinations(tmp_path, flags):
     with pytest.raises(SystemExit, match="2"):
         main([str(words), "--bits", "2", *flags, "--out", str(tmp_path / "out")])
     assert not (tmp_path / "out").exists()
+
+
+
+def test_gt2n_flag_names_through_the_asap7_command(tmp_path):
+    """`asap7 rom brom` takes chipforge_gt2n's names, builds what the old
+    `asap7-brom` names build, and records the shape keys gt2n's manifests carry."""
+    from chipforge_asap7.cli import main as asap7
+
+    words = tmp_path / "words.json"
+    words.write_text(json.dumps(list(range(4)) * 4))
+    old, new = tmp_path / "old", tmp_path / "new"
+    main([str(words), "--bits", "2", "--ways", "4", "--out", str(old)])
+    status = asap7(
+        ["rom", "brom", "--words-json", str(words), "--word-bits", "2"]
+        + ["--column-mux", "4", "--output-dir", str(new)]
+    )
+    before = json.loads((old / "manifest.json").read_text())
+    after = json.loads((new / "manifest.json").read_text())
+    assert status == 0
+    assert after["physical_sha256"] == before["physical_sha256"]
+    assert {
+        key: after[key]
+        for key in (
+            "architecture",
+            "platform",
+            "depth",
+            "num_words",
+            "word_bits",
+            "physical_word_bits",
+            "column_mux",
+            "column_mux_in_macro",
+            "address_bits",
+        )
+    } == {
+        "architecture": "brom",
+        "platform": "asap7",
+        "depth": 16,
+        "num_words": 16,
+        "word_bits": 2,
+        "physical_word_bits": 8,
+        "column_mux": 4,
+        "column_mux_in_macro": True,
+        "address_bits": 4,
+    }
+
+
+def test_the_words_file_is_given_once(tmp_path, capsys):
+    words = tmp_path / "words.json"
+    words.write_text("[0, 1, 2, 3]")
+    for argv in (
+        ["--bits", "2", "--out", str(tmp_path / "a")],
+        [str(words), "--words-json", str(words), "--bits", "2", "--out", str(tmp_path / "b")],
+    ):
+        with pytest.raises(SystemExit):
+            main(argv)
+    assert "--words-json" in capsys.readouterr().err

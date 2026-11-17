@@ -59,9 +59,35 @@ def _write_abstract(out: Path, circuit, top, lib) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("words", type=Path, help="JSON array of unsigned integer words")
-    parser.add_argument("--bits", type=int, required=True)
-    parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
+    # Flag names follow chipforge_gt2n's `gt2n rom brom`; the old ASAP7 names
+    # (--bits, --ways, --out and the positional words file) still work.
+    parser.add_argument(
+        "words",
+        type=Path,
+        nargs="?",
+        help="JSON array of unsigned integer words (or --words-json)",
+    )
+    parser.add_argument(
+        "--words-json", type=Path, help="JSON array of unsigned integer words"
+    )
+    parser.add_argument(
+        "--word-bits",
+        "--bits",
+        dest="bits",
+        type=int,
+        required=True,
+        help="logical word width (--bits is the old name)",
+    )
+    parser.add_argument(
+        "--column-mux",
+        "--ways",
+        dest="ways",
+        type=int,
+        choices=(1, 4),
+        default=1,
+        help="logical words per physical row; the macro selects the word "
+        "(--ways is the old name)",
+    )
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
     parser.add_argument(
@@ -117,7 +143,14 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Integrate clock controller; completion feedback remains external",
     )
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        required=True,
+        help="directory for the GDS, views and manifest (--out is the old name)",
+    )
     parser.add_argument(
         "--drc",
         action="store_true",
@@ -142,7 +175,9 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("replica options require --self-timed")
     if args.registered_output and not (args.clocked or args.self_timed):
         parser.error("--registered-output requires --clocked or --self-timed")
-    words = json.loads(args.words.read_text())
+    if (args.words is None) == (args.words_json is None):
+        parser.error("give the words file once: positionally or as --words-json")
+    words = json.loads((args.words or args.words_json).read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
     spec = BromSpec(
@@ -197,6 +232,16 @@ def main(argv: list[str] | None = None) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     _, physical = dense_macro_layout(macro)
     report = {
+        # The shape keys chipforge_gt2n's ROM manifests carry, by the same names.
+        "architecture": "brom",
+        "platform": "asap7",
+        "depth": spec.depth,
+        "num_words": spec.depth,
+        "word_bits": spec.bits,
+        "physical_word_bits": spec.columns,
+        "column_mux": spec.ways,
+        "column_mux_in_macro": spec.ways > 1,
+        "address_bits": spec.address_bits,
         "spec": asdict(spec),
         "top_cell": macro.name,
         "selector_map": selector_map(spec, words),

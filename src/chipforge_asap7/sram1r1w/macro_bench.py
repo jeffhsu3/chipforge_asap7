@@ -385,12 +385,18 @@ def run_macro_bench(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--wordlines", type=int, default=32)
-    parser.add_argument("--bits", type=int, default=2)
+    parser.add_argument("--word-bits", "--bits", dest="bits", type=int, default=2)
     parser.add_argument("--period", type=float, default=2.0, help="ns")
     parser.add_argument(
         "--corners", nargs="+", choices=sorted(CORNERS), default=["typical"]
     )
-    parser.add_argument("--out", type=Path, default=Path("build/sram1r1w/macro"))
+    parser.add_argument(
+        "--output-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        default=Path("build/sram1r1w/macro"),
+    )
     args = parser.parse_args(argv)
     spec = MacroSpec(args.wordlines, args.bits)
     osdi = default_osdi(args.out)
