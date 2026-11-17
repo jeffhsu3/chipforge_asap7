@@ -51,7 +51,12 @@ units. Complete latch and logic groups stay intact; selector array
 geometry and programming remain unchanged.
 
 Further rounds try bounded increases on the four largest estimated wire-RC
-cost nets, considering partial and full wire-load compensation. Every candidate
+cost nets, considering partial and full wire-load compensation. Each resized
+candidate is scored with its stages left where the dense periphery appended
+them as well as at the two relocations: the dense bank already puts chains
+near their loads, and on the 4×2 self-timed macro every relocation costs more
+than it saves, while keeping the placement and adding a small PRECHN wire load
+lowers the estimate from 731 to 722 ps. Every candidate
 is repacked and routed with the dense cell generator before scoring. This accounts for the
 extra metal caused by larger drivers. Blindly compensating all wire loads can
 make the bank much larger and slower under the model.

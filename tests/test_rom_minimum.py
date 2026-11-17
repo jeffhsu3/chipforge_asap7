@@ -17,10 +17,12 @@ from chipforge_asap7.verification.drc import find_gdscheck
 from chipforge_asap7.verification.rom_minimum import (
     extract_witness,
     layout_constraints,
+    measure_routing,
     measure_tile,
     minimum_dimensions,
     proof_queries,
     prove_minimum,
+    routing_constraints,
     rule_manifest,
     run_query,
     topology_check,
@@ -50,6 +52,95 @@ def test_no_smaller_dimension_and_drawn_witness_is_satisfiable(fins, z3, tmp_pat
         result = run_query(z3, source, tmp_path / f"{name}.smt2", expected)
         if expected == "unsat":
             assert "(proof" in (tmp_path / result["output"]).read_text()
+
+
+def _routed_witness(fins, tmp_path):
+    """Both tile measurements, with V1s read from a fully programmed row."""
+    gdspy = require_gdspy()
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    bitcell = RomBitcellSpec(fins=fins)
+    tile = build_rom_bitcell(bitcell, lib=library)
+    spec = RomArraySpec(words=2, bits=1, bitcell=bitcell)
+    top = build_rom_array(spec, [(0, 0), (1, 0)], lib=library)
+    return measure_tile(tile, fins), measure_routing(tile, top, spec, bit=0)
+
+
+def _without(source, *names):
+    return (
+        "\n".join(
+            line
+            for line in source.splitlines()
+            if not any(f":named {name})" in line for name in names)
+        )
+        + "\n"
+    )
+
+
+@pytest.mark.parametrize("fins", [1, 2, 3])
+def test_drawn_routing_satisfies_the_routing_rules_at_the_bound(fins, z3, tmp_path):
+    witness, routing = _routed_witness(fins, tmp_path)
+    source, expected = proof_queries(fins, witness, routing)["routed_drawn_witness"]
+    assert expected == "sat"
+    run_query(z3, source, tmp_path / "routed.smt2", "sat")
+
+
+@pytest.mark.parametrize(
+    ("change", "rules"),
+    [
+        # M1.S.2: a stub's 18 nm tip 24 nm from the VSS column's long side.
+        ({"m1_da_x1": 21}, ("m1_space_da_s",)),
+        # M1.S.4: two 18 nm tips 29 nm apart across the tile boundary.
+        ({"m1_db_x1": 124}, ("m1_space_db_da",)),
+        # V0.M1.AUX.3: the full-ACTIVE-height pad the FinFET used to draw.
+        ({"m1_da_y0": 0, "m1_da_y1": 54}, ("m1_stub_flush_da",)),
+        # M1.A.1: a 27 x 18 nm stub is 486 nm².
+        ({"m1_da_x1": 18}, ("m1_stub_area_da",)),
+        # V0.LISD.EN.2: 2 nm of LISD either side of the V0.
+        (
+            {"lisd_da_x0": -11, "lisd_da_x1": 11},
+            ("v0_lisd_enclosure_da", "lisd_width_da"),
+        ),
+    ],
+)
+def test_each_routing_rule_rejects_its_own_violation(change, rules, z3, tmp_path):
+    witness, routing = _routed_witness(2, tmp_path)
+    source, _ = proof_queries(2, witness, {**routing, **change})["routed_drawn_witness"]
+    run_query(
+        z3,
+        source.replace("(get-model)", "(get-proof)"),
+        tmp_path / "broken.smt2",
+        "unsat",
+    )
+    # And only that rule: without it the same geometry is accepted.
+    run_query(z3, _without(source, *rules), tmp_path / "relaxed.smt2", "sat")
+
+
+@pytest.mark.parametrize("fins", [1, 2, 3])
+def test_routing_alone_holds_the_row_pitch_at_the_minimum_width(fins, z3, tmp_path):
+    # Without ACTIVE.S.1, LISD row spacing still needs 27 nm between the bars:
+    # gates 54 nm apart leave a bar 34 nm wide at most, so its ends are `mid`.
+    width, height = minimum_dimensions(fins)
+    source = _without(layout_constraints(fins), "active_wrap") + routing_constraints(
+        fins
+    )
+    bound = f"(assert (<= width {width}))\n(assert (< height {height}))\n(check-sat)\n"
+    run_query(z3, source + bound, tmp_path / "pitch.smt2", "unsat")
+    # A wider tile lets the bars grow long-edged, and 18 nm is then enough.
+    wider = f"(assert (< height {height}))\n(check-sat)\n"
+    run_query(z3, source + wider, tmp_path / "wider.smt2", "sat")
+
+
+def test_routing_measurement_needs_both_programming_vias(tmp_path):
+    gdspy = require_gdspy()
+    library = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    gdspy.current_library = library
+    bitcell = RomBitcellSpec(fins=2)
+    tile = build_rom_bitcell(bitcell, lib=library)
+    spec = RomArraySpec(words=2, bits=1, bitcell=bitcell)
+    top = build_rom_array(spec, [(0, 0)], lib=library)
+    with pytest.raises(ValueError, match="both words"):
+        measure_routing(tile, top, spec, bit=0)
 
 
 @pytest.mark.parametrize(
@@ -178,3 +269,5 @@ def test_complete_proof_includes_pinned_drc_and_extracted_all_pattern_witness(
         "grounded_isolation_devices": 32,
     }
     assert result["queries"]["smaller_either_dimension"]["status"] == "unsat"
+    assert result["queries"]["routed_drawn_witness"]["status"] == "sat"
+    assert result["drawn_routing_nm"]["m1_s_y1"] == 27 * (fins + 1)

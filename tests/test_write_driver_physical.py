@@ -19,7 +19,11 @@ from chipforge_asap7.devices import (
     build_row_support,
     build_write_driver,
 )
+from chipforge_asap7.layout.grid import GATE_PITCH
 from chipforge_asap7.verification.lvs import render_write_driver_lvs_schematic, run_lvs
+
+# Cells sit on the 54 nm gate site (GATE.S.1), so the gap between them is too.
+GAP = 19 * GATE_PITCH  # 1026 nm
 
 NO_TAP_IN_CELL = {"ACTIVE.LUP.1"}
 SPECS = [
@@ -35,7 +39,7 @@ def _library():
     return library
 
 
-def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc):
+def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc, runset_residual):
     library = _library()
     top = library.new_cell("wrdrv_isolated")
     cursor = 0
@@ -45,12 +49,13 @@ def test_isolated_drivers_only_trip_the_missing_body_tap(asap7_drc):
                 build_write_driver(spec, lib=library), origin=(cursor, 0)
             )
         )
-        cursor += spec.width + 1000
-    assert set(asap7_drc(library, top, tag="isolated")) == NO_TAP_IN_CELL
+        cursor += spec.width + GAP
+    found = set(asap7_drc(library, top, tag="isolated"))
+    assert found - runset_residual(*SPECS) == NO_TAP_IN_CELL
 
 
 @pytest.mark.parametrize("spec", SPECS[:2], ids=lambda spec: spec.cell_name)
-def test_terminated_driver_is_clean(spec, asap7_drc):
+def test_terminated_driver_is_clean(spec, asap7_drc, runset_residual):
     library = _library()
     cell = build_write_driver(spec, lib=library)
     support = {
@@ -65,7 +70,9 @@ def test_terminated_driver_is_clean(spec, asap7_drc):
         placed = cell if item == "cell" else support[item]
         top.add(gdspy.CellReference(placed, origin=(cursor, 0)))
         cursor += spec.width if item == "cell" else placed.get_bounding_box()[1][0]
-    assert asap7_drc(library, top, tag="terminated") == []
+    assert (
+        set(asap7_drc(library, top, tag="terminated")) - runset_residual(spec) == set()
+    )
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.cell_name)

@@ -47,7 +47,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import M1_MIN_SPACE, M4_PITCH, M4_X_GRID, TRACK_PITCH
+from ..layout.rules import M1_MIN_SPACE, M1_TIP_TO_SIDE, M4_PITCH, M4_X_GRID, TRACK_PITCH
 from .cli import Option, parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
@@ -92,6 +92,10 @@ BITLINE_MUX_PINS = ("BL", "BLN", "SA", "SAN", "PRECHN", "YSEL", "YSELN", "VDD", 
 
 _DEVICE_COLUMNS = 8  # gate pitches the six devices and their two end dummies take
 
+
+#: Half an M2 stub that lies between two tracks: 38 nm long, so that its edges
+#: are long ones (> 36 nm) and 18 nm from a track suffices (M2.S.2).
+_LONG_STUB_HALF = 19
 
 @dataclass(frozen=True)
 class BitlineMuxSpec:
@@ -180,7 +184,7 @@ class BitlineMuxSpec:
                 f"an n band of {n_band.height} nm leaves no room for both bitline "
                 "tracks under the gate contacts; use at least 135 nm"
             )
-        if self.tracks_y["YSELN"] + HALF + M1_MIN_SPACE > via_y(p_band, RUNSET_RAIL_SPACE) - PAD:
+        if self.tracks_y["YSELN"] + HALF + M1_MIN_SPACE > via_y(p_band, self.rail_space) - PAD:
             raise ValueError(
                 f"a p band of {p_band.height} nm leaves no room for the select tie "
                 "under the via row; use at least 162 nm"
@@ -373,6 +377,17 @@ class BitlineMuxSpec:
         return (y,) if self.rows == 1 else (y, self.height - y)
 
     @property
+    def tip_clearances(self) -> bool:
+        """M1.S.2's tip-to-side spaces (25 nm), which need a 162 nm n band; a
+        135 nm one keeps the 18 nm the public runset accepts."""
+        return self.band_height[0] >= 162
+
+    @property
+    def rail_space(self) -> int:
+        """A via pad's tip to its rail."""
+        return M1_TIP_TO_SIDE if self.tip_clearances else RUNSET_RAIL_SPACE
+
+    @property
     def tracks_y(self) -> dict[str, int]:
         """Y of the horizontal M2 tracks, bottom to top.
 
@@ -383,9 +398,14 @@ class BitlineMuxSpec:
         n_band, _ = self.bands
         # 80 on the default row.
         # The landing on the via row lies along the track, 18 nm tall.
-        bl = via_y(n_band, RUNSET_RAIL_SPACE) + HALF + M1_MIN_SPACE + HALF + 3
-        # 152: its V1 sits on the gate contact's M1 bar, above the LIG.
-        ysel = self.seam_y + PAD
+        # Tip-to-side from the landing, 25 nm (a 135 nm band keeps the 21 the
+        # runset accepts).
+        space = M1_TIP_TO_SIDE if self.tip_clearances else M1_MIN_SPACE + 3
+        bl = via_y(n_band, self.rail_space) + HALF + space + HALF
+        # 152: its V1 sits on the gate contact's M1 bar, above the LIG. With
+        # M1.S.2's clearances the p via row's landings stand 7 nm lower, so
+        # both ties drop 5 nm to keep YSELN 25 nm under them (M2.S.2).
+        ysel = self.seam_y + PAD - (5 if self.tip_clearances else 0)
         return {
             "BL": bl,
             "BLN": bl + TRACK_PITCH,
@@ -508,19 +528,19 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     # Every other diffusion column: a V0 and an M1 pad on its band's via row.
     # The two bitline columns of the n band carry their pad up to the BL track.
     for column in ("x0", "x1", "x3", "x4"):
-        y_p = sd_contact(cell, p_band, x[column], rail_space=RUNSET_RAIL_SPACE)
+        y_p = sd_contact(cell, p_band, x[column], rail_space=spec.rail_space)
     for column in ("x0", "x4"):
-        y_n = sd_contact(cell, n_band, x[column], rail_space=RUNSET_RAIL_SPACE)
+        y_n = sd_contact(cell, n_band, x[column], rail_space=spec.rail_space)
     for column in ("xa", "xb"):
-        sd_contact(cell, n_band, x[column], reach=ty["BL"] + CAP, rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, n_band, x[column], reach=ty["BL"] + CAP, rail_space=spec.rail_space)
         square(cell, "V1", x[column], ty["BL"])
 
     # Shared nets, straight through on M3.  SA and SAN tap both bands of their
     # own column (their tracks are drawn by the leaf, which knows whether its
     # ends are a group's outer ends); PRECHN taps its gate contact (below).
     for net in ("SA", "SAN"):
-        landing(cell, n_band, tx[net], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, p_band, tx[net], rail_space=RUNSET_RAIL_SPACE)
+        landing(cell, n_band, tx[net], rail_space=spec.rail_space)
+        landing(cell, p_band, tx[net], rail_space=spec.rail_space)
 
     # Bitlines.  BL comes in on its track, meets the n column it passes first,
     # and rides a short M3 jumper over the seam to its p column.  BLN crosses
@@ -531,7 +551,9 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
         start = {net: x_entry - PAD for net, x_entry in spec.entry_x.items()}
     m2_track(cell, ty["BL"], start["BL"], x["x1"] + PAD)
     m2_track(cell, ty["BLN"], start["BLN"], x["xb"] + PAD)
-    m2_track(cell, ty["BL"], x["xb"] - PAD, x["xb"] + PAD)
+    # 38 nm long, so that its edges are long ones and 18 nm from the BLN track
+    # suffices (M2.S.2); a 34 nm stub's ends would need 25.
+    m2_track(cell, ty["BL"], x["xb"] - _LONG_STUB_HALF, x["xb"] + _LONG_STUB_HALF)
     for column, track in (("x1", "BL"), ("x3", "BLN")):
         m3_column(cell, x[column], ty[track] - CAP, y_p + CAP, vias=[ty[track]])
         stack_to_m3(cell, x[column], y_p)
@@ -545,7 +567,7 @@ def _draw_row(cell: Any, spec: BitlineMuxSpec) -> None:
     # to the n via row to meet its M3.
     gate_contact(cell, seam, [g["G1"], g["G2"]], x["x2"], y_n - CAP)
     m3_column(cell, tx["PRECHN"], 0, height)
-    landing(cell, n_band, x["x2"], rail_space=RUNSET_RAIL_SPACE)
+    landing(cell, n_band, x["x2"], rail_space=spec.rail_space)
 
     # YSEL on the two outer gates, YSELN on the two inner ones.  Each is tied on
     # its own M2 track and taps its own select among the group's M3 tracks.

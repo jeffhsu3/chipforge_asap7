@@ -116,10 +116,24 @@ def boxes_on() -> Callable[[object, str], list[Box]]:
     return layer_boxes
 
 
+def _asap7_release() -> Path:
+    """The public ASAP7 checkout: ``ASAP7_ROOT``, else a sibling ``asap7``.
+
+    A missing release resolves to a path that does not exist, so each test
+    skips (or fails under ``ASAP7_REQUIRE_TOOLS=1``) on its own check.
+    """
+    from chipforge_asap7.verification.reference import find_asap7_release
+
+    try:
+        return find_asap7_release()
+    except FileNotFoundError:
+        return Path(os.environ.get("ASAP7_ROOT", "asap7-release-not-found"))
+
+
 @pytest.fixture(scope="session")
 def released_library() -> Path:
     """Root of the public ASAP7 7.5-track standard-cell release, if present."""
-    return Path.home() / "iv4/repos/asap7/asap7sc7p5t_28"
+    return _asap7_release() / "asap7sc7p5t_28"
 
 
 @pytest.fixture(scope="session")
@@ -130,7 +144,7 @@ def released_sram_gds() -> Path:
     `chipforge_asap7.devices.inverter` is modelled on, and the only place the
     released collateral shows a tapless, stacked-band, shared-diffusion cell.
     """
-    return Path.home() / "iv4/repos/asap7/asap7_sram_0p0/gds/srambank_32b.gds"
+    return _asap7_release() / "asap7_sram_0p0/gds/srambank_32b.gds"
 
 
 @pytest.fixture
@@ -139,6 +153,25 @@ def require_klayout(external_tool) -> Path:
     klayout = find_klayout_or_none()
     external_tool(klayout is not None, "KLayout is not installed (set KLAYOUT_BIN)")
     return klayout
+
+
+@pytest.fixture
+def runset_residual() -> Callable[..., frozenset[str]]:
+    """The DRC rules a layout may keep because a cell in it uses a 135 nm n band.
+
+    Those cells plan via pads on `RUNSET_RAIL_SPACE` (see
+    `rowcell.RUNSET_RESIDUAL_RULES`); a 162 nm band takes M1.S.2's clearances
+    and keeps none.  Takes cell specs, or an IO column, whose cells share a band.
+    """
+    from chipforge_asap7.devices.rowcell import RUNSET_RESIDUAL_RULES
+
+    def _residual(*specs) -> frozenset[str]:
+        bands = [getattr(s, "band_height", None) or s.mux.band_height for s in specs]
+        if any(band[0] < 162 for band in bands):
+            return RUNSET_RESIDUAL_RULES
+        return frozenset()
+
+    return _residual
 
 
 @pytest.fixture

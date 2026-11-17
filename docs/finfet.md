@@ -36,7 +36,9 @@ The geometry is based on the released `INVxp33_ASAP7_75t_R` and
 `TAPCELL_ASAP7_75t_R`: full FIN/GATE grids, edge dummy gates,
 fin-quantized ACTIVE, legal select/well enclosure, split gate cuts, 24 nm LISD,
 matching 24 nm SDT source/drain markers, 18 nm V0, and minimum-area M1
-landings. RVT is the default; `vt="lvt"`,
+landings. The drain M1 is an 18 nm strip flush with its V0s top and bottom
+(V0.M1.AUX.3), at least 38 nm long so its lower edge is a long edge 18 nm
+from the source rail (M1.S.2 asks 25 nm of a ≤36 nm edge). RVT is the default; `vt="lvt"`,
 `"slvt"` and `"sram"` select the matching model and marker.
 
 ## FinFET showcase

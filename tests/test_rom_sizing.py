@@ -148,3 +148,14 @@ def test_non_rvt_needs_an_explicit_model():
 def test_unbuildable_drive_does_not_silently_clip_or_change_interleave():
     with pytest.raises(ValueError, match="interleave"):
         size(wl_load_fF=100)
+
+
+def test_a_runaway_predecoder_fails_fast_instead_of_iterating():
+    # At interleave 16 a 512-word bank's predecoders lengthen the very rails
+    # they drive faster than their drive grows: sizing must stop, not grind.
+    wide = RomDecoderSpec(
+        array=RomArraySpec(words=512, bits=256, bitcell=RomBitcellSpec(fins=2)),
+        interleave=16,
+    )
+    with pytest.raises(ValueError, match="diverges: the predecoder driver"):
+        size_rom_decoder(wide)

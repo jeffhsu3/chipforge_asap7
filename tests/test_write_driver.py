@@ -100,4 +100,6 @@ def test_undrawable_specs_are_rejected(kwargs, message):
 def test_taller_rows_move_the_ties_with_the_seam():
     spec = WriteDriverSpec(n_fins=4, p_fins=4, keeper_fins=2, band_height=(162, 189))
     assert spec.height == 702 and spec.stack.seam_ys == (162, 540)
-    assert spec.tie_levels == (143, 179, 215)
+    # A 162 nm n band takes M1.S.2's 25 nm tip clearances: ties 5 nm lower.
+    assert spec.tip_clearances and spec.rail_space == 25
+    assert spec.tie_levels == (138, 174, 210)

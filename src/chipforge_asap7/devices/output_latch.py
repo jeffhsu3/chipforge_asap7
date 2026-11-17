@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from ..layout.grid import GATE_PITCH
 from ..layout.layers import box, require_gdspy
-from ..layout.rules import TRACK_PITCH
+from ..layout.rules import M1_TIP_TO_SIDE, TRACK_PITCH
 from .cli import parse_spec, write_gds
 from .finfet import SELECT_X_ENC
 from .row import RowBand, RowStack
@@ -58,6 +58,9 @@ _INVERTER_AT = 2  # the inverter's output column, in the row above the latch
 _FINGERS_AT = 5  # first column of the tristate
 # The bottom row's M2 tie tracks, from its seam: one just below it, two above.
 _TIE_OFFSETS = (-19, 17, 53)
+# With M1.S.2's clearances (a 162 nm n band): 5 nm lower, so that the top tie
+# stands 25 nm from the p landings standing above it.
+_TIE_OFFSETS_TIP = (-24, 12, 48)
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,7 @@ class OutputLatchSpec:
             raise ValueError(f"fingers must be an even number >= 2, got {self.fingers}")
         bands = self.bands
         n_lo, p_lo = bands["n0"], bands["p0"]
-        y_n, y_p = via_y(n_lo, RUNSET_RAIL_SPACE), via_y(p_lo, RUNSET_RAIL_SPACE)
+        y_n, y_p = via_y(n_lo, self.rail_space), via_y(p_lo, self.rail_space)
         low, _, high = self.tie_levels
         # The lowest tie sits a track pitch above the 80 nm track, on which
         # QA ties from below.
@@ -153,9 +156,27 @@ class OutputLatchSpec:
         return self.column_x[left] + GATE_PITCH // 2
 
     @property
+    def tip_clearances(self) -> bool:
+        """M1.S.2's tip-to-side spaces (25 nm), which need a 162 nm n band; a
+        135 nm one keeps the 18 nm the public runset accepts."""
+        return self.band_height[0] >= 162
+
+    @property
+    def rail_space(self) -> int:
+        """A via pad's tip to its rail."""
+        return M1_TIP_TO_SIDE if self.tip_clearances else RUNSET_RAIL_SPACE
+
+    @property
+    def tie_offsets(self) -> tuple[int, int, int]:
+        return _TIE_OFFSETS_TIP if self.tip_clearances else _TIE_OFFSETS
+
+    @property
     def n_level(self) -> int:
         """The bottom row's M2 track its n pads reach, a pitch above their via row's landings."""
-        return via_y(self.bands["n0"], RUNSET_RAIL_SPACE) + HALF + 18 + HALF + 3
+        # The landings on the via row are 34 nm stubs: tip-to-side, 25 nm
+        # (a 135 nm band keeps the 21 the runset accepts).
+        space = M1_TIP_TO_SIDE if self.tip_clearances else 18 + 3
+        return via_y(self.bands["n0"], self.rail_space) + HALF + space + HALF
 
     @property
     def tie_levels(self) -> tuple[int, int, int]:
@@ -167,7 +188,7 @@ class OutputLatchSpec:
         has no pad beside it.
         """
         seam = self.stack.seam_y(0)
-        low, mid, high = (seam + offset for offset in _TIE_OFFSETS)
+        low, mid, high = (seam + offset for offset in self.tie_offsets)
         return low, mid, high
 
     @property
@@ -280,16 +301,16 @@ def build_output_latch(
     width, height = spec.width, spec.height
     c, g = spec.column_x, spec.gate_x
     seam0, seam1 = spec.stack.seam_ys
-    y_n0, y_p0 = via_y(n0, RUNSET_RAIL_SPACE), via_y(p0, RUNSET_RAIL_SPACE)
-    y_p1, y_n1 = via_y(p1, RUNSET_RAIL_SPACE), via_y(n1, RUNSET_RAIL_SPACE)
+    y_n0, y_p0 = via_y(n0, spec.rail_space), via_y(p0, spec.rail_space)
+    y_p1, y_n1 = via_y(p1, spec.rail_space), via_y(n1, spec.rail_space)
     lvl = spec.n_level  # 80: QA's tie, and nothing else on the bottom row
     tie_y2, tie_y1, tie_qan = spec.tie_levels
     # The top row's ties mirror the bottom row's about its own seam: two in the
     # p band for Y2 and Y2N, one in the n band for OEB.
     tie_top_y2, tie_a, tie_oeb = (
-        seam1 - _TIE_OFFSETS[1],
-        seam1 - _TIE_OFFSETS[2],
-        seam1 - _TIE_OFFSETS[0],
+        seam1 - spec.tie_offsets[1],
+        seam1 - spec.tie_offsets[2],
+        seam1 - spec.tie_offsets[0],
     )
     inv, first = _INVERTER_AT, spec.pairs[0]
     tx = spec.track_x
@@ -323,20 +344,20 @@ def build_output_latch(
 
     # Y1: its n drain's column carries M3 up to the p via row, where a short
     # track reaches its p drain, and to its gates' tie.
-    sd_contact(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, n0, c[0], rail_space=RUNSET_RAIL_SPACE)
-    sd_contact(cell, p0, c[1], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, n0, c[0], rail_space=spec.rail_space)
+    landing(cell, n0, c[0], rail_space=spec.rail_space)
+    sd_contact(cell, p0, c[1], rail_space=spec.rail_space)
     m3_column(cell, c[0], y_n0 - CAP, y_p0 + CAP, vias=[tie_y1, y_p0])
     m2_track(cell, y_p0, c[0] - PAD, c[1] + PAD, vias=[c[1]])
     gate_contact(cell, seam0, [g(3)], g(3), tie_y1 + CAP)
     m2_track(cell, tie_y1, c[0] - PAD, g(3) + PAD, vias=[g(3)])
     # Y2: its n drain climbs one column, its p drain another, both to the tie
     # below the seam; the p drain's column carries on up to the inverter.
-    sd_contact(cell, n0, c[4], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, n0, c[4], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, n0, c[4], rail_space=spec.rail_space)
+    landing(cell, n0, c[4], rail_space=spec.rail_space)
     m3_column(cell, c[4], y_n0 - CAP, tie_y2 + CAP, vias=[tie_y2])
-    sd_contact(cell, p0, c[3], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, p0, c[3], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, p0, c[3], rail_space=spec.rail_space)
+    landing(cell, p0, c[3], rail_space=spec.rail_space)
     m3_column(cell, c[3], tie_y2 - CAP, tie_top_y2 + CAP, vias=[tie_y2, tie_top_y2])
     gate_contact(cell, seam0, [g(0)], g(0), tie_y2 - CAP)
     m2_track(cell, tie_y2, g(0) - PAD, c[4] + PAD, vias=[g(0)])
@@ -352,10 +373,10 @@ def build_output_latch(
     # their own column's M3, which also carries Y2N to the tristate's A gates.
     gate_contact(cell, seam1, [g(inv)], g(inv), tie_top_y2 - CAP)
     m2_track(cell, tie_top_y2, g(inv) - PAD, c[inv + 1] + PAD, vias=[g(inv)])
-    sd_contact(cell, p1, c[inv], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, p1, c[inv], rail_space=RUNSET_RAIL_SPACE)
-    sd_contact(cell, n1, c[inv], rail_space=RUNSET_RAIL_SPACE)
-    landing(cell, n1, c[inv], rail_space=RUNSET_RAIL_SPACE)
+    sd_contact(cell, p1, c[inv], rail_space=spec.rail_space)
+    landing(cell, p1, c[inv], rail_space=spec.rail_space)
+    sd_contact(cell, n1, c[inv], rail_space=spec.rail_space)
+    landing(cell, n1, c[inv], rail_space=spec.rail_space)
     a_stripes = [g(b + 1) for b in spec.pairs] + [g(b + 4) for b in spec.pairs]
     m3_column(cell, c[inv], y_p1 - CAP, y_n1 + CAP, vias=[tie_a])
     for s in a_stripes:
@@ -391,7 +412,7 @@ def build_output_latch(
     # climbs its own column to it, and the first pair's column is the pin.
     q_p_columns = sorted({b for b in spec.pairs} | {b + 6 for b in spec.pairs})
     for column in q_p_columns:
-        sd_contact(cell, p1, c[column], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, p1, c[column], rail_space=spec.rail_space)
     m2_track(
         cell,
         y_p1,
@@ -400,8 +421,8 @@ def build_output_latch(
         vias=[c[q] for q in q_p_columns],
     )
     for q in q_columns:
-        sd_contact(cell, n1, c[q], rail_space=RUNSET_RAIL_SPACE)
-        landing(cell, n1, c[q], rail_space=RUNSET_RAIL_SPACE)
+        sd_contact(cell, n1, c[q], rail_space=spec.rail_space)
+        landing(cell, n1, c[q], rail_space=spec.rail_space)
         top = height if c[q] == tx["Q"] else y_n1 + CAP
         m3_column(cell, c[q], y_p1 - CAP, top, vias=[y_p1])
 

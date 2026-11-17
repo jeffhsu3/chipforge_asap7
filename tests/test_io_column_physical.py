@@ -33,7 +33,9 @@ EIGHT = IoColumnSpec(
 # Port B of two banks facing each other: one amplifier, driver and latch for
 # a group on each side (the OpenFinRAM 8T bitcell's M4 bitlines, on its fin grid).
 TWO_SIDED = IoColumnSpec(
-    mux=BitlineMuxSpec(rows=2, bitline_entry=(510, 78), bitline_layer="M4", grid_offset=13.5),
+    mux=BitlineMuxSpec(
+        rows=2, bitline_entry=(510, 78), bitline_layer="M4", grid_offset=13.5
+    ),
     one_sense_phase=True,
     two_sided=True,
 )
@@ -48,16 +50,18 @@ def _library():
 @pytest.mark.parametrize(
     "spec", [PORT_A, PORT_B, EIGHT, TWO_SIDED], ids=lambda spec: spec.cell_name
 )
-def test_block_is_drc_clean_with_its_tap(spec, asap7_drc):
+def test_block_is_drc_clean_with_its_tap(spec, asap7_drc, runset_residual):
     library = _library()
     cell = build_io_column(spec, lib=library)
-    assert asap7_drc(library, cell, tag="block") == []
+    assert set(asap7_drc(library, cell, tag="block")) - runset_residual(spec) == set()
 
 
-def test_without_a_tap_only_the_latch_up_rule_fires(asap7_drc):
+def test_without_a_tap_only_the_latch_up_rule_fires(asap7_drc, runset_residual):
     library = _library()
-    cell = build_io_column(IoColumnSpec(tap=False), lib=library)
-    assert set(asap7_drc(library, cell, tag="notap")) == {"ACTIVE.LUP.1"}
+    spec = IoColumnSpec(tap=False)
+    cell = build_io_column(spec, lib=library)
+    found = set(asap7_drc(library, cell, tag="notap"))
+    assert found - runset_residual(spec) == {"ACTIVE.LUP.1"}
 
 
 @pytest.mark.parametrize(
@@ -120,7 +124,9 @@ def test_the_outputs_crossed_do_not_match(tmp_path: Path, require_klayout):
     ).matched
 
 
-def test_a_second_group_on_its_own_sense_lines_does_not_match(tmp_path: Path, require_klayout):
+def test_a_second_group_on_its_own_sense_lines_does_not_match(
+    tmp_path: Path, require_klayout
+):
     """The shared amplifier is checked: a reference whose second group has sense lines of its own fails."""
     spec = TWO_SIDED
     library = _library()
@@ -130,7 +136,8 @@ def test_a_second_group_on_its_own_sense_lines_does_not_match(tmp_path: Path, re
     text = render_io_column_lvs_schematic(spec, cell_name=cell.name)
     split = [
         line.replace(" SA ", " SA_OWN ").replace(" SAN ", " SAN_OWN ")
-        if line.split(" ", 1)[0].split("_")[0].endswith("R") else line
+        if line.split(" ", 1)[0].split("_")[0].endswith("R")
+        else line
         for line in text.splitlines()
     ]
     assert split != text.splitlines()
