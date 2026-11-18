@@ -147,7 +147,17 @@ def main(argv: list[str] | None = None) -> None:
     mode.add_argument(
         "--pruned",
         action="store_true",
-        help="Data-pruned single-sided CGEN and decoupled-BL custom-mask macro",
+        help="Data-pruned dual-slot CGEN and decoupled-BL custom-mask macro",
+    )
+    parser.add_argument(
+        "--pruned-periphery-vt",
+        choices=("rvt", "lvt", "slvt", "sram"),
+        help="Threshold flavor for off-critical pruned periphery and CGEN (requires --pruned)",
+    )
+    parser.add_argument(
+        "--pruned-crit-vt",
+        choices=("rvt", "lvt", "slvt", "sram"),
+        help="Threshold flavor for critical EVAL/BL/Q path in --pruned mode",
     )
     parser.add_argument(
         "--output-dir",
@@ -181,6 +191,10 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("replica options require --self-timed")
     if args.registered_output and not (args.clocked or args.self_timed):
         parser.error("--registered-output requires --clocked or --self-timed")
+    if not args.pruned and (
+        args.pruned_periphery_vt is not None or args.pruned_crit_vt is not None
+    ):
+        parser.error("--pruned-periphery-vt and --pruned-crit-vt require --pruned")
     if args.pruned and (args.wire_rc_controls or args.sized_controls):
         parser.error("--pruned sizes its own controls and cannot combine with --sized-controls/--wire-rc-controls")
     if args.pruned and args.keeper_fins and args.ways != 1:
@@ -213,7 +227,12 @@ def main(argv: list[str] | None = None) -> None:
         if args.self_timed
         else clocked_macro_circuit(spec, words)
         if args.clocked
-        else pruned_macro_circuit(spec, words)
+        else pruned_macro_circuit(
+            spec,
+            words,
+            periphery_vt=args.pruned_periphery_vt,
+            crit_vt=args.pruned_crit_vt,
+        )
         if args.pruned
         else macro_circuit(spec, words)
     )

@@ -362,8 +362,14 @@ def build_dense_bank(
     top = gdspy.Cell(name or circuit.name + "_dense", exclude_from_current=True)
     pins, placed, routes, checkpoints, certificates = {}, [], [], [], []
     cache = {}
+    unit_vts = {u.vt for u in units}
+    support_vt = (
+        circuit.n.vt
+        if len(unit_vts) <= 1 and (not unit_vts or circuit.n.vt in unit_vts)
+        else "rvt"
+    )
     stack = RowStack(
-        ((circuit.n.fins, circuit.p.fins),), vt=circuit.n.vt, band_height=216
+        ((circuit.n.fins, circuit.p.fins),), vt=support_vt, band_height=216
     )
     support = {
         kind: build_row_support(RowSupportSpec(stack, kind), draw_pin_labels=False)
@@ -371,7 +377,7 @@ def build_dense_bank(
     }
     # One empty gate pitch: frame and rails only.
     spacer = gdspy.Cell(f"{top.name}_spacer", exclude_from_current=True)
-    draw_frame(spacer, stack, 54, circuit.n.vt)
+    draw_frame(spacer, stack, 54, support_vt)
     draw_rails(spacer, stack, 54)
     box(spacer, "BOUNDARY", 0, 0, 54, 432)
     for index, row in enumerate(packed):

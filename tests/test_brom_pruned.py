@@ -186,3 +186,119 @@ def test_pruned_wide_word_bank_takes_the_bit_tile_path(ways):
     assert found is not None
     assert found[0] == ways
     assert set(found[1]) == set(range(spec.bits))
+
+
+def test_pruned_dual_slot_cgen_active_block_pruning_and_bl_trimming(tmp_path):
+    """Sparse blocks prune SELB drivers, pair CGEN slots, and trim BL M3."""
+    from chipforge_asap7.brom import pruned_macro_layout
+
+    # 32x8 m1 = 8 blocks; only blocks 0 and 5 are non-zero, and bit 7 is always 0.
+    words = [0] * 32
+    words[0:4] = [0x15, 0x2A, 0x7F, 0x33]
+    words[20:24] = [0x01, 0x03, 0x07, 0x0F]
+    spec = BromSpec(32, 8, 1, fins=2, vt="lvt")
+    c = pruned_macro_circuit(spec, words)
+    top, meta = pruned_macro_layout(c)
+
+    assert meta["arrays"][0]["active_blocks"] == [0, 5]
+    selb_units = [n for n, _ in c.logic_units if n.startswith("selb_")]
+    assert selb_units == ["selb_0", "selb_5"]
+    active_k = meta["arrays"][0]["active_candidates"]
+    assert len(active_k) >= 6
+    assert meta["cgen_slots"] < len(active_k)
+
+    # Verify zero dummy CGEN devices: only active (b, k) pairs exist in schematic.
+    cgen_groups = [n for n, _ in c.placement_groups if n.startswith("pruned_cgen_")]
+    expected_pairs = sum(len(set(row) - {0}) for row in c.array.mapping)
+    assert len(cgen_groups) == expected_pairs
+
+    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    build_macro(c, lib=lib)
+    gds = tmp_path / "sparse.gds"
+    ref = tmp_path / "sparse.lvs.spice"
+    lib.write_gds(str(gds))
+    ref.write_text(c.lvs_reference())
+    assert not run_gdscheck(gds, tmp_path / "drc", cell_name=top.name)
+    lvs = run_lvs(
+        gds, ref, tmp_path / "lvs", cell_name=top.name, merge_fin_diffusion=True, timeout=30
+    )
+    assert lvs.matched
+    summary = summarize_lvsdb(lvs.report)
+    assert not [p for cir in summary["circuits"] for p in cir["renamed_pins"]]
+
+    # Verify switch-level readback across all 32 addresses + PRECHN=0, EVAL=1 interlock.
+    state = None
+    for addr, expected in enumerate(words):
+        pins = {f"A[{i}]": (addr >> i) & 1 for i in range(spec.address_bits)}
+        state = settle(c, {**pins, "PRECHN": 0, "EVAL": 0, "SAMPLE": 0}, state)
+        state = settle(c, {**pins, "PRECHN": 0, "EVAL": 1, "SAMPLE": 0}, state)
+        assert all(state[f"BL<{col}>"] == 1 for col in range(spec.columns))
+        state = settle(c, {**pins, "PRECHN": 1, "EVAL": 1, "SAMPLE": 1}, state)
+        got = sum(state[f"Q[{i}]"] << i for i in range(spec.bits))
+        assert got == expected
+        state = settle(c, {**pins, "PRECHN": 1, "EVAL": 0, "SAMPLE": 0}, state)
+
+
+@pytest.mark.parametrize(
+    "ways,crit_vt",
+    [
+        (1, "rvt"),
+        (4, "lvt"),
+    ],
+)
+def test_pruned_multi_vt_low_leakage_drc_and_lvs(tmp_path, ways, crit_vt):
+    """1-fin SRAMVT selector array + off-critical logic with RVT/LVT critical path."""
+    depth = 16 * ways
+    spec = BromSpec(depth, 8, ways, fins=1, vt="sram")
+    words = [((i * 0x9E3779B1) >> 16) & 0xFF for i in range(depth)]
+    c = pruned_macro_circuit(spec, words, periphery_vt="sram", crit_vt=crit_vt)
+    models = {d.spec.model for d in c.devices}
+    assert {"nmos_sram", "pmos_sram", f"nmos_{crit_vt}", f"pmos_{crit_vt}"} <= models
+
+    lib = gdspy.GdsLibrary(unit=1e-9, precision=1e-10)
+    top = build_macro(c, lib=lib)
+    gds = tmp_path / "mvt.gds"
+    ref = tmp_path / "mvt.lvs.spice"
+    lib.write_gds(str(gds))
+    ref.write_text(c.lvs_reference())
+
+    assert not run_gdscheck(gds, tmp_path / "drc", cell_name=top.name)
+    lvs = run_lvs(
+        gds, ref, tmp_path / "lvs", cell_name=top.name, merge_fin_diffusion=True, timeout=30
+    )
+    assert lvs.matched
+    summary = summarize_lvsdb(lvs.report)
+    assert not [p for cir in summary["circuits"] for p in cir["renamed_pins"]]
+
+
+def test_cli_pruned_multi_vt_drc_and_lvs(tmp_path):
+    words_file = tmp_path / "words.json"
+    words_file.write_text(json.dumps([((i * 41 + 7) & 0xF) for i in range(16)]))
+    out = tmp_path / "out"
+    asap7(
+        [
+            "rom",
+            "brom",
+            "--words-json",
+            str(words_file),
+            "--word-bits",
+            "4",
+            "--fins",
+            "1",
+            "--vt",
+            "sram",
+            "--pruned",
+            "--pruned-crit-vt",
+            "rvt",
+            "--drc",
+            "--lvs",
+            "--output-dir",
+            str(out),
+        ]
+    )
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["physical_plan"]["periphery_vt"] == "sram"
+    assert manifest["physical_plan"]["crit_vt"] == "rvt"
+    macro = manifest["artifacts"]["macro"]
+    assert macro["drc"] == {}
+    assert macro["lvs"] == "passed"

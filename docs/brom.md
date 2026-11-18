@@ -95,24 +95,31 @@ cover the worst image.
 ### Data-pruned custom-mask macro (`--pruned`)
 
 When word contents are fixed before tapeout and a shared V2/V3-reprogrammable
-abstract is not required, `pruned_macro_circuit(spec, words)` (or `asap7-brom
---pruned`) trades frozen base layers for lower area, access delay, and read
-energy:
+abstract is not required, `pruned_macro_circuit(spec, words, *, periphery_vt=None,
+crit_vt=None)` (or `asap7 rom brom --pruned [--pruned-periphery-vt ...]
+[--pruned-crit-vt ...]`) trades frozen base layers for lower area, access delay,
+and read/standby energy:
 
-- **Data-pruned single-sided 1-stage `NOR2` CGEN:** emits CGEN cells only for
-  active `(block, k)` pairs (`k != 0`) in 216 nm slots (`NOR2(GB<k>, SELB<b>)`
-  for `k = 1..14`, `INV(SELB<b>)` for `k = 15`), packing per-block tracks onto
-  left-entering `M4` (`8..15`) and direct `M2` (`{0/1, 6}`) before using
-  right-dropped `M6` lifts.
-- **Decoupled `k = 0` bitcells & trimmed candidate tracks:** ties unprogrammed
-  selector gates and middle diffusions locally to `VSS` `M1` without bridging
-  `V1/M2/V2` onto `BL<col>`, and trims horizontal `M2/M4` candidate tracks to
-  the active column span in each block.
-- **2-gate critical `EVAL` path & merged `ways = 4` readout:** precomputes
-  active-low `GB<1..14>` and `BLOCK<b>` during precharge with singleton 1-fin
-  off-critical sizing, leaving `NAND3 -> SELB<b>` and `NOR2 -> C<b,k>` on the
-  `EVAL` edge, and merges precharge, hi-skewed sense, and 4:1 column selection
-  into a 5T gated-tristate way receiver driving an isolated-keeper Q latch.
+- **Co-occurring dual-`NOR2` `324 nm` / singleton `216 nm` CGEN:** pairs active
+  `k = 1..14` candidates by block co-occurrence into shared-`SELB` `324 nm`
+  dual-`NOR2` slots (`216 nm` for unpaired singletons and `k = 15` `INV`),
+  instantiating zero dummy transistors in blocks where zero or one member of a
+  pair is used, and packing per-block tracks onto left-entering `M4` (`8..15`)
+  and direct `M2` (`{0/1, 6}`) before using right-dropped `M6` lifts.
+- **Decoupled `k = 0` bitcells & 2D-trimmed array wires:** ties unprogrammed
+  selector gates and middle diffusions locally to `VSS` `M1/M2` without bridging
+  `V1/M2/V2` onto `BL<col>`, trims horizontal `M2/M4` candidate tracks to the
+  active column span in each block, and trims vertical `M3` bitlines right above
+  each column's highest programmed block.
+- **Active-block 2-stack `EVAL -> SELB<b>` path, merged `ways = 4` readout &
+  multi-Vt co-design:** pre-combines `PRECHN` with active-low block decode during
+  precharge and emits `SELB<b>` drivers and left-channel risers only for
+  non-zero blocks (leaving `NAND2(EVAL, BPRE<b>)` + `NOR2(GB<k>, SELB<b>)` on
+  the `EVAL` edge), merges 1-fin precharge, hi-skewed sense, and 4:1 column
+  selection into a 5T gated-tristate way receiver beside an isolated-keeper Q
+  latch, and supports heterogeneous threshold mixes such as a 1-fin `sram`
+  selector array + off-critical logic paired with `rvt` or `lvt` on the critical
+  `EVAL -> Q` read path.
 
 `build_macro(circuit)`, `macro_lef(circuit, top)`, and
 `macro_verilog(circuit, spec, words)` accept `pruned_macro_circuit` directly;
