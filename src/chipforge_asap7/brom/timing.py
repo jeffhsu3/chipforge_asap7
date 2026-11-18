@@ -437,10 +437,14 @@ def plot_waveform(out: Path) -> Path:
     return path
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--words", type=Path, help="Optional JSON ROM image; overrides depth"
+        "--words-json",
+        "--words",
+        dest="words",
+        type=Path,
+        help="Optional JSON ROM image; overrides depth (--words is the old name)",
     )
     parser.add_argument("--plot", action="store_true")
     parser.add_argument(
@@ -450,18 +454,20 @@ def main():
         help="Optional read sequence (default: forward then reverse)",
     )
     parser.add_argument("--depth", type=int, default=8)
-    parser.add_argument("--bits", type=int, default=16)
-    parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--word-bits", "--bits", dest="bits", type=int, default=16)
+    parser.add_argument(
+        "--column-mux", "--ways", dest="ways", type=int, choices=(1, 4), default=1
+    )
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", default="rvt", choices=("rvt", "lvt", "slvt", "sram"))
     parser.add_argument("--model-card", type=Path, default=find_default_model_card())
     parser.add_argument("--osdi", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--output-dir", "--out", dest="out", type=Path, required=True)
     for name, field in TimingConditions.__dataclass_fields__.items():
         parser.add_argument(
             "--" + name.replace("_", "-"), type=float, default=field.default
         )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.model_card is None:
         parser.error("ASAP7 model card not found; pass --model-card")
     words = json.loads(args.words.read_text()) if args.words else None

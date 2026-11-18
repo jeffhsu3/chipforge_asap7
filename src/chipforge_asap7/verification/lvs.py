@@ -641,7 +641,7 @@ def run_lvs(
     blank_circuits: Sequence[str] = (),
     double_implant_is_tap: bool = True,
     flat: bool = False,
-    timeout: float = 300,
+    timeout: float = 1800,
 ) -> LVSResult:
     """Run ASAP7 KLayout LVS and retain the LVSDB needed by KPEX.
 

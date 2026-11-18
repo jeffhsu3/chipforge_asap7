@@ -19,19 +19,17 @@ def test_data_and_replica_use_matching_keeper_chains(fins, stack):
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(8)])
     by_name = {d.name: d for d in c.devices}
     groups = dict(c.placement_groups)
-    for prefix, bl, out in [
-        ("readout", "BL", "DOUT"),
-        ("replica_readout", "RBL", "RDOUT"),
-    ]:
-        for col in range(spec.columns):
-            devices = [by_name[n] for n in groups[f"{prefix}_{col}"]]
-            assert len(devices) == 3 + stack
-            source = "VDD"
-            for d in devices[3:]:
-                assert d.spec.flavor == "p" and d.spec.fins == fins
-                assert d.nodes[1:] == (f"{out}<{col}>", source, "VDD")
-                source = d.nodes[0]
-            assert source == f"{bl}<{col}>"
+    readouts = [(f"readout_{col}", f"BL<{col}>", f"DOUT<{col}>") for col in range(2)]
+    readouts.append(("replica_readout", "RBL", "RDOUT"))
+    for group, bl, out in readouts:
+        devices = [by_name[n] for n in groups[group]]
+        assert len(devices) == 3 + stack
+        source = "VDD"
+        for d in devices[3:]:
+            assert d.spec.flavor == "p" and d.spec.fins == fins
+            assert d.nodes[1:] == (out, source, "VDD")
+            source = d.nodes[0]
+        assert source == bl
     assert (
         c.array.mapping
         == macro_circuit(

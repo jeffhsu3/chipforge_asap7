@@ -9,41 +9,65 @@ from chipforge_asap7.brom import (
     build_macro,
     self_timed_macro_circuit,
 )
-from chipforge_asap7.brom.layout import (
-    macro_periphery,
-    macro_plan,
-    verify_macro_routes,
+from chipforge_asap7.brom.dense_units import dense_units
+from chipforge_asap7.brom.dense_macro import (
+    bank_circuit,
+    dense_macro_layout,
+    verify_dense_routes,
 )
 
 
-@pytest.mark.parametrize("ways,depth", [(1, 8), (4, 32)])
-def test_replica_loads_and_public_interface(ways, depth):
-    spec = BromSpec(depth, 2, ways=ways)
+@pytest.mark.parametrize("ways,depth,bits", [(1, 8, 2), (4, 32, 2), (1, 8, 32)])
+def test_replica_loads_and_public_interface(ways, depth, bits):
+    spec = BromSpec(depth, bits, ways=ways)
     c = self_timed_macro_circuit(spec, [i % 4 for i in range(depth)])
     assert set(c.pins) == {
         *(f"A[{i}]" for i in range(spec.address_bits)),
         "CLK",
         "RESETN",
-        "Q[0]",
-        "Q[1]",
+        *(f"Q[{i}]" for i in range(bits)),
         "VDD",
         "VSS",
     }
     replica = c.replica
-    assert len(replica.selector.mapping) == spec.blocks + 1
-    assert all(len(row) == spec.columns for row in replica.selector.mapping)
-    assert set(replica.selector.mapping[-1]) == {15}
-    assert all(set(row) == {0} for row in replica.selector.mapping[:-1])
-    devs = [d for d in c.devices if d.name in replica.selector.device_names]
-    for col in range(spec.columns):
-        column = [d for d in devs if d.nodes[0] == f"RBL<{col}>"]
-        assert len(column) == 2 * (spec.blocks + 1)
-        assert sum(d.nodes[1] != "VSS" for d in column) == 1
-    assert {d.name for d in macro_periphery(c).devices}.isdisjoint(
+    rows = spec.blocks + 1
+    # One full-height column, the observed bitline. Its candidate is live
+    # only in the last block; every block keeps a selector and isolation gate.
+    assert replica.selector.mapping == ((0,),) * (rows - 1) + ((15,),)
+    assert replica.port_nets["BL<0>"] == "RBL"
+    candidate = f"RC<{rows - 1},15>"
+    assert replica.port_nets[f"C<{rows - 1},15>"] == candidate
+    strip = [d for d in c.devices if d.name in replica.selector.device_names]
+    assert len(strip) == 2 * rows
+    assert all(d.nodes[0] == "RBL" and d.nodes[2] == "VSS" for d in strip)
+    assert sorted(d.nodes[1] for d in strip) == [candidate] + ["VSS"] * (2 * rows - 1)
+    # The candidate carries as many gates as one real half's candidate:
+    # the live one, and dummy gates in bank cells with drain and source on
+    # VSS, each the selector's size.
+    assert replica.dummy_loads == spec.half_columns - 1
+    dummies = [
+        d
+        for d in c.devices
+        if d.nodes[1] == candidate and d.name not in replica.selector.device_names
+        and d.nodes[0] == d.nodes[2] == "VSS"
+    ]
+    assert len(dummies) == replica.dummy_loads
+    assert all(d.spec.fins == c.array.plan.fins for d in dummies)
+    # No device has every terminal on VSS: they add only solver nodes.
+    assert not [d for d in c.devices if set(d.nodes) == {"VSS"}]
+    groups = dict(c.placement_groups)
+    loads = [n for n in groups if n.startswith("replica_candidate_load_")]
+    assert sum(len(groups[n]) for n in loads) == replica.dummy_loads
+    units = {u.name: u for u in dense_units(bank_circuit(c))}
+    assert all(len(units[n].members) == len(groups[n]) for n in loads)
+    readouts = [n for n, _ in c.placement_groups if n.startswith("replica_readout")]
+    assert readouts == ["replica_readout"]
+    assert {d.name for d in bank_circuit(c).devices}.isdisjoint(
         replica.selector.device_names | c.array.device_names
     )
-    plan = macro_plan(c)
+    _, plan = dense_macro_layout(c)
     assert plan["arrays"] and plan["array_y_nm"] > 0
+    build_macro(c)  # checks every route
 
 
 @pytest.mark.parametrize(
@@ -66,12 +90,8 @@ def test_disconnected_replica_bitline_is_rejected():
     c = self_timed_macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
     # The bank is a subcell; flatten so its vias can be removed here.
     top = build_macro(c).flatten()
-    from chipforge_asap7.brom.dense_macro import dense_macro_layout
-
     _, plan = dense_macro_layout(c)
-    _, _, (x, y), _ = next(
-        r for r in plan["routes"] if r[0] == "RBL<0>" and r[1] == "V4"
-    )
+    _, _, (x, y), _ = next(r for r in plan["routes"] if r[0] == "RBL" and r[1] == "V4")
     count = []
 
     def remove(points, layer, datatype):
@@ -88,7 +108,7 @@ def test_disconnected_replica_bitline_is_rejected():
     top.remove_polygons(remove)
     assert len(count) == 1
     with pytest.raises(ValueError, match="disconnected dense route"):
-        verify_macro_routes(c, top)
+        verify_dense_routes(top, plan["checkpoints"])
 
 
 def test_existing_standalone_array_labels_are_preserved():

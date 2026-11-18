@@ -82,10 +82,15 @@ SHAPES = [
     (4, 1, 1),
     (4, 4, 1),
     (4, 16, 1),
+    # Three columns a side: the lane's two VSS drops once landed 24 nm apart.
+    (16, 6, 1),
     (16, 9, 1),
     (16, 4, 4),
     (64, 16, 4),
     pytest.param(1024, 16, 4, marks=pytest.mark.slow),
+    # The word slice shapes, whose track problems reach the CP-SAT fallback.
+    pytest.param(64, 30, 4, marks=pytest.mark.slow),
+    pytest.param(256, 30, 1, marks=pytest.mark.slow),
 ]
 
 

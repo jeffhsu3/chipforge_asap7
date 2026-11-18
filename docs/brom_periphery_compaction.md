@@ -57,15 +57,25 @@ uses the same bus spans, spine locations and compact plan as the GDS builder.
 
 ## Scope of the optimality certificate
 
-Each row's CP-SAT model minimizes its number of routing tracks for fixed
-device positions, row packing and spine order. A greedy legal assignment
-provides an upper bound; a simultaneous interval clique supplies an independent
-lower bound. Corner-spacing constraints can require more tracks than the
-clique bound. Only solver status `OPTIMAL` is accepted; a timeout is an error,
-not a silently accepted minimum. Search uses one worker and a fixed seed.
+Each row minimizes its routing tracks for fixed device positions, row packing
+and spine order. A simultaneous interval clique gives a lower bound, and any
+legal assignment that meets it is optimal, whatever produced it. So greedy
+first-fit runs first, then up to 200 seeded sweeps aiming at the bound. Across
+real builds these settled nearly every problem in milliseconds, where CP-SAT
+could spend 100 s and stop at its budget one track short.
 
-The manifest records each row's intervals, track assignment, solver status,
-objective/bound and clique witness, for the macro and every standalone unit.
+CP-SAT runs only when both miss, because corner spacing can require more tracks
+than the clique bound and only a solver can show that. It uses one worker, a
+fixed seed and a deterministic budget. If the budget runs out it keeps the best
+legal assignment, which may not be minimal; `UNKNOWN` retains the validated
+greedy route when no solver incumbent exists. The `slow` test
+`test_tracks_match_cp_sat_on_a_real_build` compares the result with CP-SAT on a
+real build; run it periodically with `pytest --runslow tests/test_brom_compact.py`.
+
+The current compiler's `routing_certificates` record each emitted M4 row and
+header's intervals, track assignment, method, raw solver status, track count,
+lower bound, optimality flag and clique witness, for the macro and standalone
+banks. Fixed CGEN lane routing has no channel certificates.
 These are channel-width certificates, **not proofs of globally minimum
 transistor layout or macro area**. Device ordering, diffusion sharing and
 alternative floorplans remain outside this search.

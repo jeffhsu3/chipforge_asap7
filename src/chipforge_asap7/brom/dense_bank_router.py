@@ -14,7 +14,9 @@ or, when that row is full, a *jog*: a column near the cell rises to a row
 with room, an M4 segment there reaches the anchored column, which rises on
 from that row. An anchor that finds no free column in its range, or no row
 for its run, falls back to a header track. A *bottom* port's column runs
-down to the bank's lower edge, where its pin lies.
+down to the bank's lower edge, where its pin lies. A *right* bottom port's
+column is its rightmost group's, so a supply pin sits at the row ends, where
+a power-grid strap entering from the right edge can reach it.
 
 Every M5 and M6 end lies on a 48 nm lattice. Tip stagger, parallel run and
 same-track gaps are then multiples of 48 nm (ASAP7 M5/M6.S.2, S.4 and S.5
@@ -174,8 +176,10 @@ def route_bank(
     spans=(),
     edges=None,
     blocked=(),
+    diagnostics=False,
+    right=(),
 ):
-    """Plan from (net, row, x, y) accesses; return None if the bank cannot route.
+    """Plan from (net, row, x, y) accesses; return None if this search fails.
 
     ``anchors`` holds (net, x lo, x hi, kind) windows for anchored ports,
     ``bottom`` the ports pinned at the lower edge, ``spans`` the (net, xs)
@@ -183,6 +187,7 @@ def route_bank(
     whose track runs on to the nearer bank edge (every port when None) and
     ``blocked`` the x positions an anchored column may not take. Anchored
     columns of different kinds never sit on adjacent lattice slots.
+    ``right`` names the bottom ports whose column is their rightmost group's.
 
     A row whose escapes need more than its eight M4 tracks is relieved first
     by moving the run of the anchored port with the widest escape crossing
@@ -191,7 +196,11 @@ def route_bank(
     with no row left is released to a header track. Failing that, the
     widest group crossing it is split into two groups, each with its own
     column, and the bank is routed again.
+
+    With ``diagnostics``, a failed search retains its last M4 conflicts and
+    routing candidate for joint repair. Neither outcome proves infeasibility.
     """
+    last_failure = None
     breaks = defaultdict(set)
     anchors = {net: (lo, hi, kind) for net, lo, hi, kind in anchors}
     jogs, tried = {}, defaultdict(set)
@@ -302,9 +311,13 @@ def route_bank(
             None if edges is None else frozenset(edges),
             frozenset(blocked),
             jogs,
+            frozenset(right) & frozenset(bottom),
         )
-        if result is None or "overfull" not in result:
+        if result is None:
+            return last_failure if diagnostics else None
+        if "overfull" not in result:
             return result
+        last_failure = result
         events, groups, columns, jog_spans = result["overfull"]
         jog_spans = dict(jog_spans)
         if anchors and budget == 0:
@@ -320,8 +333,8 @@ def route_bank(
                     anchors.clear()
                     jogs.clear()
                     break
-                return None
-    return None
+                return last_failure if diagnostics else None
+    return last_failure if diagnostics else None
 
 
 def _route(
@@ -337,6 +350,7 @@ def _route(
     edges,
     blocked,
     jogs,
+    right=frozenset(),
 ):
     by_net = defaultdict(list)
     for net, row, x, y in points:
@@ -380,14 +394,23 @@ def _route(
         if net in rising:
             # The highest group's column rises to the header; a bus joins
             # the rest. Lower groups never block the rows above them.
+            # Groups are in x order; a right port takes the rightmost.
             risers[net] = max(
-                members, key=lambda i: (max(r for r, _, _ in groups[i][1]), -i)
+                members,
+                key=lambda i: (
+                    max(r for r, _, _ in groups[i][1]),
+                    i if net in right else -i,
+                ),
             )
         else:
             # A column that only descends to a bottom pin starts from the
             # lowest group.
             risers[net] = min(
-                members, key=lambda i: (min(r for r, _, _ in groups[i][1]), i)
+                members,
+                key=lambda i: (
+                    min(r for r, _, _ in groups[i][1]),
+                    -i if net in right else i,
+                ),
             )
     rows = {i: [r for r, _, _ in groups[i][1]] for ms in by_group.values() for i in ms}
     targets = {
@@ -615,9 +638,7 @@ def _route(
     # until the two layers end at about the same height.
     ports = port_spans(columns, jog_columns)
     bus_y = {
-        net: p[0]
-        for net, p in zip(on_m6, packed)
-        if p and bus_row[net] >= row_count
+        net: p[0] for net, p in zip(on_m6, packed) if p and bus_row[net] >= row_count
     }
     above = sorted(bus_y, key=lambda net: (-bus_y[net], net))
     on_m4 = set()
@@ -646,6 +667,138 @@ def _route(
             settled
         )
         ports = port_spans(columns, jog_columns, frozenset(on_m4))
+    return finish_route(
+        {
+            "groups": groups,
+            "columns": columns,
+            "column_spans": column_spans,
+            "routed": routed,
+            "bus_row": bus_row,
+            "on_m6": on_m6,
+            "packed": packed,
+            "demands": demands,
+            "jog_columns": jog_columns,
+            "jog_rows": jog_rows,
+            "risers": risers,
+            "rising": rising,
+            "by_group": by_group,
+            "on_m4": on_m4,
+            "anchors": dict(anchors),
+            "spans": spans,
+            "bottom": bottom,
+            "edges": edges,
+            "header": header,
+            "width": width,
+            "limit": limit,
+            "row_count": row_count,
+            "row_width": row_width,
+            "pins": pins,
+            "blocked": blocked,
+            "targets": targets,
+            "windows": windows,
+            "kinds": kinds,
+        }
+    )
+
+
+def finish_route(candidate):
+    """Assign M4 escapes and emit a fixed placement/column/bus candidate.
+
+    Failed candidates retain the topology and geometry needed for a joint
+    placement/routing repair. A failure is not an infeasibility proof.
+    """
+    (
+        groups,
+        columns,
+        column_spans,
+        routed,
+        on_m6,
+        packed,
+        demands,
+        jog_columns,
+        jog_rows,
+        risers,
+        rising,
+        by_group,
+        on_m4,
+        anchors,
+        spans,
+        bottom,
+        edges,
+        header,
+        width,
+        row_count,
+        pins,
+    ) = (
+        candidate[k]
+        for k in (
+            "groups",
+            "columns",
+            "column_spans",
+            "routed",
+            "on_m6",
+            "packed",
+            "demands",
+            "jog_columns",
+            "jog_rows",
+            "risers",
+            "rising",
+            "by_group",
+            "on_m4",
+            "anchors",
+            "spans",
+            "bottom",
+            "edges",
+            "header",
+            "width",
+            "row_count",
+            "pins",
+        )
+    )
+
+    def extent(xs):
+        return (min(xs) - 24) // 48 * 48, _ceil(max(xs) + 24, 48)
+
+    def riser_x(net, columns, jog_columns):
+        """The column of ``net`` that rises above the rows."""
+        return jog_columns.get(net, columns[risers[net]])
+
+    def port_columns(net, columns, jog_columns, on_m4):
+        """Columns of ``net`` that rise to its header track."""
+        if net in on_m4:
+            return tuple(columns[i] for i in by_group[net])
+        return (riser_x(net, columns, jog_columns),)
+
+    def port_spans(columns, jog_columns, on_m4=frozenset()):
+        """Header span of every port that needs a track.
+
+        A port whose own bus moved onto M4 has every column rise to its one
+        header track, which then spans them all.
+        """
+        result = {}
+        for net in pins:
+            if net not in risers:
+                if spans.get(net):
+                    raise ValueError(f"bank port {net} has no access")
+                continue
+            column = riser_x(net, columns, jog_columns)
+            lo, hi, _ = anchors.get(net, (None, None, None))
+            if lo is not None and lo <= column <= hi and net not in on_m4:
+                continue
+            if net in bottom and not spans.get(net) and net not in on_m4:
+                continue
+            lo, hi = extent(
+                [*port_columns(net, columns, jog_columns, on_m4), *spans.get(net, ())]
+            )
+            if net in edges and net not in bottom:
+                if lo < width - hi:
+                    lo = -48
+                else:
+                    hi = max(hi, width + 48)
+            result[net] = (lo, hi)
+        return result
+
+    ports = port_spans(columns, jog_columns, frozenset(on_m4))
     spans_by_group = column_spans
     displacement = max(
         (max(abs(columns[i] - x) for _, x, _ in groups[i][1]) for i in routed),
@@ -690,17 +843,33 @@ def _route(
             peak = max(peak, (live, x))
         peaks[row] = peak[1]
     if overfull:
-        return {"overfull": (overfull, groups, columns, jog_spans)}
-    escapes, jog_tracks = [], []
+        return {
+            "overfull": (overfull, groups, columns, jog_spans),
+            "candidate": candidate,
+        }
+    escapes, jog_tracks, certificates = [], [], []
     for row, local in channels.items():
-        tracks, _ = assign_tracks(
-            tuple((a, b + 40) for _, _, a, b in local), end_space=40
-        )
-        if max(tracks) >= 8:
+        intervals = tuple((a, b + 40) for _, _, a, b in local)
+        assignment = assign_tracks(intervals, end_space=40)
+        if assignment.track_count > 8:
             # Aligned tips need a spare track: relieve the busiest x.
             overfull.append((row, peaks[row]))
             continue
-        for (key, accesses, lo, hi), track in zip(local, tracks):
+        certificates.append(
+            {
+                **assignment.certificate(intervals, 40),
+                "channel": "row",
+                "row": row,
+                "layer": "M4",
+                "track_y_nm": row * 432 + 60,
+                "pitch_nm": 48,
+                "nets": tuple(
+                    groups[key][0] if isinstance(key, int) else key[1]
+                    for key, _, _, _ in local
+                ),
+            }
+        )
+        for (key, accesses, lo, hi), track in zip(local, assignment.tracks):
             y = row * 432 + 60 + 48 * track
             if isinstance(key, int):
                 escapes.append((key, y, accesses, lo, hi))
@@ -710,7 +879,10 @@ def _route(
                     (net, y, lo, hi, (columns[risers[net]], jog_columns[net]))
                 )
     if overfull:
-        return {"overfull": (overfull, groups, columns, jog_spans)}
+        return {
+            "overfull": (overfull, groups, columns, jog_spans),
+            "candidate": candidate,
+        }
     buses = tuple(
         (net, p[0], lo, hi, tuple(columns[i] for i in by_group[net]))
         for net, p, (lo, hi, _) in zip(on_m6, packed, demands)
@@ -732,6 +904,7 @@ def _route(
             for net, x in sorted(jog_columns.items())
         ),
         "escapes": tuple(escapes),
+        "routing_certificates": certificates,
         "jogs": tuple(jog_tracks),
         "buses": buses,
         "m4_buses": {
@@ -758,7 +931,7 @@ def _route(
 
 
 def route_header(plan):
-    """Assign the M4 tracks above the rows; return (tracks, height).
+    """Assign the M4 header; return (tracks, height, certificate or None).
 
     Every port that needs a track spans its M5 column and the x positions
     where a parent drops onto it (`port_spans`), and every bus moved onto
@@ -768,13 +941,21 @@ def route_header(plan):
     local = [(net, lo, hi) for net, (lo, hi) in plan["port_spans"].items()]
     local += [(net, lo, hi) for net, (lo, hi, _) in plan["m4_buses"].items()]
     tracks = {}
+    certificate = None
     if local:
-        assigned, _ = assign_tracks(
-            tuple((lo, hi + 40) for _, lo, hi in local), end_space=40
-        )
+        intervals = tuple((lo, hi + 40) for _, lo, hi in local)
+        assignment = assign_tracks(intervals, end_space=40)
         tracks = {
             net: (plan["header"] + 48 * track, lo, hi)
-            for (net, lo, hi), track in zip(local, assigned)
+            for (net, lo, hi), track in zip(local, assignment.tracks)
+        }
+        certificate = {
+            **assignment.certificate(intervals, 40),
+            "channel": "header",
+            "layer": "M4",
+            "track_y_nm": plan["header"],
+            "pitch_nm": 48,
+            "nets": tuple(net for net, _, _ in local),
         }
     top = max(
         [y + 48 for y, _, _ in tracks.values()]
@@ -783,4 +964,4 @@ def route_header(plan):
         + [hi for _, _, _, hi in plan["column_shapes"] if hi < TOP],
         default=plan["header"],
     )
-    return tracks, _ceil(top, 54)
+    return tracks, _ceil(top, 54), certificate

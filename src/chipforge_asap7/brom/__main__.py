@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
+from hashlib import sha256
 from pathlib import Path
 
-from ..layout.layers import require_gdspy
+from ..layout.layers import LAYERS, require_gdspy
 from ..verification.drc import drc_counts, run_gdscheck
 from ..verification.lvs import run_lvs
 from ..verification.lvs_report import summarize_lvsdb
@@ -24,21 +25,70 @@ from . import (
     macro_circuit,
     output_circuit,
     output_register_circuit,
+    pruned_macro_circuit,
     selector_map,
     self_timed_macro_circuit,
     size_control_distribution,
     size_wire_rc_distribution,
 )
+from .abstract import PROGRAMMING_LAYERS, abstract_name, frozen_geometry_sha256
 from .dense_macro import dense_macro_layout
 from .periphery import periphery_plan
 from .views import macro_lef, macro_verilog
 
 
+def _write_abstract(out: Path, circuit, top, lib) -> dict:
+    """Write the stable-named LEF and GDS, and return the manifest's record."""
+    name = abstract_name(circuit.name)
+    lef = macro_lef(circuit, top, name=name)
+    (out / "abstract.lef").write_text(lef)
+    lib.rename_cell(top, name)
+    lib.write_gds(str(out / "abstract.gds"))
+    lib.rename_cell(top, circuit.name)
+    return {
+        "cell": name,
+        "lef": "abstract.lef",
+        "gds": "abstract.gds",
+        "lef_sha256": sha256(lef.encode()).hexdigest(),
+        "frozen_geometry_sha256": frozen_geometry_sha256(top),
+        "programming_layers": {
+            layer: [LAYERS[layer]["layer"], LAYERS[layer]["datatype"]]
+            for layer in PROGRAMMING_LAYERS
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("words", type=Path, help="JSON array of unsigned integer words")
-    parser.add_argument("--bits", type=int, required=True)
-    parser.add_argument("--ways", type=int, choices=(1, 4), default=1)
+    # Flag names follow chipforge_gt2n's `gt2n rom brom`; the old ASAP7 names
+    # (--bits, --ways, --out and the positional words file) still work.
+    parser.add_argument(
+        "words",
+        type=Path,
+        nargs="?",
+        help="JSON array of unsigned integer words (or --words-json)",
+    )
+    parser.add_argument(
+        "--words-json", type=Path, help="JSON array of unsigned integer words"
+    )
+    parser.add_argument(
+        "--word-bits",
+        "--bits",
+        dest="bits",
+        type=int,
+        required=True,
+        help="logical word width (--bits is the old name)",
+    )
+    parser.add_argument(
+        "--column-mux",
+        "--ways",
+        dest="ways",
+        type=int,
+        choices=(1, 4),
+        default=1,
+        help="logical words per physical row; the macro selects the word "
+        "(--ways is the old name)",
+    )
     parser.add_argument("--fins", type=int, choices=(1, 2, 3), default=2)
     parser.add_argument("--vt", choices=("rvt", "lvt", "slvt", "sram"), default="rvt")
     parser.add_argument(
@@ -84,12 +134,39 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--replica-guard-pairs", type=int)
     parser.add_argument("--replica-extra-blocks", type=int)
+    parser.add_argument(
+        "--replica-share",
+        type=int,
+        help="Output latches per local SAMPLE receiver (default 1)",
+    )
     mode.add_argument(
         "--clocked",
         action="store_true",
         help="Integrate clock controller; completion feedback remains external",
     )
-    parser.add_argument("--out", type=Path, required=True)
+    mode.add_argument(
+        "--pruned",
+        action="store_true",
+        help="Data-pruned dual-slot CGEN and decoupled-BL custom-mask macro",
+    )
+    parser.add_argument(
+        "--pruned-periphery-vt",
+        choices=("rvt", "lvt", "slvt", "sram"),
+        help="Threshold flavor for off-critical pruned periphery and CGEN (requires --pruned)",
+    )
+    parser.add_argument(
+        "--pruned-crit-vt",
+        choices=("rvt", "lvt", "slvt", "sram"),
+        help="Threshold flavor for critical EVAL/BL/Q path in --pruned mode",
+    )
+    parser.add_argument(
+        "--output-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        required=True,
+        help="directory for the GDS, views and manifest (--out is the old name)",
+    )
     parser.add_argument(
         "--drc",
         action="store_true",
@@ -107,12 +184,24 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     if not args.self_timed and (
-        args.replica_guard_pairs is not None or args.replica_extra_blocks is not None
+        args.replica_guard_pairs is not None
+        or args.replica_extra_blocks is not None
+        or args.replica_share is not None
     ):
         parser.error("replica options require --self-timed")
     if args.registered_output and not (args.clocked or args.self_timed):
         parser.error("--registered-output requires --clocked or --self-timed")
-    words = json.loads(args.words.read_text())
+    if not args.pruned and (
+        args.pruned_periphery_vt is not None or args.pruned_crit_vt is not None
+    ):
+        parser.error("--pruned-periphery-vt and --pruned-crit-vt require --pruned")
+    if args.pruned and (args.wire_rc_controls or args.sized_controls):
+        parser.error("--pruned sizes its own controls and cannot combine with --sized-controls/--wire-rc-controls")
+    if args.pruned and args.keeper_fins and args.ways != 1:
+        parser.error("--pruned ways=4 uses gated tristate sense without bitline keeper")
+    if (args.words is None) == (args.words_json is None):
+        parser.error("give the words file once: positionally or as --words-json")
+    words = json.loads((args.words or args.words_json).read_text())
     if not isinstance(words, list):
         parser.error("words must contain a JSON array")
     spec = BromSpec(
@@ -132,10 +221,20 @@ def main(argv: list[str] | None = None) -> None:
             replica=ReplicaSpec(
                 4 if args.replica_guard_pairs is None else args.replica_guard_pairs,
                 1 if args.replica_extra_blocks is None else args.replica_extra_blocks,
+                1 if args.replica_share is None else args.replica_share,
             ),
         )
         if args.self_timed
-        else (clocked_macro_circuit if args.clocked else macro_circuit)(spec, words)
+        else clocked_macro_circuit(spec, words)
+        if args.clocked
+        else pruned_macro_circuit(
+            spec,
+            words,
+            periphery_vt=args.pruned_periphery_vt,
+            crit_vt=args.pruned_crit_vt,
+        )
+        if args.pruned
+        else macro_circuit(spec, words)
     )
     if args.compact_periphery:
         compact_periphery(macro)
@@ -152,17 +251,21 @@ def main(argv: list[str] | None = None) -> None:
             estimate = attach_estimate(args.timing_report, macro, spec, words)
         except (OSError, ValueError) as exc:
             parser.error(f"--timing-report {args.timing_report}: {exc}")
-    circuits = {
-        "macro": macro,
-        "cgen": cgen_circuit(spec.fins, spec.vt),
-        "decoder": decoder_circuit(spec),
-        "output": output_circuit(
-            spec.fins,
-            spec.vt,
-            keeper_fins=spec.keeper_fins,
-            keeper_stack=spec.keeper_stack,
-        ),
-    }
+    circuits = (
+        {"macro": macro}
+        if args.pruned
+        else {
+            "macro": macro,
+            "cgen": cgen_circuit(spec.fins, spec.vt),
+            "decoder": decoder_circuit(spec),
+            "output": output_circuit(
+                spec.fins,
+                spec.vt,
+                keeper_fins=spec.keeper_fins,
+                keeper_stack=spec.keeper_stack,
+            ),
+        }
+    )
     if args.registered_output:
         circuits["output_register"] = output_register_circuit(
             spec.bits, spec.fins, spec.vt
@@ -175,6 +278,16 @@ def main(argv: list[str] | None = None) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     _, physical = dense_macro_layout(macro)
     report = {
+        # The shape keys chipforge_gt2n's ROM manifests carry, by the same names.
+        "architecture": "brom",
+        "platform": "asap7",
+        "depth": spec.depth,
+        "num_words": spec.depth,
+        "word_bits": spec.bits,
+        "physical_word_bits": spec.columns,
+        "column_mux": spec.ways,
+        "column_mux_in_macro": spec.ways > 1,
+        "address_bits": spec.address_bits,
         "spec": asdict(spec),
         "top_cell": macro.name,
         "selector_map": selector_map(spec, words),
@@ -204,9 +317,15 @@ def main(argv: list[str] | None = None) -> None:
         "replica": (
             {
                 "blocks": len(macro.replica.selector.mapping),
-                "columns": spec.columns,
+                "columns": len(macro.replica.selector.mapping[0]),
+                "candidate_gates": macro.replica.dummy_loads + 1,
+                "dummy_loads": macro.replica.dummy_loads,
                 "guard_pairs": macro.replica.guard_pairs,
                 "extra_blocks": macro.replica.extra_blocks,
+                "latches_per_sample_receiver": max(
+                    len(bank["latch_groups"])
+                    for bank in macro.sample_distribution["banks"]
+                ),
                 "candidate": 15,
                 "selector_devices": len(macro.replica.selector.device_names) // 2,
                 "isolation_devices": len(macro.replica.selector.device_names) // 2,
@@ -215,7 +334,7 @@ def main(argv: list[str] | None = None) -> None:
             if macro.replica
             else None
         ),
-        "layout": "dense_cmos_split_selector",
+        "layout": "pruned_dense_cmos" if args.pruned else "dense_cmos_split_selector",
         "selector_plan": asdict(macro.array.plan),
         "array_core_nm": [spec.columns * 108, spec.blocks * 432],
         "periphery_layout": "shared_diffusion_cmos",
@@ -255,10 +374,14 @@ def main(argv: list[str] | None = None) -> None:
         reference = args.out / f"{role}.lvs.spice"
         reference.write_text(circuit.lvs_reference())
         bounds = top.get_bounding_box()
+        plan = periphery_plan(circuit) if role != "macro" else None
         record = {
             "placement_certificates": physical["placement_certificates"]
             if role == "macro"
-            else periphery_plan(circuit).certificates,
+            else plan.certificates,
+            "routing_certificates": physical["routing_certificates"]
+            if role == "macro"
+            else plan.routing_certificates,
             "cell": circuit.name,
             "transistors": len(circuit.devices),
             "gds": gds.name,
@@ -274,6 +397,9 @@ def main(argv: list[str] | None = None) -> None:
             (args.out / "macro.lef").write_text(macro_lef(circuit, top))
             (args.out / "macro.v").write_text(macro_verilog(circuit, spec, words))
             record["lef"], record["verilog"] = "macro.lef", "macro.v"
+            report["abstract"] = (
+                None if args.pruned else _write_abstract(args.out, circuit, top, lib)
+            )
         report["artifacts"][role] = record
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         if args.drc:

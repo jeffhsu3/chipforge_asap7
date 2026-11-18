@@ -56,7 +56,8 @@ line used in more than one pair -- every ``PB``, and the predecoders' shared
 lines -- has an M3 join column beside the predecoders: on the lane's left
 side for a ``PB`` line only the left half uses, else on its right.  Each row
 is padded with filler to one common span and ends in ``filler tap filler``
-and ``tap filler``.  ``lane=False`` keeps the predecoders at the rows' left
+and ``tap filler``; a row too long for those to reach gets another tap in the
+lane (`RomDecoderSpec.lane_tap_x`).  ``lane=False`` keeps the predecoders at the rows' left
 end, ``[ends][predecoder columns][join columns][slots ...][ends]``, and one
 array whose bitlines leave its left edge.
 
@@ -90,7 +91,17 @@ from .cli import Option, parse_spec, write_gds
 from .finfet import DEVICE_GATE_CUT_HEIGHT
 from .inverter import InverterSpec, build_inverter
 from .nand import NandSpec, build_nand
-from .rom_bitcell import ROM_TILE_WORDS, STRAP_WL_XS, RomArraySpec, build_rom_array
+from .rom_bitcell import (
+    LATCHUP_REACH,
+    ROM_TILE_WORDS,
+    STRAP_WL_XS,
+    RomArraySpec,
+    build_rom_array,
+)
+from .rom_control import RomControlSpec, build_rom_control_row
+from .rom_lane import M5_WIDTH, TOP_CLEAR, V4_CAP, RomLaneSpec, build_rom_lane
+from .rom_latch import M3_EDGE as M3_EDGE_LATCH
+from .rom_latch import RomAddressLatchRowSpec, build_rom_address_latch_row
 from .rom_predecoder import Gate, Placement, network, validate_placement
 from .rom_predecoder import place as place_gates
 from .row import RowStack
@@ -123,6 +134,9 @@ MIN_STUB = 2 * TRACK_PITCH
 OUT_TO_WORDLINE = 2 * TRACK_PITCH
 #: Support cells at each row end: ``filler tap filler``, two CPP each.
 END_CPP = 2
+#: How far along a row a PMOS may stand from its well's tap: ACTIVE.LUP.1's reach,
+#: less a margin for its round corner across the row and the cells' own widths.
+WELL_TAP_REACH = LATCHUP_REACH - 1_000
 #: Space between pairs.  Their VSS rails are not shared: at the 162 nm shift
 #: between one pair's slots and the next one's, a filler's rail contact would
 #: land on a source stub of the other row (V0.M1.AUX.3).  Two fin pitches
@@ -139,6 +153,20 @@ SEGMENT_END = HALF + V3_M4_ENCLOSURE
 #: are made to run alongside instead, for `M3_RUN`.
 M3_CORNER = 20
 M3_RUN = 2 * HALF
+#: The lane's VDD strap top under the latch row's lowest M3: M3.S.6's corner
+#: and two short edges' 31 nm, with room.
+LATCH_STRAP_CLEAR = 40
+#: The latch row's VSS strap from the lane's VDD strap, centre to centre, where
+#: they run side by side: well past M3.S.6, and a whole column from touching.
+LATCH_STRAP_SPACE = 54
+#: The latch row's bottom rail over the lane's top one: a gate cut (44 nm)
+#: and GCUT.S.3's 35 nm, on the fin grid.
+LATCH_RAIL_CLEAR = 3 * FIN_PITCH
+#: The latch channel's first track centre over the latch row's top edge: the
+#: output columns' tops (17 nm under it) and the join columns' ends clear.
+LATCH_CHANNEL_CLEAR = 34
+#: The decoder's bottom edge over the channel's last track centre.
+LATCH_CHANNEL_TOP = 60
 #: The last join column stands this far left of the first wordline slot.
 JOIN_MARGIN = 27
 
@@ -315,6 +343,21 @@ class _SlotSpec:
             cpp += 1
 
 
+#: The read path's parts and the parts each stands on, top of the read
+#: first: a part turns on what it needs, so one option names a macro.
+#: ``predecode`` and ``lane`` are on by default; turning one off is a choice,
+#: and a part that needs it says so instead.
+_NEEDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("flow_through", ("control",)),
+    ("edge_pins", ("control",)),
+    ("control", ("enable", "latch", "sample")),
+    ("register", ("sample",)),
+    ("keeper", ("sample",)),
+    ("latch", ("sense",)),
+    ("sample", ("sense",)),
+)
+
+
 @dataclass(frozen=True)
 class RomDecoderSpec:
     """The post-decode AND gates and wordline drivers for `array`.
@@ -352,6 +395,56 @@ class RomDecoderSpec:
         predecoder_placement: optional explicit placement from the ROM search.
             PA gates must remain in their wordline pair; every column must
             contain both rows. None uses the original greedy placement.
+        enable: gate the wordlines with an ``EVAL`` pin: the predecoders
+            AND the top address bit's literals with it, so no wordline rises
+            while it is low (`chipforge_asap7.devices.rom_predecoder.network`).
+        latch: latch the address on ``PRECHN``: a row of static latches in
+            the gap over the lane (`chipforge_asap7.devices.rom_latch`),
+            transparent while it is low.  The pins ``A<i>`` move to the
+            latches' inputs and the decoder's lines become ``AL<i>``; each
+            latch's output reaches its line's join column on M4, in a
+            channel over the latches.  Turns on the sense lane, whose
+            ``PRECHN`` column the latches share; the gap grows to fit.
+        sense: fill the lane beside the array with read leaves, one per bit,
+            and route both halves' bitlines to them
+            (`chipforge_asap7.devices.rom_lane`).  Needs the lane; the right
+            half moves out if the leaves need more room than the predecoders.
+        sample: put a sample latch beside each read leaf, transparent while
+            the ``SAMPLE`` pin is high, with each bit's output on ``Q<b>``
+            (`chipforge_asap7.devices.rom_sense`).  Turns on the sense
+            lane, whose rows grow to fit.
+        register: make ``Q`` a rising-edge register output: a register
+            latch after each sample latch, open while ``SAMPLE`` is low, so
+            that ``Q<b>`` takes the word as ``SAMPLE`` falls and holds it
+            for a cycle.  With ``control`` that is just after ``CLK`` rises,
+            one cycle after the address was latched.  Turns on sample.
+        keeper: hold each bitline up once its leaf has read 0, with two
+            pFETs in series from VDD, gated by the leaf's output and
+            ``SAMPLEB`` (`chipforge_asap7.devices.rom_sense`).  It is off
+            while the bitlines evaluate and holds them from ``SAMPLE`` rising
+            until ``CLK`` rises.  Without it a line that nothing discharges
+            droops while ``CLK`` is low, which limits how long ``CLK`` may
+            stay low.  Costs three columns per bit.  Turns on sample.
+        control: time each read itself from ``CLK`` and ``RESETN``: the
+            controller (`chipforge_asap7.devices.rom_control`) stands at the
+            end of the address-latch row and drives ``PRECHN``, ``EVAL`` and
+            ``SAMPLE``, and a replica bit, one more bit row programmed in
+            every word (`cells`), tells it when a read is done.  Turns on
+            enable, latch and sample, and through them sense.
+        flow_through: read on ``CLK``'s rising edge instead of while it is
+            low.  The edge closes the address latches and starts a read that
+            ends itself from the replica, the bitlines precharge in between,
+            and ``Q`` follows the sample latches, holding each word until
+            the next read's arrives (`chipforge_asap7.devices.rom_control`).
+            Turns on control, and with it the whole read path; the register
+            and keepers have no part in it.
+        done_delay: with flow_through, the inverters that hold the sample
+            latches open once the replica has read.  Odd; 15 reads at every
+            corner up to 1024x148 (`RomControlSpec`).
+        edge_pins: carry the interface to M5 columns reaching the macro's bottom
+            edge, labelled there, as a placed block needs
+            (`chipforge_asap7.devices.rom_pins`).  The bus pins become
+            ``A[i]`` and ``Q[b]``, the B-ROM's names.  Turns on control.
     """
 
     array: RomArraySpec = field(default_factory=RomArraySpec)
@@ -370,8 +463,23 @@ class RomDecoderSpec:
     predecoder_nand_fingers: int = 2
     predecoder_driver_fingers: int = 2
     predecoder_placement: tuple[Placement, ...] | None = field(default=None, repr=False)
+    enable: bool = False
+    latch: bool = False
+    sense: bool = False
+    sample: bool = False
+    register: bool = False
+    keeper: bool = False
+    control: bool = False
+    control_fingers: int = 4
+    flow_through: bool = False
+    done_delay: int = 15
+    edge_pins: bool = False
 
     def __post_init__(self) -> None:
+        for part, needs in _NEEDS:
+            if getattr(self, part):
+                for need in needs:
+                    object.__setattr__(self, need, True)
         k = self.interleave
         if isinstance(k, bool) or not isinstance(k, int):
             raise TypeError(f"interleave must be an integer, got {k!r}")
@@ -394,6 +502,25 @@ class RomDecoderSpec:
                 f"so that each half has a slot in every row; got {words} "
                 "(lane=False puts every word on one side)"
             )
+        if self.enable and not self.predecode:
+            raise ValueError(
+                "the EVAL gate is in the predecoders: enable needs predecode"
+            )
+        if self.sense and not self.lane:
+            raise ValueError(
+                "the sense leaves stand in the center lane: sense needs lane"
+            )
+        if self.flow_through and (self.register or self.keeper):
+            raise ValueError(
+                "a flow-through read holds Q in the sample latches and precharges "
+                "the bitlines between reads: it takes no register and no keeper"
+            )
+        if self.latch and not self.predecode:
+            raise ValueError(
+                "the address latches feed the predecoders: latch needs predecode"
+            )
+        if self.latch and self.gap < self._latch_gap:
+            object.__setattr__(self, "gap", self._latch_gap)
         if self.nand.stack.rails != self.inverter.stack.rails:
             raise ValueError(
                 f"rows {self.rows} give the NAND and the driver different rails"
@@ -426,10 +553,25 @@ class RomDecoderSpec:
                 self, "predecoder_placement", tuple(self.predecoder_placement)
             )
             validate_placement(
-                network(self.address_bits, self.pa_bits, self.row_bits),
+                network(
+                    self.address_bits,
+                    self.pa_bits,
+                    self.row_bits,
+                    self.enable_line,
+                    address=self.address_line,
+                ),
                 self.interleave,
                 self.predecoder_placement,
             )
+        if self.half.width > WELL_TAP_REACH:  # no shorter row can be too long
+            longest = max(b - a for a, b in pairwise(self.well_taps))
+            if longest > 2 * WELL_TAP_REACH:
+                raise ValueError(
+                    f"a {self.array.words}-word decoder has {longest} nm of row between "
+                    f"N-well taps, which leaves PMOS further than {LATCHUP_REACH} nm "
+                    "from a tap (ACTIVE.LUP.1)"
+                    + ("" if self.lane else "; the lane would add one")
+                )
 
     # ── Address ───────────────────────────────────────────────────────────────
     @cached_property
@@ -630,7 +772,7 @@ class RomDecoderSpec:
     @cached_property
     def y0(self) -> int:
         """Bottom edge of the decoder, in array coordinates."""
-        return self.array.height + self.gap
+        return self.cells.height + self.gap
 
     @cached_property
     def height(self) -> int:
@@ -740,8 +882,24 @@ class RomDecoderSpec:
             return []
         if self.predecoder_placement is not None:
             return list(self.predecoder_placement)
-        gates = network(self.address_bits, self.pa_bits, self.row_bits)
+        gates = network(
+            self.address_bits,
+            self.pa_bits,
+            self.row_bits,
+            self.enable_line,
+            address=self.address_line,
+        )
         return place_gates(gates, self.interleave)
+
+    @property
+    def address_line(self) -> str:
+        """The decoder's address lines: ``A`` from the pins, ``AL`` from the latches."""
+        return "AL" if self.latch else "A"
+
+    @property
+    def enable_line(self) -> str | None:
+        """The wordline enable's line, ``EVAL``, or None without one."""
+        return "EVAL" if self.enable else None
 
     @cached_property
     def pre_columns(self) -> int:
@@ -788,8 +946,13 @@ class RomDecoderSpec:
             right = {line for w in range(n, words) for line in self.lines(w)}
             left_only = {line for w in range(n) for line in self.lines(w)} - right
         spans: tuple[list[tuple[int, int, str]], ...] = ([], [])
+        latched = set(self.channel_lines)
         for line, pairs in self.presence.items():
-            if len(pairs) > 1:
+            if line in latched:
+                # Its column runs on down to the latch channel, so nothing
+                # may share it below.
+                spans[1].append((0, max(pairs), line))
+            elif len(pairs) > 1:
                 spans[line not in left_only].append((min(pairs), max(pairs), line))
         groups = []
         for group in spans:
@@ -853,8 +1016,42 @@ class RomDecoderSpec:
     def half(self) -> RomArraySpec:
         """The array on each side of the lane, or without it the whole array."""
         if not self.lane:
-            return self.array
-        return replace(self.array, words=self.array.words // 2)
+            return self.cells
+        return replace(self.cells, words=self.cells.words // 2)
+
+    @cached_property
+    def cells(self) -> RomArraySpec:
+        """The array as drawn: `array`, with ``control`` its replica bit on top.
+
+        Its strap rows are as close as `array` says or closer: the lane's rows
+        are taller than a few bits, and a narrow array whose lane has too few
+        tracks gets the height for another row from more straps.
+        """
+        cells = (
+            replace(self.array, bits=self.array.bits + 1)
+            if self.control
+            else self.array
+        )
+        if not self.lane or not self.sense:
+            return cells
+        every = cells.strap_every
+        while every >= 1:
+            try:
+                candidate = replace(cells, strap_every=every)
+                half = replace(candidate, words=candidate.words // 2)
+                self._lane_of(half).plan  # noqa: B018
+            except ValueError:
+                every //= 2
+            else:
+                return candidate
+        return cells
+
+    @property
+    def replica_bit(self) -> int:
+        """The replica's bit row, over the data bits."""
+        if not self.control:
+            raise ValueError("this ROM has no replica bit (control=False)")
+        return self.array.bits
 
     @cached_property
     def half_xs(self) -> tuple[int, ...]:
@@ -862,20 +1059,335 @@ class RomDecoderSpec:
         return (0, self.right_x) if self.lane else (0,)
 
     @cached_property
-    def right_x(self) -> int:
-        """X of the right half: the first whole tile whose slots clear the lane.
-
-        A whole tile keeps the right half's slots the left half's, shifted.
-        """
-        if not self.lane:
-            raise ValueError("only a ROM with the lane has a right half")
+    def _lane_end(self) -> int:
+        """X the lane's predecoders and right join columns need, tap aside."""
         end = self.pre_x(self.pre_columns) + END_CPP * GATE_PITCH
         right = self._join_groups[1]
         if right:
             first = self.pre_x(self.pre_columns) + TRACK_PITCH
             end = max(end, first + max(right.values()) * TRACK_PITCH + JOIN_MARGIN)
+        return end
+
+    def _right_x_past(self, end: int) -> int:
+        """The first whole tile's x whose slots clear `end` and the lane's rows.
+
+        A whole tile keeps the right half's slots the left half's, shifted.
+        """
         tile = self.half.bitcell.width
-        return -(-(end - self.side_span(0)[0]) // tile) * tile
+        right = -(-(end - self.side_span(0)[0]) // tile) * tile
+        if self.sense:
+            right = max(right, self._lane().min_right_x)
+        if self.latch:
+            # The right half's wordlines climb through the gap the latches sit in.
+            end = self.latch_ends[1] + GATE_PITCH
+            right = max(right, -(-end // tile) * tile)
+        return right
+
+    @cached_property
+    def lane_tap_x(self) -> int | None:
+        """X of the well tap in the lane, or ``None`` if the row ends reach it all.
+
+        A row's N-well has its taps at the row's two ends, which hold a PMOS to
+        30 um (ACTIVE.LUP.1).  A row too long for that gets a third tap just
+        past the predecoders, on the filler every row has there, about halfway
+        along.  The p-side needs nothing: the array's tap row runs under the
+        whole decoder.
+        """
+        if not self.lane:
+            return None
+        lo, hi = self._left_slot_span
+        span = self._right_x_past(self._lane_end) + hi - lo + 2 * END_CPP * GATE_PITCH
+        if span <= 2 * WELL_TAP_REACH:
+            return None
+        return self.pre_x(self.pre_columns) + END_CPP * GATE_PITCH
+
+    @cached_property
+    def right_x(self) -> int:
+        """X of the right half: the first whole tile whose slots clear the lane."""
+        if not self.lane:
+            raise ValueError("only a ROM with the lane has a right half")
+        end = self._lane_end
+        if self.lane_tap_x is not None:
+            # The tap and the filler after it, before the right half's slots.
+            end = max(end, self.lane_tap_x + 2 * END_CPP * GATE_PITCH)
+        return self._right_x_past(end)
+
+    @cached_property
+    def well_taps(self) -> tuple[int, ...]:
+        """X of the N-well taps along every row, left to right."""
+        left = self.rows_span[0] + END_CPP * GATE_PITCH
+        lane = () if self.lane_tap_x is None else (self.lane_tap_x,)
+        return (left, *lane, self.slots_span[1])
+
+    @cached_property
+    def vdd_stripe_y(self) -> int:
+        """Y of the M4 stripe that joins the sense lane's VDD to the decoder's."""
+        top = self.cells.height
+        y = top + (M4_TRACK_OFFSET - top) % M4_PITCH
+        lowest = min(y for y, _, _ in self.segments.values())
+        if lowest - y < M4_PITCH:
+            raise ValueError(
+                f"the {self.gap} nm gap leaves no M4 track for the lane's VDD stripe"
+            )
+        return y
+
+    # ── Address latches ──────────────────────────────────────────────────────
+    @property
+    def latch_row(self) -> RomAddressLatchRowSpec:
+        return RomAddressLatchRowSpec(latches=self.address_bits)
+
+    @property
+    def latch_y(self) -> int:
+        """Y of the latch row: on the array's top edge, a rail clear of the lane's rows.
+
+        Clear means the two rails' gate cuts 35 nm apart (GCUT.S.3).
+        """
+        lane = self._lane().height
+        if self.cells.height - lane >= LATCH_RAIL_CLEAR:
+            y = self.cells.height
+        else:
+            y = lane + LATCH_RAIL_CLEAR
+            if 0 < y - self.cells.height < TOP_CLEAR:
+                # Just off the VSS bar: its strap pad must clear the bar's M2.
+                y = -(-(self.cells.height + TOP_CLEAR) // FIN_PITCH) * FIN_PITCH
+        if self.latch_ends[1] > self._lane().strap_xs["VSS"] - GATE_PITCH:
+            # The row stands over the lane's VDD strap, which climbs to the
+            # VDD stripe: its lowest M3 clears the strap's top.
+            top = self.cells.height
+            stripe = top + (M4_TRACK_OFFSET - top) % M4_PITCH
+            need = (
+                stripe + V3_CAP + LATCH_STRAP_CLEAR - self.latch_row.levels["n"] + PAD
+            )
+            if need > y:
+                # Off the VSS bar, its VSS rail's strap pad clears the bar's M2.
+                need = max(need, top + TOP_CLEAR)
+                y = -(-need // FIN_PITCH) * FIN_PITCH
+        return y
+
+    @property
+    def channel_lines(self) -> tuple[str, ...]:
+        """The decoder lines a channel track brings in from below: each
+        latch's ``AL<i>``, and with ``control`` the controller's ``EVAL``."""
+        if not self.latch:
+            return ()
+        lines = tuple(f"AL<{i}>" for i in range(self.address_bits))
+        return (*lines, "EVAL") if self.control else lines
+
+    @property
+    def channel_nets(self) -> tuple[str, ...]:
+        """Every net on the channel: the lines, and with ``control`` the
+        controller's ``SAMPLE`` and ``READY``, which stay under them."""
+        under = ("SAMPLE", "READY") if self.control else ()
+        return (*under, *self.channel_lines)
+
+    def _channel_tracks(self) -> list[int]:
+        """Every other M4 track over the latch row, one per channel net."""
+        y = self.latch_y + self.latch_row.height + LATCH_CHANNEL_CLEAR
+        first = y + (M4_TRACK_OFFSET - y) % M4_PITCH
+        return [first + 2 * M4_PITCH * i for i in range(len(self.channel_nets))]
+
+    def control_pin_x(self, net: str) -> int:
+        """X of a controller pin or output column, in macro coordinates."""
+        cs = self.control_row
+        if net in ("CLK", "RESETN", "READY"):
+            return self.control_x + cs.pin_x(net)
+        gate = next(g for g in cs.gates if g.out == net)
+        return self.control_x + cs.out_x(gate)
+
+    @property
+    def port_names(self) -> dict[str, str]:
+        """Each bus net's name as a pin, where that is not the net's own."""
+        if not self.edge_pins:
+            return {}
+        return {
+            **{f"A<{i}>": f"A[{i}]" for i in range(self.address_bits)},
+            **{f"Q<{b}>": f"Q[{b}]" for b in range(self.array.bits)},
+        }
+
+    @property
+    def interface_points(self) -> dict[str, tuple[float, float]]:
+        """Where each signal pin meets its M3, in macro coordinates."""
+        rs, lane = self.latch_row, self.sense_lane
+        top = self.latch_y + rs.height - M3_EDGE_LATCH
+        names = self.port_names
+        return {
+            **{names[f"Q<{b}>"]: lane.q_pin(b) for b in range(self.array.bits)},
+            **{
+                names[f"A<{i}>"]: (
+                    self.latch_x + rs.d_x(i),
+                    self.latch_y + rs.levels["X"],
+                )
+                for i in range(self.address_bits)
+            },
+            **{pin: (self.control_pin_x(pin), top - 9) for pin in ("CLK", "RESETN")},
+        }
+
+    @property
+    def vss_strap_points(self) -> list[tuple[int, int]]:
+        """A point on each M3 VSS strap: the decoder's two, the lane's and the
+        latch row's."""
+        rails = [y for y, net in self.supply_rails if net == "VSS"]
+        rows = (min(rails) + max(rails)) // 2
+        return [
+            *((x, rows) for x in self.strap_xs["VSS"]),
+            (self.sense_lane.strap_xs["VSS"], self.sense_lane.height // 2),
+            (self.latch_strap_xs["VSS"], self.latch_y + self.latch_row.height // 2),
+        ]
+
+    @property
+    def vdd_strap_xs(self) -> list[int]:
+        """Each M3 VDD strap that lands on the M4 stripe."""
+        return [
+            *self.strap_xs["VDD"],
+            self.sense_lane.strap_xs["VDD"],
+            self.latch_strap_xs["VDD"],
+        ]
+
+    @property
+    def _latch_gap(self) -> int:
+        """The gap the latch row and its channel need, on the fin grid."""
+        need = self._channel_tracks()[-1] + LATCH_CHANNEL_TOP - self.cells.height
+        return -(-need // FIN_PITCH) * FIN_PITCH
+
+    @property
+    def latch_x(self) -> int:
+        """X of the latch row's cell: its PRECHN column on the lane's."""
+        return self._lane().prechn_x - self.latch_row.prechn_x
+
+    @property
+    def control_row(self) -> RomControlSpec:
+        rs = self.latch_row
+        return RomControlSpec(
+            fingers=self.control_fingers,
+            edge=self.flow_through,
+            done_delay=self.done_delay,
+            n_fins=rs.n_fins,
+            p_fins=rs.p_fins,
+            band_height=rs.band_height,
+            vt=rs.vt,
+        )
+
+    @property
+    def control_x(self) -> int:
+        """X of the controller's cell: abutting the latch row's right edge."""
+        return self.latch_x + self.latch_row.width
+
+    @property
+    def _latch_cells_width(self) -> int:
+        return self.latch_row.width + (self.control_row.width if self.control else 0)
+
+    @cached_property
+    def latch_tap_shift(self) -> int:
+        """Columns added before the latch row's tap to clear the lane's VDD strap.
+
+        That strap climbs past the array's top edge to the VDD stripe, and the
+        latch row's VSS strap comes down to the same edge, so the two run side
+        by side wherever their x are close.  Moving the row's tap and last
+        filler moves its straps.
+        """
+        vss = (
+            self.latch_x
+            + self._latch_cells_width
+            + 2 * END_CPP * GATE_PITCH
+            + TRACK_PITCH
+        )
+        vdd = self._lane().strap_xs["VDD"]
+        shift = 0
+        while abs(vss + shift * GATE_PITCH - vdd) < LATCH_STRAP_SPACE:
+            shift += 1
+        return shift
+
+    @property
+    def latch_ends(self) -> tuple[int, int]:
+        """X span of the latch row with its row ends: filler, cell(s), filler, tap, filler."""
+        x0 = self.latch_x - END_CPP * GATE_PITCH
+        fill = 3 * END_CPP + self.latch_tap_shift
+        return x0, self.latch_x + self._latch_cells_width + fill * GATE_PITCH
+
+    @property
+    def latch_strap_xs(self) -> dict[str, int]:
+        f = self.latch_ends[1] - END_CPP * GATE_PITCH
+        return {"VSS": f + TRACK_PITCH, "VDD": f + 2 * TRACK_PITCH}
+
+    def q_x(self, bit: int) -> int:
+        return self.latch_x + self.latch_row.q_x(bit)
+
+    def channel_source_x(self, line: str) -> int:
+        """X of the column a channel line climbs from: its latch's output, or
+        the controller's ``EVAL``."""
+        if line == "EVAL":
+            return self.control_pin_x("EVAL")
+        return self.q_x(int(line[3:-1]))
+
+    def join_bottom(self, line: str) -> int:
+        """Bottom of `line`'s join column as the decoder draws it."""
+        return min(self.rail_y(pair, line) for pair in self.presence[line]) - V3_CAP
+
+    @cached_property
+    def latch_tracks(self) -> dict[str, int]:
+        """The channel track of each channel net, by name.
+
+        A latch's output column climbs to its track and the line's join column
+        comes down to it.  Where one bit's output column stands within a gate
+        pitch of another bit's join column, the output's track has to be the
+        lower one, or the two M3 ends would meet.
+        """
+        bits = self.channel_lines
+        joins = {b: self.joins[b] for b in bits}
+        source = {b: self.channel_source_x(b) for b in bits}
+        below = {b: set() for b in bits}  # b's track is below each of these
+        for b in bits:
+            for o in bits:
+                if o != b and abs(source[b] - joins[o]) < GATE_PITCH:
+                    below[b].add(o)
+        order, placed = [], set()
+        while len(order) < len(bits):
+            ready = [
+                b
+                for b in bits
+                if b not in placed
+                and not any(b in below[o] for o in bits if o not in placed and o != b)
+            ]
+            if not ready:
+                raise ValueError("the latch outputs and join columns cannot be ordered")
+            b = min(ready, key=lambda b: abs(source[b] - joins[b]))
+            order.append(b)
+            placed.add(b)
+        tracks = self._channel_tracks()
+        under = len(self.channel_nets) - len(bits)
+        result = {b: tracks[i] for i, b in enumerate(self.channel_nets[:under])}
+        result.update({b: tracks[under + i] for i, b in enumerate(order)})
+        lowest = min(y for y, _, _ in self.segments.values())
+        if lowest - max(tracks) < M4_PITCH:
+            raise ValueError("the latch channel runs into the decoder's M4")
+        return result
+
+    @property
+    def channel_track_y(self) -> dict[str, int]:
+        """The channel track of every channel net."""
+        return self.latch_tracks
+
+    @cached_property
+    def sense_lane(self) -> RomLaneSpec:
+        """The read leaves and bitline routes in the lane beside the array."""
+        if not self.sense:
+            raise ValueError("this ROM has no sense lane (sense=False)")
+        return self._lane(right_x=self.right_x)
+
+    def _lane(self, right_x: int | None = None) -> RomLaneSpec:
+        """The sense lane, at `right_x` or at its narrowest."""
+        return self._lane_of(self.half, right_x)
+
+    def _lane_of(self, half: RomArraySpec, right_x: int | None = None) -> RomLaneSpec:
+        return RomLaneSpec(
+            half,
+            right_x=right_x,
+            sample=self.sample,
+            register=self.register,
+            keeper=self.keeper,
+            replica=self.control,
+            q_labels=not self.edge_pins,
+        )
 
     def wordline_x(self, word: int) -> int:
         """X of `word`'s M3 wordline, in either half."""
@@ -923,7 +1435,8 @@ class RomDecoderSpec:
         """X spans of `row` between its slots, predecoders and row ends.
 
         Rows are padded to `slots_span`; with the lane each half's slots end
-        in filler up to the predecoders, which covers the join columns.
+        in filler up to the predecoders, which covers the join columns.  The
+        filler leaves room for `lane_tap_x`'s tap.
         """
         k, sw = self.interleave, self.slot_width
         xs = [self.slot_x(w) for w in range(row, self.array.words, k)]
@@ -932,10 +1445,17 @@ class RomDecoderSpec:
             spans = [(self.join_x0, xs[0]), (xs[-1] + sw, hi)]
         else:
             m = self.half.words // k
+            lane = [(self.pre_x(self.pre_columns), xs[m])]
+            if self.lane_tap_x is not None:
+                tap = self.lane_tap_x
+                lane = [
+                    (self.pre_x(self.pre_columns), tap),
+                    (tap + END_CPP * GATE_PITCH, xs[m]),
+                ]
             spans = [
                 (lo, xs[0]),
                 (xs[m - 1] + sw, self.pre_x(0)),
-                (self.pre_x(self.pre_columns), xs[m]),
+                *lane,
                 (xs[-1] + sw, hi),
             ]
         return [(x0, x1) for x0, x1 in spans if x1 > x0]
@@ -1016,6 +1536,11 @@ class RomDecoderSpec:
         return y0 + local if row % 2 == 0 else y0 + self.row_height - local
 
     @property
+    def macro_name(self) -> str:
+        """``build_rom``'s default name: this shape's, whatever its contents."""
+        return f"rom_{self.cell_name.removeprefix('rom_decoder_')}"
+
+    @property
     def cell_name(self) -> str:
         tag = ""
         identity = (
@@ -1037,7 +1562,13 @@ class RomDecoderSpec:
         return (
             f"rom_decoder_{self.array.cell_name.removeprefix('rom_array_')}"
             f"_k{self.interleave}_a{self.pa_bits}{'' if self.predecode else '_np'}"
-            f"{'' if self.lane else '_edge'}{tag}"
+            f"{'' if self.lane else '_edge'}{'_e' if self.enable else ''}"
+            f"{'_l' if self.latch else ''}"
+            f"{'_s' if self.sense else ''}{'_q' if self.sample else ''}"
+            f"{'r' if self.register else ''}{'k' if self.keeper else ''}"
+            f"{f'_c{self.control_fingers}' if self.control else ''}"
+            f"{f'_ft{self.done_delay}' if self.flow_through else ''}"
+            f"{'_pins' if self.edge_pins else ''}{tag}"
         )
 
 
@@ -1284,12 +1815,14 @@ def build_rom_decoder(
             put(support, x_left + i * end_w)
         for i, support in enumerate(right):
             put(support, x_right + i * end_w)
+        if spec.lane_tap_x is not None:
+            put(left[1], spec.lane_tap_x)
 
         for w, x in zip(words, xs):
             # The wordline: from its V2 down to the array's top edge.
             y_v2 = spec.pin_y(row, "Y")
             x_wl = spec.wordline_x(w)
-            box(cell, "M3", x_wl - HALF, spec.array.height, x_wl + HALF, y_v2 + CAP)
+            box(cell, "M3", x_wl - HALF, spec.cells.height, x_wl + HALF, y_v2 + CAP)
             # A and B: M3 stubs up or down to a V3 on their rail.
             stubs = spec.stubs(w % 2)
             for pin, line in zip(("A", "B"), spec.lines(w)):
@@ -1337,7 +1870,7 @@ def build_rom_decoder(
         if line in spec.joins:
             x = spec.joins[line]
             box(cell, "V3", x - HALF, y - _HALF_M4, x + HALF, y + _HALF_M4)
-        if line[:2] in ("PA", "PB", "A<") and line not in labelled:
+        if (line[:2] in ("PA", "PB", "A<") or line == "EVAL") and line not in labelled:
             labelled.add(line)
             _label(cell, line, "M4", (x0 + V3_M4_ENCLOSURE, y))
     for line, x in spec.joins.items():
@@ -1362,7 +1895,7 @@ def _supply_grid(spec: RomDecoderSpec, cell: Any) -> None:
     `build_rom` ties them to the array.
     """
     rails = spec.supply_rails
-    top = spec.array.height
+    top = spec.cells.height
     for net, xs in spec.strap_xs.items():
         ys = [y for y, n in rails if n == net]
         y_lo = top if net == "VSS" else min(ys)
@@ -1381,7 +1914,7 @@ def _tie_array_vss(spec: RomDecoderSpec, cell: Any) -> None:
     A V1 lands it on each tile's VSS column, carried up past the edge for the
     via's end-cap; the decoder's bottom rail stays at least 31 nm clear above.
     """
-    top = spec.array.height
+    top = spec.cells.height
     vss = spec.strap_xs["VSS"]
     box(cell, "M2", min(vss) - PAD, top - HALF, max(vss) + PAD, top + HALF)
     for x in vss:
@@ -1415,8 +1948,10 @@ def build_rom(
                 f"programmed site {(word, bit)} is outside "
                 f"{spec.array.words} x {spec.array.bits}"
             )
+    if spec.control:
+        sites += [(w, spec.replica_bit) for w in range(spec.array.words)]
     decoder = build_rom_decoder(spec, lib=lib)
-    cell = _new_cell(lib, name or f"rom_{spec.cell_name.removeprefix('rom_decoder_')}")
+    cell = _new_cell(lib, name or spec.macro_name)
     if spec.lane:
         n, half = spec.half.words, spec.half
         for side, (x, label, edge) in enumerate(
@@ -1425,7 +1960,7 @@ def build_rom(
             array = build_rom_array(
                 half,
                 [(w - side * n, b) for w, b in sites if (w >= n) == side],
-                name=f"{spec.array.cell_name}_{('left', 'right')[side]}",
+                name=f"{cell.name}_{('left', 'right')[side]}",
                 lib=lib,
                 bitline=label,
                 bitline_side=edge,  # type: ignore[arg-type]
@@ -1433,10 +1968,173 @@ def build_rom(
             )
             cell.add(gdspy.CellReference(array, (x, 0)))
     else:
-        cell.add(gdspy.CellReference(build_rom_array(spec.array, sites, lib=lib)))
+        cell.add(gdspy.CellReference(build_rom_array(spec.cells, sites, lib=lib)))
     cell.add(gdspy.CellReference(decoder))
     _tie_array_vss(spec, cell)
+    if spec.sense:
+        lane = build_rom_lane(spec.sense_lane, top=spec.cells.height, lib=lib)
+        cell.add(gdspy.CellReference(lane))
+        _tie_lane_vdd(spec, cell)
+    if spec.latch:
+        _draw_address_latches(spec, cell, lib)
+    if spec.edge_pins:
+        from .rom_pins import draw_macro_pins
+
+        draw_macro_pins(spec, cell)
     return cell
+
+
+def _draw_address_latches(spec: RomDecoderSpec, cell: Any, lib: Any) -> None:
+    """The latch row in the gap, its supplies, PRECHN, and the M4 channel to the joins.
+
+    The row ends in ``filler tap filler`` like every other row, with an M3
+    VSS and VDD strap on its outer filler: VSS lands on the array's VSS bar,
+    VDD on the lane's VDD stripe.  ``PRECHN`` is the lane's column carried on
+    up.  Each latch output climbs on M3 to its channel track, the M4 runs to
+    the line's join column, and the join column comes down to meet it.
+    """
+    gdspy = require_gdspy()
+    rs = spec.latch_row
+    y = spec.latch_y
+    row = _shared(
+        lib,
+        rs.cell_name,
+        lambda: build_rom_address_latch_row(rs, lib=lib, draw_pin_labels=False),
+    )
+
+    def support(kind: str, cpp: int) -> Any:
+        s = RowSupportSpec(stack=rs.stack, kind=kind, width_cpp=cpp)  # type: ignore[arg-type]
+        return _shared(lib, s.cell_name, lambda: build_row_support(s, lib=lib))
+
+    x = spec.latch_ends[0]
+    fills = (
+        ("filler", END_CPP),
+        (row, 0),
+        ("filler", END_CPP + spec.latch_tap_shift),
+        ("tap", END_CPP),
+        ("filler", END_CPP),
+    )
+    for item, cpp in fills:
+        ref = support(item, cpp) if isinstance(item, str) else item
+        cell.add(gdspy.CellReference(ref, (x, y)))
+        x += rs.width if ref is row else cpp * GATE_PITCH
+        if ref is row and spec.control:
+            x += spec.control_row.width  # the controller's cell stands here
+
+    top = spec.cells.height
+    rail_vss, rail_vdd = y, y + rs.height
+    for net, xs in spec.latch_strap_xs.items():
+        rail = rail_vss if net == "VSS" else rail_vdd
+        lo = top - CAP if net == "VSS" else spec.vdd_stripe_y - V3_CAP
+        box(cell, "M3", xs - HALF, lo, xs + HALF, rail_vdd + CAP)
+        _square(cell, "V1", xs, rail)
+        box(cell, "M2", xs - PAD, rail - HALF, xs + PAD, rail + HALF)
+        _square(cell, "V2", xs, rail)
+        if net == "VSS":
+            _square(cell, "V2", xs, top)
+        else:
+            y_s = spec.vdd_stripe_y
+            box(cell, "V3", xs - HALF, y_s - _HALF_M4, xs + HALF, y_s + _HALF_M4)
+
+    x_pre = spec.sense_lane.prechn_x
+    box(cell, "M3", x_pre - HALF, spec.sense_lane.height, x_pre + HALF, y)
+
+    q_top = y + rs.height - M3_EDGE_LATCH
+    if spec.control:
+        _draw_controller(spec, cell, lib, q_top)
+    for line in spec.channel_lines:
+        track = spec.latch_tracks[line]
+        xq, xj = spec.channel_source_x(line), spec.joins[line]
+        box(cell, "M3", xq - HALF, q_top, xq + HALF, track + V3_CAP)
+        box(cell, "M3", xj - HALF, track - V3_CAP, xj + HALF, spec.join_bottom(line))
+        x0 = min(xq, xj) - SEGMENT_END
+        x1 = max(xq, xj) + SEGMENT_END
+        x0 -= x0 % SEGMENT_GRID
+        x1 += -x1 % SEGMENT_GRID
+        box(cell, "M4", x0, track - _HALF_M4, x1, track + _HALF_M4)
+        for xv in (xq, xj):
+            box(cell, "V3", xv - HALF, track - _HALF_M4, xv + HALF, track + _HALF_M4)
+    if not spec.edge_pins:
+        for bit in range(spec.address_bits):
+            _label(
+                cell,
+                f"A<{bit}>",
+                "M3",
+                (spec.latch_x + rs.d_x(bit), y + rs.levels["X"]),
+            )
+
+
+def _draw_controller(spec: RomDecoderSpec, cell: Any, lib: Any, top: int) -> None:
+    """The controller at the latch row's end, and its three routes.
+
+    ``PRECHN`` reaches the latch row's own track on M2.  ``SAMPLE`` climbs to
+    the channel's lowest track and comes down to the lane's ``SAMPLE`` column
+    through the latch row's column 1, which carries nothing on M3.
+    ``READY`` comes up from the replica on M5, over the latch row, to the
+    next track, and down to the controller's pin.
+    """
+    gdspy = require_gdspy()
+    rs, cs = spec.latch_row, spec.control_row
+    y = spec.latch_y
+    row = _shared(
+        lib,
+        cs.cell_name,
+        lambda: build_rom_control_row(cs, lib=lib, draw_pin_labels=False),
+    )
+    cell.add(gdspy.CellReference(row, (spec.control_x, y)))
+    y_pre = y + rs.levels["CKB"]
+    x_last = spec.latch_x + rs.gate_x(rs.latches - 1, 3)
+    box(cell, "M2", x_last, y_pre - HALF, spec.control_x + PAD, y_pre + HALF)
+    lane = spec.sense_lane
+    tracks = spec.channel_track_y
+    for net in ("SAMPLE", "READY"):
+        track = tracks[net]
+        xc = spec.control_pin_x(net)
+        x_far = lane.sample_x if net == "SAMPLE" else lane.ready_x
+        box(cell, "M3", xc - HALF, top, xc + HALF, track + V3_CAP)
+        box(cell, "V3", xc - HALF, track - _HALF_M4, xc + HALF, track + _HALF_M4)
+        cap = SEGMENT_END if net == "SAMPLE" else V4_CAP
+        x0 = min(xc - SEGMENT_END, x_far - cap)
+        x1 = max(xc + SEGMENT_END, x_far + cap)
+        x0 -= x0 % SEGMENT_GRID
+        x1 += -x1 % SEGMENT_GRID
+        box(cell, "M4", x0, track - _HALF_M4, x1, track + _HALF_M4)
+        if net == "SAMPLE":
+            box(cell, "V3", x_far - HALF, track - _HALF_M4, x_far + HALF,
+                track + _HALF_M4)  # fmt: skip
+            box(cell, "M3", x_far - HALF, lane.height, x_far + HALF, track + V3_CAP)
+        else:
+            h5 = M5_WIDTH // 2
+            box(cell, "V4", x_far - h5, track - h5, x_far + h5, track + h5)
+            box(cell, "M5", x_far - h5, lane.height, x_far + h5, track + V4_CAP)
+    for pin in ("CLK", "RESETN"):
+        _label(cell, pin, "M3", (spec.control_pin_x(pin), top - 9))
+
+
+def _tie_lane_vdd(spec: RomDecoderSpec, cell: Any) -> None:
+    """An M4 VDD stripe in the gap over the array, from VDD strap to VDD strap.
+
+    The decoder's VDD straps come down to it, and so does the sense lane's;
+    a V3 joins each.  It is the first M4 track over the array's top edge,
+    under the VSS bar's M2, and its ends stand on the decoder's segment grid
+    so that its tips meet the bottom pair's rails aligned or a grid apart
+    (M4.S.4).
+    """
+    y = spec.vdd_stripe_y
+    xs = [*spec.strap_xs["VDD"], spec.sense_lane.strap_xs["VDD"]]
+    x0 = min(xs) - SEGMENT_END
+    x1 = max(xs) + SEGMENT_END
+    x0 -= x0 % SEGMENT_GRID
+    x1 += -x1 % SEGMENT_GRID
+    box(cell, "M4", x0, y - _HALF_M4, x1, y + _HALF_M4)
+    for x in xs:
+        box(cell, "V3", x - HALF, y - _HALF_M4, x + HALF, y + _HALF_M4)
+    # The decoder's VDD straps start at its first VDD rail.
+    first = min(y_rail for y_rail, net in spec.supply_rails if net == "VDD")
+    for x in spec.strap_xs["VDD"]:
+        box(cell, "M3", x - HALF, y - V3_CAP, x + HALF, first)
+    x = spec.sense_lane.strap_xs["VDD"]
+    box(cell, "M3", x - HALF, spec.sense_lane.height, x + HALF, y + V3_CAP)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1506,17 +2204,117 @@ def main(argv: list[str] | None = None) -> None:
                 None,
                 "JSON search report; defaults to the GDS path with .search.json.",
             ),
+            Option(
+                "cdl",
+                Path | None,
+                None,
+                "Also write the macro's flat CDL netlist here.",
+            ),
+            Option(
+                "views",
+                Path | None,
+                None,
+                "Also write the macro's LEF, Verilog and Liberty to "
+                "this directory; turns on --edge_pins.",
+            ),
+            Option(
+                "words",
+                Path | None,
+                None,
+                "JSON array of unsigned word values to program; replaces --pattern. "
+                "A 1 is a programmed bit, and reads back as 1.",
+            ),
+            Option(
+                "package",
+                Path | None,
+                None,
+                "Write the whole macro to this directory: GDS, CDL, views, the "
+                "stable-named abstract and manifest.json; turns on --edge_pins "
+                "and replaces --out, --cdl and --views.",
+            ),
+            Option("drc", bool, False, "Run gdscheck on the packaged macro."),
+            Option("lvs", bool, False, "Run LVS of the packaged macro on its CDL."),
+            Option(
+                "characterize",
+                Path | None,
+                None,
+                "Simulate the read and write a timing report here instead of "
+                "a macro; its working files go beside it.  Needs --flow-through "
+                "or --register; turns on --edge_pins.",
+            ),
+            Option(
+                "corners",
+                tuple[Literal["typical", "fast", "slow"], ...],
+                ("typical", "fast", "slow"),
+                "The corners --characterize measures.",
+            ),
+            Option("jobs", int, 6, "Simulations --characterize runs at a time."),
+            Option(
+                "resolution",
+                float,
+                10.0,
+                "How closely --characterize brackets each limit, in ps.",
+            ),
+            Option(
+                "osdi",
+                Path | None,
+                None,
+                "BSIM-CMG's OSDI library for --characterize; compiled beside the "
+                "report if absent.",
+            ),
+            Option(
+                "timing",
+                Path | None,
+                None,
+                "A report from --characterize: --package and --views take each "
+                "measured corner's Liberty from it.",
+            ),
         ),
     )
     spec: RomDecoderSpec = args.spec
+    if any(path is not None for path in (args.views, args.package, args.characterize)):
+        # A macro that is placed or simulated has its pins at its edge.
+        spec = replace(spec, edge_pins=True)
     sizing = None
     search = None
+    sites: list[tuple[int, int]] | None = None
     size_options = (
         {"wl_load_fF": args.wl_load_ff, "stage_effort": args.stage_effort}
         if args.auto_size or args.wl_load_ff is not None
         else None
     )
     try:
+        if args.characterize is not None:
+            import json
+
+            from .rom_timing import characterize, default_osdi
+
+            if not (spec.register or spec.flow_through):
+                raise ValueError("--characterize needs --flow-through or --register")
+            work = args.characterize.with_suffix(".work")
+            osdi = args.osdi or default_osdi(work / "model")
+            report = characterize(
+                spec,
+                args.corners,
+                osdi,
+                work,
+                jobs=args.jobs,
+                resolution=args.resolution,
+            )
+            args.characterize.parent.mkdir(parents=True, exist_ok=True)
+            args.characterize.write_text(json.dumps(report, indent=2) + "\n")
+            print(f"✓ {spec.macro_name} -> {args.characterize}")
+            if report["failed"]:
+                reasons = "; ".join(f"{c}: {r}" for c, r in report["failed"].items())
+                raise SystemExit(f"error: corners failed: {reasons}")
+            return
+        if args.timing is not None and args.package is None and args.views is None:
+            raise ValueError("--timing is for --package or --views")
+        if args.package is None and (args.drc or args.lvs):
+            raise ValueError("--drc and --lvs check a macro written by --package")
+        if args.package is not None:
+            if args.out is not None or args.cdl is not None or args.views is not None:
+                raise ValueError("--package replaces --out, --cdl and --views")
         if args.search or args.pack:
             from .rom_search import (
                 RomShapeSearch,
@@ -1560,27 +2358,60 @@ def main(argv: list[str] | None = None) -> None:
 
             sizing = size_rom_decoder(spec, **size_options)
             spec = sizing.spec
-    except ValueError as exc:
+        if args.words is not None:
+            import json
+
+            from .rom_package import sites_from_words
+
+            sites = sites_from_words(json.loads(args.words.read_text()), spec)
+    except (OSError, TypeError, ValueError) as exc:
         import sys
 
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     array = spec.array
     every = [(w, b) for w in range(array.words) for b in range(array.bits)]
-    sites = {
-        "none": [],
-        "all": every,
-        "checker": [(w, b) for w, b in every if (w + b) % 2],
-    }[args.pattern]
-    cell, out = write_gds(lambda lib: build_rom(spec, sites, lib=lib), args.out)
-    print(f"✓ {cell.name} -> {out}")
+    if sites is None:
+        sites = {
+            "none": [],
+            "all": every,
+            "checker": [(w, b) for w, b in every if (w + b) % 2],
+        }[args.pattern]
+    failed = False
+    if args.package is not None:
+        from .rom_package import rom_image_name, write_rom_package
+
+        failed = write_rom_package(
+            spec, sites, args.package, drc=args.drc, lvs=args.lvs, timing=args.timing
+        )
+        top_name, out = rom_image_name(spec, sites), args.package / "macro.gds"
+        print(f"✓ {top_name} -> {args.package / 'manifest.json'}")
+    else:
+        cell, out = write_gds(lambda lib: build_rom(spec, sites, lib=lib), args.out)
+        top_name = cell.name
+        print(f"✓ {top_name} -> {out}")
+    if args.cdl is not None:
+        from .rom_netlist import rom_macro_cdl, rom_macro_ports
+
+        args.cdl.parent.mkdir(parents=True, exist_ok=True)
+        args.cdl.write_text(rom_macro_cdl(spec, sites, name=top_name))
+        print(f"  CDL -> {args.cdl}: pins {' '.join(rom_macro_ports(spec))}")
+    if args.views is not None:
+        from .rom_timing import load_report
+        from .rom_views import rom_macro_views
+
+        args.views.mkdir(parents=True, exist_ok=True)
+        measured = load_report(args.timing, spec) if args.timing else None
+        for filename, text in rom_macro_views(spec, sites, cell, measured).items():
+            (args.views / filename).write_text(text)
+            print(f"  view -> {args.views / filename}")
     if search is not None:
         import json
 
         report_path = args.search_report or out.with_suffix(".search.json")
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report = search.report()
-        report["gds"] = {"path": str(out), "cell": cell.name}
+        report["gds"] = {"path": str(out), "cell": top_name}
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         print(
             f"  search: {len(search.candidates)} feasible shapes, {len(search.rejected)} rejected; "
@@ -1606,6 +2437,8 @@ def main(argv: list[str] | None = None) -> None:
             f"0..{spec.half.words - 1} | {spec.half.words}..{array.words - 1}; "
             f"bitlines BLL<b> | BLR<b>"
         )
+    if failed:
+        raise SystemExit("ROM physical checks failed; see manifest.json and reports")
 
 
 if __name__ == "__main__":  # pragma: no cover

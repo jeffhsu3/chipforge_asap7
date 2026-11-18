@@ -9,12 +9,18 @@ from ..layout.layers import require_gdspy
 from .dense_bank_router import BOTTOM, route_bank, route_header
 from .dense_cell import cell_routes, wall_gap
 from .dense_place import TAP_PERIOD, TAP_SEGMENT, anchored_rows, unit_gap
+from .dense_slices import banded_rows, sliced_rows
 from .dense_units import dense_units
 
 #: Placement spreads tried in turn for each row count; see `anchored_rows`.
 SPREAD = (0.0, 0.5)
 #: Row fills tried in turn by the electrical-order fallback at each width.
 FILL = (1.0, 0.75, 0.5)
+#: Prefer local bit tiles once flat placement has a wide parallel datapath.
+SLICE_FIRST_BITS = 64
+#: Band fills, and spare rows below the bands, that `banded_rows` tries.
+BAND_FILL = (1.0, 0.85, 0.7)
+BAND_SPARE = 6
 
 
 def ceil_grid(n, grid):
@@ -35,6 +41,8 @@ class DenseBank:
     header: dict = field(default_factory=dict)
     # Anchored ports: net -> x of the column the parent joins above the bank
     anchored: dict = field(default_factory=dict)
+    routing_certificates: list = field(default_factory=list)
+    joint_optimization: list = field(default_factory=list)
 
 
 def _layout(units, width=None, pad=0):
@@ -101,7 +109,18 @@ def _accesses(packed, row_width):
 
 
 def _route_plan(
-    points, pins, row_width, rows, width, spans, windows, bottom, blocked, external
+    points,
+    pins,
+    row_width,
+    rows,
+    width,
+    spans,
+    windows,
+    bottom,
+    blocked,
+    external,
+    *,
+    diagnostics=False,
 ):
     """`route_bank` with the port classes the parent's drops imply."""
     edges = set(pins if external is None else external) - set(bottom)
@@ -116,6 +135,9 @@ def _route_plan(
         spans=tuple(sorted((n, tuple(xs)) for n, xs in spans.items() if xs)),
         edges=tuple(sorted(edges)),
         blocked=tuple(sorted(blocked)),
+        diagnostics=diagnostics,
+        # Supply pins sit at the row ends, beside each row's tap drops.
+        right=tuple(sorted({"VDD", "VSS"} & set(bottom))),
     )
 
 
@@ -131,7 +153,7 @@ def _anchored(
     bottom=(),
     blocked=(),
 ):
-    """Place units near their parent drops; keep the cheapest routed bank.
+    """Route function bands, else local bit tiles or an anchor-driven flat bank.
 
     ``cost(header_top, height)`` ranks candidates; by default the bank
     height. A parent whose array origin rounds up to a grid passes its own.
@@ -140,14 +162,106 @@ def _anchored(
     parent's width and the drop positions remain valid. Each candidate row
     count is fully routed. If a placement crowds more escapes into a row
     than its M4 tracks hold, it is retried with its cells spread toward
-    uniform density. Return None if no candidate fits.
+    uniform density. A wide word keeps the cheaper of function bands
+    (`banded_rows`) and bit tiles, else flat rows. A smaller bank keeps the
+    cheaper of bands and flat rows, and tries bit tiles only if neither
+    routes. Return None if no placement routes.
     """
     usable = width - 324
     anchors = spans(width) or {}
     windows = (windows(width) if callable(windows) else windows) or {}
     total = sum(u.plan.width for u in units)
     first = max(1, -(-total // usable))
-    best = None
+
+    def routed(packed, joint=False, repair=True):
+        if packed is None:
+            return None
+        occupied = max((x + u.plan.width for row in packed for u, x in row), default=0)
+        row_width = ceil_grid(occupied, 108)
+        plan = _route_plan(
+            _accesses(packed, row_width),
+            pins,
+            row_width,
+            len(packed),
+            width,
+            anchors,
+            windows,
+            bottom,
+            blocked,
+            external,
+            diagnostics=joint,
+        )
+        if plan is not None and "overfull" in plan:
+            if not repair:
+                return None
+            from .dense_joint import refine_route
+
+            repaired = refine_route(packed, plan)
+            if repaired is None:
+                return None
+            packed, plan = repaired
+        if plan is None or plan["width"] != width:
+            return None
+        header, height, certificate = route_header(plan)
+        return packed, row_width, plan, header, height, certificate
+
+    def slices():
+        result = routed(sliced_rows(units, anchors, usable, first + 4, sinks=bottom))
+        if result is not None:
+            return result
+        # A larger decoder needs vertical room before its columns and cells
+        # can be optimized together. Row counts scale with the cell area.
+        for rows in (2 * first + 2, 3 * first + 3):
+            result = routed(
+                sliced_rows(
+                    units, anchors, usable, rows, sinks=bottom, spread_decoder=True
+                ),
+                joint=True,
+            )
+            if result is not None:
+                return result
+        return None
+
+    def bands():
+        """Each distinct function-band placement, fewest rows first.
+
+        The first that routes without joint repair wins: repair can take
+        minutes, while a band placement with one more row routes in seconds.
+        """
+        seen, candidates = set(), []
+        for fill in BAND_FILL:
+            for spare in range(BAND_SPARE):
+                packed = banded_rows(
+                    units, anchors, usable, fill=fill, spare=spare, sinks=bottom
+                )
+                if packed is None:
+                    continue
+                key = tuple(tuple((u.name, x) for u, x in row) for row in packed)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(packed)
+        for packed in sorted(candidates, key=len):
+            result = routed(packed, repair=False)
+            if result is not None:
+                return result
+        return None
+
+    def price(result):
+        _, _, _, header, height, _ = result
+        header_top = max((y for y, _, _ in header.values()), default=0)
+        return (cost or (lambda _top, h: h))(header_top, height), height
+
+    # Pitch-matched function bands: each bit's cells stack under its
+    # bitlines, so the bank needs few rows and its columns stay short.
+    banded = bands()
+    wide = sum(u.name.startswith("output_latch_") for u in units) >= SLICE_FIRST_BITS
+    if wide:
+        # Bands leave rows part-empty when bits are sparse across the
+        # array; bit tiles pack them. Keep the cheaper.
+        found = [r for r in (banded, slices()) if r is not None]
+        if found:
+            return min(found, key=price)
+    best = None if banded is None else (price(banded), banded)
     for rows in range(first, first + 1 + extra_rows):
         for spread in SPREAD:
             packed = anchored_rows(
@@ -156,31 +270,15 @@ def _anchored(
             if packed is None:
                 continue
             packed = [row for row in packed if row]
-            occupied = max(
-                (x + u.plan.width for row in packed for u, x in row), default=0
-            )
-            row_width = ceil_grid(occupied, 108)
-            plan = _route_plan(
-                _accesses(packed, row_width),
-                pins,
-                row_width,
-                len(packed),
-                width,
-                anchors,
-                windows,
-                bottom,
-                blocked,
-                external,
-            )
-            if plan is None or plan["width"] != width:
+            result = routed(packed)
+            if result is None:
                 continue
-            header, height = route_header(plan)
-            header_top = max((y for y, _, _ in header.values()), default=0)
-            price = (cost or (lambda _top, h: h))(header_top, height), height
-            if best is None or price < best[0]:
-                best = (price, (packed, row_width, plan, header, height))
+            if best is None or price(result) < best[0]:
+                best = price(result), result
             break
-    return best and best[1]
+    if best is not None:
+        return best[1]
+    return None if wide else slices()
 
 
 def build_dense_bank(
@@ -211,7 +309,7 @@ def build_dense_bank(
     gdspy = require_gdspy()
     units = dense_units(circuit, exclude=exclude) if units is None else units
     spans = header_spans if callable(header_spans) else lambda _: header_spans
-    windows = anchors if callable(anchors) else lambda _: (anchors or {})
+    windows = anchors if callable(anchors) else lambda _: anchors or {}
     bottom = set(bottom) & set(circuit.pins)
     result = None
     if header_spans is not None and pin_width:
@@ -258,14 +356,20 @@ def build_dense_bank(
             if width > 16 * max(pin_width, sum(u.plan.width for u in units)):
                 raise ValueError(f"dense bank {circuit.name} does not route")
             width = ceil_grid(max(width + 108, width * 1.1), 108)
-        header, height = route_header(plan)
+        header, height, header_certificate = route_header(plan)
     else:
-        packed, row_width, plan, header, height = result
+        packed, row_width, plan, header, height, header_certificate = result
     top = gdspy.Cell(name or circuit.name + "_dense", exclude_from_current=True)
     pins, placed, routes, checkpoints, certificates = {}, [], [], [], []
     cache = {}
+    unit_vts = {u.vt for u in units}
+    support_vt = (
+        circuit.n.vt
+        if len(unit_vts) <= 1 and (not unit_vts or circuit.n.vt in unit_vts)
+        else "rvt"
+    )
     stack = RowStack(
-        ((circuit.n.fins, circuit.p.fins),), vt=circuit.n.vt, band_height=216
+        ((circuit.n.fins, circuit.p.fins),), vt=support_vt, band_height=216
     )
     support = {
         kind: build_row_support(RowSupportSpec(stack, kind), draw_pin_labels=False)
@@ -273,7 +377,7 @@ def build_dense_bank(
     }
     # One empty gate pitch: frame and rails only.
     spacer = gdspy.Cell(f"{top.name}_spacer", exclude_from_current=True)
-    draw_frame(spacer, stack, 54, circuit.n.vt)
+    draw_frame(spacer, stack, 54, support_vt)
     draw_rails(spacer, stack, 54)
     box(spacer, "BOUNDARY", 0, 0, 54, 432)
     for index, row in enumerate(packed):
@@ -430,4 +534,7 @@ def build_dense_bank(
         certificates,
         header,
         dict(plan["anchored"]),
+        list(plan["routing_certificates"])
+        + ([header_certificate] if header_certificate is not None else []),
+        list(plan.get("joint_optimization", ())),
     )

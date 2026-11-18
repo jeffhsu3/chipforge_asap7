@@ -92,7 +92,7 @@ def prepare_dense_macro(c, spec):
     if c.distribution is not None:
         raise ValueError("dense floorplan must be selected before control sizing")
     c.dense_spec = spec
-    left = (spec.bits // 2) * spec.ways
+    left = spec.left_columns
     c.dense_left_columns = left
     if left:
         for b in range(spec.blocks):
@@ -115,7 +115,19 @@ def prepare_dense_macro(c, spec):
     return c
 
 
-def _strip(c, excluded):
+def bank_circuit(c):
+    """The bottom bank: every device but the selector arrays and CGEN lanes."""
+    if c.array is None:
+        raise ValueError("requires a macro_circuit")
+    excluded = set(c.array.device_names)
+    if c.replica:
+        excluded.update(c.replica.selector.device_names)
+    excluded.update(
+        n
+        for role, ns in c.placement_groups
+        if role.startswith(("cgen_", "left_cgen_"))
+        for n in ns
+    )
     remaining = [d for d in c.devices if d.name not in excluded]
     used = {n for d in remaining for n in d.nodes}
     boundary = {n for d in c.devices if d.name in excluded for n in d.nodes} & used
@@ -167,16 +179,7 @@ def build_dense_macro(c, spec=None):
     center = half_width + 216 if left else 0
     right_origin = ceil_grid(center + middle, 432)
     footprint = right_origin + half_width
-    excluded = set(c.array.device_names)
-    if c.replica:
-        excluded.update(c.replica.selector.device_names)
-    excluded.update(
-        n
-        for role, ns in c.placement_groups
-        if role.startswith(("cgen_", "left_cgen_"))
-        for n in ns
-    )
-    bank_c = _strip(c, excluded)
+    bank_c = bank_circuit(c)
     sides = [
         (side, lo, hi, origin, mirror)
         for side, lo, hi, origin, mirror in (
@@ -186,9 +189,14 @@ def build_dense_macro(c, spec=None):
         if lo != hi
     ]
 
+    # The replica strip: one column, the observed bitline RBL.
+    replica_columns = len(c.replica.selector.mapping[0]) if c.replica else 0
+    replica_bitlines = [
+        c.replica.port_nets[f"BL<{col}>"] for col in range(replica_columns)
+    ]
     replica_origin = ceil_grid(right_origin + lane0.width + 540, 432)
     bank_footprint = (
-        ceil_grid(replica_origin + 108 * spec.columns + 324, 432)
+        ceil_grid(replica_origin + 108 * replica_columns + 324, 432)
         if c.replica
         else footprint
     )
@@ -200,6 +208,11 @@ def build_dense_macro(c, spec=None):
 
     def side_transform(origin, mirror):
         return lambda x: origin - x if mirror else origin + x
+
+    def lattice(x):
+        """A lane supply drop's x. Every drop onto a supply track shares this
+        48 nm lattice, so any two either coincide or clear M3 and V3 spacing."""
+        return ceil_grid(x - 12, 48) + 12
 
     # The block-0 lane of each side fixes where its G rails and lifts lie.
     lanes0 = {
@@ -233,21 +246,23 @@ def build_dense_macro(c, spec=None):
                     )
             for net, dx in (("VDD", 96), ("VSS", 240)):
                 out = transform(lane.width + dx)
-                spans[net].append(ceil_grid(out - 12, 48) + 12)
+                spans[net].append(lattice(out))
             for col in range(hi - lo):
                 spans[f"BL<{lo + col}>"].append(transform(ax + 108 * col + 81))
-            spans["VSS"].append(transform(lane0.width + 240))
+            spans["VSS"].append(lattice(transform(lane0.width + 240)))
         if c.replica:
             ox = replica_x(bank_width)
-            for b, row in enumerate(c.replica.selector.mapping):
-                for k in set(row):
-                    net = c.replica.port_nets[f"C<{b},{k}>"]
-                    spans[net].append(
-                        ox - 132 if net != "VSS" else ox + 108 * spec.columns + 228
-                    )
-            for col in range(spec.columns):
-                spans[f"RBL<{col}>"].append(ox + 108 * col + 81)
-            spans["VSS"].append(ox + 108 * spec.columns + 228)
+            nets = {
+                c.replica.port_nets[f"C<{b},{k}>"]
+                for b, row in enumerate(c.replica.selector.mapping)
+                for k in row
+            }
+            for net in sorted(nets - {"VSS"}):
+                spans[net].append(ox - 132)
+            for col, net in enumerate(replica_bitlines):
+                if net != "VSS":
+                    spans[net].append(ox + 108 * col + 81)
+            spans["VSS"].append(ox + 108 * replica_columns + 228)
         return spans
 
     def array_base(header_top, height):
@@ -292,9 +307,10 @@ def build_dense_macro(c, spec=None):
         windows = dict(anchors)
         if c.replica and bank_width <= bank_footprint:
             ox = replica_x(bank_width)
-            for col in range(spec.columns):
-                x = ox + 108 * col + 81
-                windows[f"RBL<{col}>"] = (x - 24, x + 24, None)
+            for col, net in enumerate(replica_bitlines):
+                if net != "VSS":
+                    x = ox + 108 * col + 81
+                    windows[net] = (x - 24, x + 24, None)
         return windows
 
     bank = build_dense_bank(
@@ -582,7 +598,7 @@ def build_dense_macro(c, spec=None):
                 square(top, "V2", px, ry)
                 py = ry + 12
                 box(top, "M3", px - 9, ry - 17, px + 9, py + 17)
-                join(net, px, py, local_x=ceil_grid(out - 12, 48) + 12)
+                join(net, px, py, local_x=lattice(out))
         for col in range(columns):
             x = transform(ax + 108 * col + 81)
             y = base - 36 - 96 * (col % 2)
@@ -595,7 +611,7 @@ def build_dense_macro(c, spec=None):
         # The selector's own substrate rail is above its last block.
         x = transform(ax)
         sy = base + spec.blocks * 432 + 81
-        target = transform(lane0.width + 240)
+        target = lattice(transform(lane0.width + 240))
         box(top, "M2", min(x, target) - 19, sy - 9, max(x, target) + 19, sy + 9)
         square(top, "V2", target, sy)
         py = base + spec.blocks * 432 + 108
@@ -622,6 +638,16 @@ def build_dense_macro(c, spec=None):
             ]
             if track == 1:
                 near += tips0
+            # A riser left of the rail extends the trunk past it, toward the
+            # lanes' candidate tips and the bank's header ends one pitch away.
+            # Drawn ends lie on or 24 nm past a route's end points.
+            near += [
+                t
+                for _, metal, (ax_, ay), (bx, by) in routes
+                if metal == "M4" and ay == by and abs(ay - y) == 48
+                for e in (min(ax_, bx), max(ax_, bx))
+                for t in (e - 24, e, e + 24)
+            ]
             # Only a riser end may move; a rail end is where the cell is.
             while len(ends) == 2 and lo > 0 and any(abs(lo - t) < 40 for t in near):
                 lo -= 48
@@ -645,8 +671,8 @@ def build_dense_macro(c, spec=None):
                 (net, "V5", (cx, y6), (cx, y6)),
                 (net, "M5", (cx, row_top - 24), (cx, y6)),
             ]
-    # Independent replica columns occupy the far edge. Only selected native
-    # candidate tracks need a connection: unselected tracks contain no gates.
+    # The replica strip occupies the far edge. Only selected native candidate
+    # tracks need a connection: unselected tracks contain no gates.
     if c.replica:
         inst = c.replica.selector
         array = build_selector_array(inst.plan, inst.mapping)
@@ -654,6 +680,8 @@ def build_dense_macro(c, spec=None):
         array.name += "_dense_replica"
         ox = replica_x(bank.width)
         oy = base
+        right_edge = ox + 108 * replica_columns
+        sy = oy + len(inst.mapping) * 432 + 81
         top.add(gdspy.CellReference(array, (ox, oy)))
         routes += selector_routes(
             inst.plan,
@@ -662,24 +690,21 @@ def build_dense_macro(c, spec=None):
             ox,
             oy,
             lambda b, k: c.replica.port_nets[f"C<{b},{k}>"],
-            lambda col: f"RBL<{col}>",
+            lambda col: replica_bitlines[col],
         )
+        driven = defaultdict(list)
         for b, row in enumerate(inst.mapping):
             for k in sorted(set(row)):
                 layer, dy = inst.plan.tracks[k]
                 net = c.replica.port_nets[f"C<{b},{k}>"]
                 y = oy + b * 432 + dy
                 checkpoints.append((net, layer, ox, y))
-                x = ox - 132 if net != "VSS" else ox + 108 * spec.columns + 228
+                if net != "VSS":
+                    driven[net].append((b, layer, y))
+                    continue
+                x = right_edge + 228
                 if layer == "M2":
-                    box(
-                        top,
-                        "M2",
-                        min(ox - 24, x - 19),
-                        y - 9,
-                        max(ox + 108 * spec.columns + 24, x + 19),
-                        y + 9,
-                    )
+                    box(top, "M2", ox - 24, y - 9, x + 19, y + 9)
                     square(top, "V2", x, y)
                     py = oy + b * 432 + 60
                     box(top, "M3", x - 9, min(y, py) - 17, x + 9, max(y, py) + 17)
@@ -693,15 +718,44 @@ def build_dense_macro(c, spec=None):
                     m4(top, x, ox, y)
                     routes.append((net, "M4", (x, y), (ox, y)))
                     join(net, x, y, source="M4", local_x=x)
-        for col in range(spec.columns):
+        # The live candidate track rises on the strip's near side. Its dummy
+        # gates are bank cells, so it reaches the strip only in the last block.
+        x = ox - 132
+        for net, rows in driven.items():
+            for b, layer, y in rows:
+                if layer == "M2":
+                    box(top, "M2", x - 19, y - 9, right_edge + 24, y + 9)
+                    square(top, "V2", x, y)
+                    routes += [
+                        (net, "M2", (x, y), (ox - 24, y)),
+                        (net, "V2", (x, y), (x, y)),
+                    ]
+                else:
+                    m4(top, x, ox, y)
+                    routes.append((net, "M4", (x, y), (ox, y)))
+            b, layer, y = rows[0]
+            py = oy + b * 432 + 60 if layer == "M2" else y
+            top_y = rows[-1][2]
+            if top_y != py:
+                box(top, "M3", x - 9, min(py, top_y) - 17, x + 9, top_y + 17)
+                routes.append((net, "M3", (x, py), (x, top_y)))
+            for i, (b, layer, y) in enumerate(rows):
+                # The join below places the lowest M4 row's via itself.
+                if layer == "M4" and i:
+                    v3(top, x, y)
+                    routes.append((net, "V3", (x, y), (x, y)))
+            if layer == "M2":
+                join(net, x, py)
+            else:
+                join(net, x, py, source="M4", local_x=x)
+        for col, net in enumerate(replica_bitlines):
             x = ox + 108 * col + 81
             py = oy - 36 - 96 * (col % 2)
             box(top, "M3", x - 9, py - 17, x + 9, oy + 14)
-            routes.append((f"RBL<{col}>", "M3", (x, py), (x, oy + 14)))
-            join(f"RBL<{col}>", x, py)
-            checkpoints.append((f"RBL<{col}>", "M3", x, oy + 216))
-        sy = oy + len(inst.mapping) * 432 + 81
-        x = ox + 108 * spec.columns + 228
+            routes.append((net, "M3", (x, py), (x, oy + 14)))
+            join(net, x, py)
+            checkpoints.append((net, "M3", x, oy + 216))
+        x = right_edge + 228
         box(top, "M2", ox - 24, sy - 9, x + 19, sy + 9)
         square(top, "V2", x, sy)
         py = sy + 27
@@ -721,6 +775,8 @@ def build_dense_macro(c, spec=None):
     box(top, "BOUNDARY", *bounds[0], *bounds[1])
     return top, {
         "certificates": certificates,
+        "routing_certificates": bank.routing_certificates,
+        "joint_optimization": bank.joint_optimization,
         "ports": ports,
         "arrays": arrays,
         "bottom_units": bank.units,
@@ -768,6 +824,10 @@ def dense_macro_layout(c):
     from copy import deepcopy
     from hashlib import sha256
 
+    if getattr(c, "pruned_spec", None) is not None:
+        from .pruned_macro import pruned_macro_layout
+
+        return pruned_macro_layout(c)
     if c.array is None or getattr(c, "dense_spec", None) is None:
         raise ValueError("dense layout requires a macro_circuit")
     key = sha256(
@@ -791,6 +851,8 @@ def dense_macro_layout(c):
         top, meta = build_dense_macro(c)
         canonicalize_cells(top)
         certificates = meta.pop("certificates")
+        routing_certificates = meta.pop("routing_certificates")
+        joint_optimization = meta.pop("joint_optimization")
         meta["schema"] = "brom_dense_physical_v1"
         geometry = sha256()
         for layer, polygons in sorted(top.get_polygons(by_spec=True).items()):
@@ -800,11 +862,24 @@ def dense_macro_layout(c):
         meta["geometry_sha256"] = geometry.hexdigest()
         meta["physical_sha256"] = sha256(repr((key, meta)).encode()).hexdigest()
         meta["placement_certificates"] = certificates
+        meta["routing_certificates"] = routing_certificates
+        meta["joint_optimization"] = joint_optimization
         c._dense_layout = (key, top, meta)
     _, top, meta = c._dense_layout
     result = deepcopy(top)
     result.name = c.name
     return result, meta
+
+
+def build_macro(circuit, *, lib=None):
+    """The macro's GDS cell, with its routes checked; optionally added to lib."""
+    top, plan = dense_macro_layout(circuit)
+    verify_dense_routes(top, plan["checkpoints"])
+    if lib is not None:
+        if lib.unit != 1e-9:
+            raise ValueError("BROM layout requires lib.unit=1e-9")
+        lib.add(top)
+    return top
 
 
 def selector_routes(plan, mapping, transform, ox, oy, candidate, bitline):

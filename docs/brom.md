@@ -77,6 +77,144 @@ programming, and each peripheral transistor cell (`brom_<device>_<hash>`) by
 a hash of its drawn shapes, so a device drawn differently by another compiler
 version gets a different name rather than silently replacing this one.
 
+### Shared abstract
+
+Programming only moves V2 and V3 cuts, so a flow can place and route one
+abstract and swap each unit's programmed macro in afterwards. Each build also
+writes `abstract.lef` and `abstract.gds`, the same macro under its name without
+the programming digest (`brom_selftimed_64x32_m1_f2_rvt_dense_posedge_g4_e1`).
+The manifest's `abstract` record holds that name, the LEF's hash, a hash of all
+other geometry and labels (`frozen_geometry_sha256`), and the GDS layers that
+may differ (`programming_layers`). A swap must refuse an image whose record
+doesn't match. The sizing options add a suffix to the name (`_dist4`, `_wirerc`),
+but the name alone proves nothing about the geometry, so compare the hashes too.
+The tests XOR the written GDS files of two images to check this independently of
+the hashes. Timing still varies with contents, so a shared timing model has to
+cover the worst image.
+
+### Data-pruned custom-mask macro (`--pruned`)
+
+When word contents are fixed before tapeout and a shared V2/V3-reprogrammable
+abstract is not required, `pruned_macro_circuit(spec, words, *, periphery_vt=None,
+crit_vt=None)` (or `asap7 rom brom --pruned [--pruned-periphery-vt ...]
+[--pruned-crit-vt ...]`) trades frozen base layers for lower area, access delay,
+and read/standby energy:
+
+- **Co-occurring dual-`NOR2` `324 nm` / singleton `216 nm` CGEN:** pairs active
+  `k = 1..14` candidates by block co-occurrence into shared-`SELB` `324 nm`
+  dual-`NOR2` slots (`216 nm` for unpaired singletons and `k = 15` `INV`),
+  instantiating zero dummy transistors in blocks where zero or one member of a
+  pair is used, and packing per-block tracks onto left-entering `M4` (`8..15`)
+  and direct `M2` (`{0/1, 6}`) before using right-dropped `M6` lifts.
+- **Decoupled `k = 0` bitcells & 2D-trimmed array wires:** ties unprogrammed
+  selector gates and middle diffusions locally to `VSS` `M1/M2` without bridging
+  `V1/M2/V2` onto `BL<col>`, trims horizontal `M2/M4` candidate tracks to the
+  active column span in each block, and trims vertical `M3` bitlines right above
+  each column's highest programmed block.
+- **Active-block 2-stack `EVAL -> SELB<b>` path, merged `ways = 4` readout &
+  multi-Vt co-design:** pre-combines `PRECHN` with active-low block decode during
+  precharge and emits `SELB<b>` drivers and left-channel risers only for
+  non-zero blocks (leaving `NAND2(EVAL, BPRE<b>)` + `NOR2(GB<k>, SELB<b>)` on
+  the `EVAL` edge), merges 1-fin precharge, hi-skewed sense, and 4:1 column
+  selection into a 5T gated-tristate way receiver beside an isolated-keeper Q
+  latch, and supports heterogeneous threshold mixes such as a 1-fin `sram`
+  selector array + off-critical logic paired with `rvt` or `lvt` on the critical
+  `EVAL -> Q` read path.
+
+`build_macro(circuit)`, `macro_lef(circuit, top)`, and
+`macro_verilog(circuit, spec, words)` accept `pruned_macro_circuit` directly;
+`manifest.json` records `"layout": "pruned_dense_cmos"` and `"abstract": null`.
+
+### Wide words
+
+Words with at least 64 output bits use local bit tiles before trying flat
+placement. Each tile holds one bit's sampling receiver, latch and output
+register per row. Mux1 includes
+the readout in that run; mux4 aligns its readouts with the physical bitlines in
+four interleaved rows above the tiles. The completion and control logic follows
+the actual x and y positions of the receiving cells. This trades additional
+cell rows for shorter local data connections.
+
+Single registered, self-timed 148-bit macros now route and pass DRC and LVS
+with random words (two fins, RVT, no keeper):
+
+| Shape | Width × height | Area |
+|---|---|---|
+| 16x148 m1 | 33.264 × 19.187 µm | 638.236 µm² |
+| 64x148 m4 | 85.968 × 9.683 µm | 832.428 µm² |
+| 1024x148 m4 | 83.376 × 40.787 µm | 3400.657 µm² |
+| 1088x148 m4 | 83.376 × 46.835 µm | 3904.915 µm² |
+
+At equal bank widths and row counts, mean terminal half-perimeter wire length
+over `DOUT`, `SAMPLED` and `REG_DATA` nets falls from 10.431 to 0.630 µm for
+16x148 m1, and from 7.990 to 3.460 µm for 64x148 m4. These are placement
+estimates, not routed lengths or timing measurements. Build manifests and the
+comparison are under `build/brom_placement`, including a plot in
+`placement_comparison.png`. The tradeoff is a taller peripheral bank,
+particularly for mux1; timing has not been characterized for these layouts.
+
+For the deeper decoder, the compiler also tries vertically spread decoder
+stages and joint placement/routing repair. It selects the most congested
+region, then uses CP-SAT to change cell x positions, M5 columns and M6 bus
+tracks together. Each bit's local datapath stays together. The model keeps
+cell order and rows, body-tap gaps, M5 vertical extents and net grouping;
+fixed geometry outside the region remains an obstacle. It minimizes the
+sum of required M4 channel capacities, with eight tracks per row as the
+target. Full-bank track assignment, including corner spacing, must pass
+before the compiler accepts the candidate.
+
+More precisely, let `I[n,r](x,c)` be a net group's horizontal interval in
+row `r`, spanning its cell pins and M5 column after grid rounding and end
+clearance. Within the selected window the model solves
+`minimize Σr C[r]`, subject to `Σn 1[t in I[n,r](x,c)] <= C[r]` at every
+horizontal grid position `t`, and `C[r] >= 8`. Legal cell spacing, tap gaps,
+M5 separation and M6 bus spacing constrain the same variables. Reaching
+`8 × number_of_modeled_rows` proves the overlap-capacity objective has
+reached its lower bound; the separate track assignment checks the remaining
+M4 corner rules.
+
+The 1024x148 m4 build repaired seven regions. All seven solves reached their
+local capacity lower bounds, and the resulting macro passed full DRC and
+transistor LVS (205,838 matched devices). Its artifacts are under
+`build/brom_joint/1024x148_m4`. The 1088x148 m4 build uses 34 cell rows and
+five repairs, also reaching every local capacity lower bound and passing
+DRC and LVS (217,858 matched devices). Its artifacts are under
+`build/brom_joint/1088x148_m4`. Both builds pass DRC and LVS for all six
+exported circuits; `build/brom_joint/qualification_summary.json` collects
+their results and physical hashes.
+
+Starting from the tiled 24-row placement, joint repair reduces peak M4
+overlap from 11 to 8 and removes all overlap overflow, without adding rows
+or width. The sum of local horizontal M4 spans rises from 2.451 to 2.524 mm
+(about 3%); that is the wire length tradeoff for resolving congestion in
+this candidate. The comparison is plotted in
+`build/brom_joint/1024_congestion.png`, with its data alongside it.
+
+The physical manifest's `joint_optimization` records report each window,
+movement limit, solver status, capacity objective and lower bound. An
+`OPTIMAL` result proves that restricted capacity objective only; it does not
+prove minimum macro area, height or wire length. `UNKNOWN` leaves the original
+candidate intact, and a failed bounded search does not prove the macro
+unroutable. These reports are excluded from physical identity hashes.
+
+- [ ] **TODO: Parameterized placement and routing templates.** Generalize bit
+  tiles, decoder placement, row sizing, tap gaps and reserved routing tracks
+  across depth, word width, mux ratio and cell geometry. Define the supported
+  family, derive its routing-capacity bounds, and validate a broad size sweep
+  with complete routing, DRC and LVS. Keep the joint solver in the compiler as
+  a fallback while these guarantees are incomplete or a template does not apply.
+
+Larger depths also have a separate array constraint: selector and replica
+devices must remain within 30 µm of the single body-tap row. At mux4, the
+current array permits at most 69 blocks, or 1104 words; the default self-timed
+replica adds one block, limiting that configuration to 1088 words. A 2048-word
+macro requires additional array tap rows or an internally banked array before
+placement optimization can apply. Timing remains unqualified.
+
+The earlier failures used flat placement and do not establish a fundamental
+148-bit limit or unavoidable quadratic wiring demand. Words can also be split
+across several macros sharing A, CLK and RESETN when that suits integration.
+
 ## Circuit and programming
 
 Each block encodes four words. For output column `c`, its selector index is
@@ -158,6 +296,18 @@ individually tapped transistor tiles. Placement certificates distinguish a
 proved gate-slot bound from routing width and overall macro area: this is
 **not a global minimum-area proof**.
 
+M4 row and header channels first try greedy assignment and seeded sweeps
+against the interval-clique lower bound, then fall back to CP-SAT. If CP-SAT
+stops before finding an incumbent (`UNKNOWN`), the compiler keeps its validated
+greedy route. Each artifact's `routing_certificates` records the fixed intervals,
+net order, tracks, clique witness, track count, lower bound, assignment method
+(`greedy`, `sweep`, or `cp_sat`), and raw `solver_status` (null for the fast paths).
+`optimal` is true only when the track count meets the lower bound, which combines
+the clique and any stronger solver bound. A feasible route above that bound
+remains explicitly unproved. These certificates also appear in the macro's
+`physical_plan` and the area report; fixed CGEN lane routing has no channel
+certificates. Proof metadata is excluded from the physical geometry identity.
+
 The two selector halves flank a central CGEN spine. Each 432 nm block has
 sixteen dense AND2 cells per half. Complete mux groups stay on one side,
 including odd output widths. Independent left/right candidate drivers are
@@ -195,8 +345,14 @@ and keeps the one that puts the arrays lowest: fins and M4 tracks lie on
 absolute 27 and 48 nm grids, so the arrays start on a multiple of 432 nm, one
 track pitch above the highest header track and the join stubs below the
 array. A row count that does not route is retried with its cells spread
-toward uniform density. If nothing routes inside the array
-footprint, the bank falls back to electrical-order rows: at each width it
+toward uniform density. Words with at least 64 output bits try local bit tiles
+first; smaller banks try tiles after the flat placements fail. The tiles use
+the actual readout, mux, receiver and register cell widths, reserve body-tap
+gaps, and place the remaining control cells around fixed data pins in both
+dimensions. Failed tiles also try vertically spread decoder stages and a
+bounded joint cell/column/bus search, with full-bank routing checked after
+each local repair. If these placements do not route inside the array footprint, the bank
+falls back to electrical-order rows: at each width it
 tries rows filled to 100%, 75% and 50%, with the cells spread across the
 width, before widening by 10%. Standalone banks always use electrical order.
 
@@ -258,8 +414,8 @@ first M4 and M6 tracks as well: outer cells take the tightest M4 track that
 reaches them, inner ones an M6 track reached by a jog on the first M4 track
 and an M5 stub. The two outermost cells no track reaches (one M6 and one M4)
 keep their header tracks. Supply connections cross the array on free M4
-boundary tracks. The independent replica occupies the far edge and retains
-its own candidate loading, bitlines, readouts and guards.
+boundary tracks. The independent replica strip occupies the far edge with its
+own candidate, dummy candidate loads, observed bitline, readout and guards.
 
 The four-way output mux is now two AOI22 gates and a NAND2 (20T versus 42T).
 Its complete 256-entry truth table is tested, including non-one-hot selects.
@@ -271,7 +427,8 @@ and the register's both-rail clock interlock are preserved.
 The former discrete-device peripheral layout has been removed. Dense CMOS is
 the default for `build_macro` and `build_periphery`; `--compact-periphery` and
 `compact_periphery()` remain deprecated no-ops. `build_periphery` rejects a
-macro circuit. `macro_plan` returns the actual dense physical-plan dictionary;
+macro circuit. `dense_macro_layout` returns the cell and the actual dense
+physical-plan dictionary;
 `periphery_plan` returns the dense bank and its ports, units, routes and metal
 checkpoints. Callers should no longer use old device-row pitches or bus offsets.
 

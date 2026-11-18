@@ -39,6 +39,13 @@ the cell's own metal, labelled once here.
 
 A tap in the spare row pair ties the block's wells and substrate, so the
 block is DRC clean on its own (the latch-up rule reaches 30 um).
+
+A port that only reads or only writes takes a `role`: ``"read"`` drops the
+write driver, ``"write"`` the sense amplifier and the output latch.  Their
+row pairs become support, the logic column narrows to the cells that stay,
+and the pins and routes are those cells' only.  The 8T 1R1W column
+(`chipforge_asap7.sram1r1w`) writes through one port's block and reads
+through the other's.
 """
 
 from __future__ import annotations
@@ -57,8 +64,17 @@ from .rowcell import CAP, V3_M3_CAP, label, m3_column, m4_track
 from .sense_amp_row import SenseAmpRowSpec, build_sense_amp_row
 from .write_driver import WriteDriverSpec, build_write_driver
 
+#: What each `IoColumnSpec.role` keeps of the logic column.
+ROLE_CELLS: dict[str, tuple[str, ...]] = {
+    "read_write": ("sense_amp", "output_latch", "write_driver"),
+    "read": ("sense_amp", "output_latch"),
+    "write": ("write_driver",),
+}
+_ROLE_TAG = {"read_write": "", "read": "_rd", "write": "_wr"}
+
 __all__ = [
     "IoColumnSpec",
+    "ROLE_CELLS",
     "block_netlist",
     "block_series_nodes",
     "build_io_column",
@@ -102,6 +118,8 @@ class IoColumnSpec:
             others the nearer way, and the wires end on that vertex grid.
             None: the lines where the cells put them, the vertex grid the
             block's own.
+        role: ``"read_write"``, ``"read"`` (no write driver) or ``"write"``
+            (no sense amplifier or output latch); `ROLE_CELLS`.
     """
 
     mux: BitlineMuxSpec = field(default_factory=_default_mux)
@@ -112,11 +130,20 @@ class IoColumnSpec:
     one_sense_phase: bool = False
     two_sided: bool = False
     m4_grid: tuple[float, float] | None = None
+    role: Literal["read_write", "read", "write"] = "read_write"
 
     def __post_init__(self) -> None:
+        if self.role not in ROLE_CELLS:
+            raise ValueError(
+                f"role must be one of {sorted(ROLE_CELLS)}, got {self.role!r}"
+            )
+        if self.two_sided and self.role != "read_write":
+            raise ValueError(
+                "a two-sided block reads and writes: role must be read_write"
+            )
         rows = {
             (spec.band_height, spec.vt)
-            for spec in (self.mux, self.sense_amp, self.write_driver, self.output_latch)
+            for spec in (self.mux, *(getattr(self, key) for key in self.cells))
         }
         if len(rows) != 1:
             raise ValueError(f"the four cells are not on one row: {sorted(rows)}")
@@ -133,6 +160,19 @@ class IoColumnSpec:
                 f"the logic needs four row pairs ({4 * self.pair_height} nm) and the group is "
                 f"{self.height} nm; stack more leaves"
             )
+
+    @property
+    def cells(self) -> tuple[str, ...]:
+        """The logic cells the block keeps, by field name."""
+        return ROLE_CELLS[self.role]
+
+    @property
+    def reads(self) -> bool:
+        return "sense_amp" in self.cells
+
+    @property
+    def writes(self) -> bool:
+        return "write_driver" in self.cells
 
     # ── Sizes ─────────────────────────────────────────────────────────────────
     @property
@@ -151,11 +191,7 @@ class IoColumnSpec:
     @property
     def logic_width(self) -> int:
         """Width of the logic column: the widest cell, or more so every spare is a whole support cell."""
-        widths = [
-            self.sense_amp.width,
-            self.write_driver.width,
-            self.output_latch.width,
-        ]
+        widths = [getattr(self, key).width for key in self.cells]
         width = max(widths)
         while any(0 < width - w < _MIN_SUPPORT for w in widths):
             width += GATE_PITCH
@@ -176,20 +212,24 @@ class IoColumnSpec:
 
     @property
     def placements(self) -> dict[str, tuple[int, int]]:
-        """Origin of each cell: the group at the left, the logic column beside it, a pair each."""
+        """Origin of each kept cell: the group at the left, the logic column beside it, a pair each."""
         x = self.mux.width
         pair = self.pair_height
+        slots = {"sense_amp": 0, "output_latch": 1, "write_driver": 3}
         return {
             "mux": (0, 0),
-            "sense_amp": (x, 0),
-            "output_latch": (x, pair),
-            "write_driver": (x, 3 * pair),
+            **{key: (x, slots[key] * pair) for key in self.cells},
         }
 
     @property
     def support_pairs(self) -> list[int]:
-        """Row pairs of the logic column with no cell: the tap's, and any above the write driver."""
-        return [2, *range(4, self.pairs)]
+        """Row pairs of the logic column with no cell, the tap's (pair 2) first."""
+        used = {
+            y // self.pair_height
+            for key, (_, y) in self.placements.items()
+            if key != "mux"
+        }
+        return [2, *(k for k in range(self.pairs) if k != 2 and k not in used)]
 
     # ── Routes ────────────────────────────────────────────────────────────────
     @property
@@ -206,18 +246,8 @@ class IoColumnSpec:
         way, so theirs go the nearer way.
         """
         place = self.placements
-        x_logic = place["sense_amp"][0]
-        sa_y, ol_y, wd_y = (
-            place["sense_amp"][1],
-            place["output_latch"][1],
-            place["write_driver"][1],
-        )
-        mux_x, sa_x, wd_x, ol_x = (
-            self.mux.track_x,
-            self.sense_amp.track_x,
-            self.write_driver.track_x,
-            self.output_latch.track_x,
-        )
+        x_logic = self.mux.width
+        mux_x = self.mux.track_x
 
         def group(net: str) -> list[float]:
             """The net's track in each group."""
@@ -226,23 +256,27 @@ class IoColumnSpec:
                 xs.append(self.right_x(mux_x[net]))
             return xs
 
-        sa_line = self._on_track(sa_y + _ROUTE_OFFSET, down=True)
-        wd_line = self._on_track(wd_y + _ROUTE_OFFSET)
-        q_line = self._on_track(ol_y + M4_PITCH)
-        return {
-            "SA": [
-                (sa_line, [*group("SA"), x_logic + sa_x["SA"]]),
-                (wd_line, [*group("SA"), x_logic + wd_x["SA"]]),
-            ],
-            "SAN": [
-                (sa_line + M4_PITCH, [*group("SAN"), x_logic + sa_x["SAN"]]),
-                (wd_line + M4_PITCH, [*group("SAN"), x_logic + wd_x["SAN"]]),
-            ],
-            "QA": [(q_line, [x_logic + sa_x["QA"], x_logic + ol_x["QA"]])],
-            "QAN": [
+        routes: dict[str, list[tuple[int, list[int]]]] = {"SA": [], "SAN": []}
+        if self.reads:
+            sa_x, ol_x = self.sense_amp.track_x, self.output_latch.track_x
+            sa_line = self._on_track(place["sense_amp"][1] + _ROUTE_OFFSET, down=True)
+            q_line = self._on_track(place["output_latch"][1] + M4_PITCH)
+            routes["SA"].append((sa_line, [*group("SA"), x_logic + sa_x["SA"]]))
+            routes["SAN"].append(
+                (sa_line + M4_PITCH, [*group("SAN"), x_logic + sa_x["SAN"]])
+            )
+            routes["QA"] = [(q_line, [x_logic + sa_x["QA"], x_logic + ol_x["QA"]])]
+            routes["QAN"] = [
                 (q_line + M4_PITCH, [x_logic + sa_x["QAN"], x_logic + ol_x["QAN"]])
-            ],
-        }
+            ]
+        if self.writes:
+            wd_x = self.write_driver.track_x
+            wd_line = self._on_track(place["write_driver"][1] + _ROUTE_OFFSET)
+            routes["SA"].append((wd_line, [*group("SA"), x_logic + wd_x["SA"]]))
+            routes["SAN"].append(
+                (wd_line + M4_PITCH, [*group("SAN"), x_logic + wd_x["SAN"]])
+            )
+        return routes
 
     def _on_track(self, y: float, down: bool = False) -> float:
         """`y`, or the M4 track of `m4_grid` nearest it (`down`: the one at or below it)."""
@@ -258,7 +292,7 @@ class IoColumnSpec:
             f"iocol_x{mux.selects}_r{mux.rows}_h{mux.band_height[0]}x{mux.band_height[1]}"
             f"{mux._variant_tag}_sa{sa.n_fingers}t{sa.tail_fingers}_wd{wd.keeper_fins}_ol{ol.fingers}"
             f"{'' if self.tap else '_notap'}{'_1ph' if self.one_sense_phase else ''}"
-            f"{'_2s' if self.two_sided else ''}"
+            f"{'_2s' if self.two_sided else ''}{_ROLE_TAG[self.role]}"
             f"{'' if self.m4_grid is None else '_g' + 'x'.join(f'{v:g}'.replace('.', 'p') for v in self.m4_grid)}"
         )
 
@@ -269,7 +303,7 @@ class IoColumnSpec:
         The two are stubs on one column of the amplifier, from its bottom and
         top edges; the strap overlaps both by a via's cap.
         """
-        if not self.one_sense_phase:
+        if not self.one_sense_phase or not self.reads:
             return None
         sa = self.sense_amp
         x0, y0 = self.placements["sense_amp"]
@@ -296,20 +330,26 @@ class IoColumnSpec:
             for pin in group_pins:
                 metal, (x, y) = group[pin]
                 pins[_right_pin(pin)] = (metal, (self.right_x(x), y))
-        if self.one_sense_phase:
+        if self.reads and self.one_sense_phase:
             # One net: pin it on the top stub, clear of the SA/SAN lines that
             # cross the amplifier's bottom row.
             metal, (x, y) = self.sense_amp.pin_positions["SAPRECHN"]
             ox, oy = place["sense_amp"]
             pins["SAE"] = (metal, (ox + x, oy + y))
-        else:
+        elif self.reads:
             take(self.sense_amp.pin_positions, place["sense_amp"], ("SAE", "SAPRECHN"))
-        take(
-            self.write_driver.pin_positions,
-            place["write_driver"],
-            ("D", "WRENA", "WRENAN"),
-        )
-        take(self.output_latch.pin_positions, place["output_latch"], ("OE", "OEB", "Q"))
+        if self.writes:
+            take(
+                self.write_driver.pin_positions,
+                place["write_driver"],
+                ("D", "WRENA", "WRENAN"),
+            )
+        if self.reads:
+            take(
+                self.output_latch.pin_positions,
+                place["output_latch"],
+                ("OE", "OEB", "Q"),
+            )
         # Every rail is its own conductor until a power grid joins them.
         for k in range(2 * self.pairs + 1):
             pins[f"{'VDD' if k % 2 else 'VSS'}{'' if k < 2 else f'.{k}'}"] = (
@@ -362,11 +402,11 @@ def _block_devices(
                 )
     shared = {"SA", "SAN", "QA", "QAN", "VDD", "VSS"}
     pins = {"SAE", "SAPRECHN", "D", "WRENA", "WRENAN", "OE", "OEB", "Q"}
-    for tag, cell in (
-        ("sa", spec.sense_amp),
-        ("wd", spec.write_driver),
-        ("ol", spec.output_latch),
-    ):
+    tags = {"sense_amp": "sa", "write_driver": "wd", "output_latch": "ol"}
+    for key in ("sense_amp", "write_driver", "output_latch"):
+        if key not in spec.cells:
+            continue
+        tag, cell = tags[key], getattr(spec, key)
         for name, d, g, s, flavor, fins in cell.devices:
             nets = [n if n in shared or n in pins else f"{tag}_{n}" for n in (d, g, s)]
             if spec.one_sense_phase:
@@ -378,8 +418,9 @@ def _block_devices(
 def block_series_nodes(spec: IoColumnSpec) -> frozenset[str]:
     """The block's uncontacted series nodes, on the block's net names."""
     nodes = set()
-    for tag, cell in (("sa", spec.sense_amp), ("ol", spec.output_latch)):
-        nodes |= {f"{tag}_{n}" for n in cell.series_nodes}
+    if spec.reads:
+        for tag, cell in (("sa", spec.sense_amp), ("ol", spec.output_latch)):
+            nodes |= {f"{tag}_{n}" for n in cell.series_nodes}
     return frozenset(nodes)
 
 
@@ -408,7 +449,15 @@ def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
         for i in range(spec.mux.selects)
         for pin in getattr(spec.mux, "leaf_nets", _MUX_LEAF_NETS)
     ] + list(getattr(spec.mux, "group_nets", ()))
-    phases = ("SAE",) if spec.one_sense_phase else ("SAE", "SAPRECHN")
+    phases = (
+        ()
+        if not spec.reads
+        else ("SAE",)
+        if spec.one_sense_phase
+        else ("SAE", "SAPRECHN")
+    )
+    writes = ("D", "WRENA", "WRENAN") if spec.writes else ()
+    reads = ("OE", "OEB", "Q") if spec.reads else ()
     right = []
     if spec.two_sided:
         right = [
@@ -421,12 +470,8 @@ def io_column_pins(spec: IoColumnSpec) -> tuple[str, ...]:
         "PRECHN",
         *right,
         *phases,
-        "D",
-        "WRENA",
-        "WRENAN",
-        "OE",
-        "OEB",
-        "Q",
+        *writes,
+        *reads,
         "VDD",
         "VSS",
     )
@@ -458,27 +503,30 @@ def build_io_column(
         existing = lib.cells.get(cell_name) if lib is not None else None
         return existing if existing is not None else build()
 
-    cells = {
-        "mux": reuse(
-            spec.mux.group_cell_name,
-            lambda: build_bitline_mux_group(spec.mux, lib=lib, draw_pin_labels=False),
-        ),
-        "sense_amp": reuse(
+    builders = {
+        "sense_amp": lambda: reuse(
             spec.sense_amp.cell_name,
             lambda: build_sense_amp_row(spec.sense_amp, lib=lib, draw_pin_labels=False),
         ),
-        "output_latch": reuse(
+        "output_latch": lambda: reuse(
             spec.output_latch.cell_name,
             lambda: build_output_latch(
                 spec.output_latch, lib=lib, draw_pin_labels=False
             ),
         ),
-        "write_driver": reuse(
+        "write_driver": lambda: reuse(
             spec.write_driver.cell_name,
             lambda: build_write_driver(
                 spec.write_driver, lib=lib, draw_pin_labels=False
             ),
         ),
+    }
+    cells = {
+        "mux": reuse(
+            spec.mux.group_cell_name,
+            lambda: build_bitline_mux_group(spec.mux, lib=lib, draw_pin_labels=False),
+        ),
+        **{key: builders[key]() for key in spec.cells},
     }
     for key, placed in cells.items():
         cell.add(gdspy.CellReference(placed, origin=place[key]))
@@ -517,11 +565,8 @@ def build_io_column(
                 )
             )
 
-    for key, logic in (
-        ("sense_amp", spec.sense_amp),
-        ("output_latch", spec.output_latch),
-        ("write_driver", spec.write_driver),
-    ):
+    for key in spec.cells:
+        logic = getattr(spec, key)
         fill(x_logic + logic.width, x_logic + width_logic, place[key][1])
     for k, row_pair in enumerate(spec.support_pairs):
         fill(x_logic, x_logic + width_logic, row_pair * pair, tap=spec.tap and k == 0)
@@ -530,7 +575,7 @@ def build_io_column(
     # and the driver's columns run the full cell height, the amplifier's
     # stubs and the latch's stubs the bottom of theirs, and the amplifier's
     # risers end on its top edge, so those are carried on to the line.
-    sa_top = place["sense_amp"][1] + spec.sense_amp.height
+    sa_top = place["sense_amp"][1] + spec.sense_amp.height if spec.reads else 0
     for net, lines in spec.routes.items():
         for y, xs in lines:
             if net in ("QA", "QAN"):

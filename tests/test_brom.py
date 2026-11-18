@@ -260,14 +260,14 @@ def test_macro_cannot_use_flat_peripheral_builder():
 
 
 def test_macro_splits_devices_between_array_and_periphery():
-    from chipforge_asap7.brom.layout import macro_periphery, macro_plan
+    from chipforge_asap7.brom.dense_macro import bank_circuit, dense_macro_layout
 
     # Each fin count has its own selector track plan; check every one's ports.
     for fins in (1, 2, 3):
         spec = BromSpec(12, 3, fins=fins)
         c = macro_circuit(spec, [i % 8 for i in range(12)])
         assert len(c.array.device_names) == 2 * spec.blocks * spec.columns
-        bank = macro_periphery(c)
+        bank = bank_circuit(c)
         assert {d.name for d in bank.devices}.isdisjoint(c.array.device_names)
         candidates = {
             n
@@ -278,7 +278,7 @@ def test_macro_splits_devices_between_array_and_periphery():
         assert len(bank.devices) + len(c.array.device_names) + len(candidates) == len(
             c.devices
         )
-        floorplan = macro_plan(c)
+        _, floorplan = dense_macro_layout(c)
         assert len(floorplan["arrays"]) == 2
         assert all(
             a["origin_nm"][1] == floorplan["array_y_nm"] for a in floorplan["arrays"]
@@ -298,10 +298,38 @@ def test_macro_splits_devices_between_array_and_periphery():
     assert {p.text for p in top.labels} == set(c.pins)
 
 
+@pytest.mark.parametrize("depth,bits", [(16, 8), (64, 32)])
+def test_supply_pins_are_reachable_from_the_right_edge(depth, bits):
+    """A host's M6 power straps can only meet a supply pin by running in from
+    an edge. Each pin sits at the row ends, where only supply buses lie to
+    its right over its height; a pin boxed in by signal M6 left PDN open."""
+    from chipforge_asap7.brom import self_timed_macro_circuit
+    from chipforge_asap7.brom.dense_macro import dense_macro_layout
+
+    c = self_timed_macro_circuit(BromSpec(depth, bits), [0] * depth)
+    _, plan = dense_macro_layout(c)
+    for net in ("VDD", "VSS"):
+        metal, x, _ = plan["ports"][net]
+        assert metal == "M5"
+        top = max(
+            max(a[1], b[1])
+            for n, layer, a, b in plan["routes"]
+            if n == net and layer == "M5" and a[0] == b[0] == x
+        )
+        beside = {
+            n
+            for n, layer, a, b in plan["routes"]
+            if layer == "M6" and max(a[0], b[0]) > x and min(a[1], b[1]) <= top
+        }
+        assert beside <= {"VDD", "VSS"}, (net, beside)
+
+
 @pytest.mark.parametrize("port_name", ["LC<0,2>", "C<0,8>", "BL<0>", "VSS"])
 def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_klayout):
-    from chipforge_asap7.brom.dense_macro import dense_macro_layout
-    from chipforge_asap7.brom.layout import verify_macro_routes
+    from chipforge_asap7.brom.dense_macro import (
+        dense_macro_layout,
+        verify_dense_routes,
+    )
     from chipforge_asap7.layout.layers import LAYERS
     from chipforge_asap7.verification.lvs import run_lvs
 
@@ -333,7 +361,7 @@ def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_k
     top.remove_polygons(remove)
     assert removed
     with pytest.raises(ValueError, match="disconnected dense route"):
-        verify_macro_routes(c, top)
+        verify_dense_routes(top, plan["checkpoints"])
     gds, ref = tmp_path / "bad.gds", tmp_path / "expected.spice"
     lib.write_gds(str(gds))
     ref.write_text(c.lvs_reference())
@@ -346,8 +374,10 @@ def test_disconnected_array_interface_is_rejected(port_name, tmp_path, require_k
 
 
 def test_short_between_array_routes_is_rejected():
-    from chipforge_asap7.brom.dense_macro import dense_macro_layout
-    from chipforge_asap7.brom.layout import verify_macro_routes
+    from chipforge_asap7.brom.dense_macro import (
+        dense_macro_layout,
+        verify_dense_routes,
+    )
     from chipforge_asap7.layout.layers import box
 
     c = macro_circuit(BromSpec(4, 1), [0, 1, 0, 1])
@@ -364,16 +394,16 @@ def test_short_between_array_routes_is_rejected():
     )
     box(top, "M5", x - 12, y - 12, bx + 12, y + 12)
     with pytest.raises(ValueError, match="shorted dense routes"):
-        verify_macro_routes(c, top)
+        verify_dense_routes(top, plan["checkpoints"])
 
 
 @pytest.mark.parametrize("bits", [3, 128])
 def test_folded_periphery_preserves_groups_and_selector_lattice(bits):
-    from chipforge_asap7.brom.layout import macro_periphery
+    from chipforge_asap7.brom.dense_macro import bank_circuit
     from chipforge_asap7.brom.periphery import periphery_plan
 
     c = macro_circuit(BromSpec(12, bits), [i % 8 for i in range(12)])
-    bank = macro_periphery(c)
+    bank = bank_circuit(c)
     plan = periphery_plan(bank)
     placed = [n for u in plan.units for n in u["members"]]
     assert Counter(placed) == Counter(d.name for d in bank.devices)

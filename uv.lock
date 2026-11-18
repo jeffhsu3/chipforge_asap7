@@ -149,10 +149,24 @@ wheels = [
 ]
 
 [[package]]
+name = "chipforge"
+version = "0.1.0"
+source = { git = "ssh://git@github.com/jeffhsu3/chipforge.git?branch=feat%2Fmamba-layer-banks#3b5f0c30fb6f83fe4f15d5c2c3d769f9852f7f7c" }
+dependencies = [
+    { name = "migen" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "ortools" },
+]
+
+[[package]]
 name = "chipforge-asap7"
 source = { editable = "." }
 
 [package.optional-dependencies]
+chipforge = [
+    { name = "chipforge" },
+]
 gds = [
     { name = "gdspy" },
     { name = "tyro" },
@@ -182,6 +196,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chipforge", marker = "extra == 'chipforge'", git = "ssh://git@github.com/jeffhsu3/chipforge.git?branch=feat%2Fmamba-layer-banks" },
     { name = "gdspy", marker = "extra == 'gds'", specifier = ">=1.6.13" },
     { name = "klayout-pex", marker = "python_full_version >= '3.12' and extra == 'pex'", specifier = ">=0.3.12,<0.4" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.7" },
@@ -189,7 +204,7 @@ requires-dist = [
     { name = "ortools", marker = "extra == 'optimize'", specifier = ">=9.10,<10" },
     { name = "tyro", marker = "extra == 'gds'", specifier = ">=1.0" },
 ]
-provides-extras = ["gds", "optimize", "pex", "plot", "timing"]
+provides-extras = ["chipforge", "gds", "optimize", "pex", "plot", "timing"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -657,6 +672,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "migen"
+version = "0.9.2"
+source = { git = "https://github.com/jeffhsu3/migen.git?rev=5ebc8be4ac48593a8fdb225a25acb28cacebcf4c#5ebc8be4ac48593a8fdb225a25acb28cacebcf4c" }
+dependencies = [
+    { name = "colorama" },
 ]
 
 [[package]]

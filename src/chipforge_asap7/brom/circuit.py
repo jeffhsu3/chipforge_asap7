@@ -33,6 +33,9 @@ class ReplicaInstance:
     port_nets: dict[str, str]
     guard_pairs: int
     extra_blocks: int
+    # Dummy gates on the replica candidate besides the observed selector:
+    # bank cells, not strip positions. The strip's one column is RBL.
+    dummy_loads: int
 
 
 def logic_unit(fn):
