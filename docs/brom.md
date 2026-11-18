@@ -112,14 +112,14 @@ and read/standby energy:
   active column span in each block, and trims vertical `M3` bitlines right above
   each column's highest programmed block.
 - **Active-block 2-stack `EVAL -> SELB<b>` path, merged `ways = 4` readout &
-  multi-Vt co-design:** pre-combines `PRECHN` with active-low block decode during
-  precharge and emits `SELB<b>` drivers and left-channel risers only for
-  non-zero blocks (leaving `NAND2(EVAL, BPRE<b>)` + `NOR2(GB<k>, SELB<b>)` on
-  the `EVAL` edge), merges 1-fin precharge, hi-skewed sense, and 4:1 column
-  selection into a 5T gated-tristate way receiver beside an isolated-keeper Q
-  latch, and supports heterogeneous threshold mixes such as a 1-fin `sram`
-  selector array + off-critical logic paired with `rvt` or `lvt` on the critical
-  `EVAL -> Q` read path.
+  multi-Vt co-design:** folds `PRECHN` into the low block predecoder (`BPRE<b> =
+  NOR2(BLK_HB, ~(PRECHN & BLK_L))`), emits `SELB<b>` drivers and left-channel
+  risers only for non-zero blocks (leaving `NAND2(EVAL, BPRE<b>)` + `NOR2(GB<k>,
+  SELB<b>)` on the `EVAL` edge), merges 1-fin precharge, hi-skewed sense, and
+  4:1 column selection into a 5T gated-tristate way receiver beside an
+  isolated-keeper Q latch, and supports heterogeneous threshold mixes such as a
+  1-fin `sram` selector array + off-critical logic paired with `rvt` or `lvt` on
+  the critical `EVAL -> Q` read path.
 
 `build_macro(circuit)`, `macro_lef(circuit, top)`, and
 `macro_verilog(circuit, spec, words)` accept `pruned_macro_circuit` directly;

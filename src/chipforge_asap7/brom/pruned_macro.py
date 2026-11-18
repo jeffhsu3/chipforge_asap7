@@ -15,10 +15,10 @@ custom-mask hard macros whose ROM contents are fixed before tapeout:
    active column span in each block, and trims vertical ``M3`` bitlines right
    above each column's highest programmed block.
 3. **Active-block-only 2-stack ``EVAL -> SELB<b>`` path**: pre-combines
-   ``PRECHN`` with active-low block decode during precharge and emits ``SELB<b>``
+   ``PRECHN`` into the low block predecoder and emits ``SELB<b>``
    drivers and left-channel risers only for non-zero blocks, leaving a 2-NMOS
    ``NAND2(EVAL, BPRE<b>)`` + 1-stage ``NOR2(GB<k>, SELB<b>)`` on the ``EVAL``
-   rising edge while cutting ``PRECHN`` decode gate load to 2 fins.
+   rising edge; ``PRECHN`` drives one gate per low predecode line, not per block.
 4. **Energy-sized readout + optional multi-Vt low-leakage co-design**: fuses
    1-fin precharge, hi-skewed sense, and 4:1 column selection beside an
    isolated-keeper Q latch, with optional ``periphery_vt`` / ``crit_vt`` split
@@ -376,18 +376,81 @@ def _decode_block_selb(
 ) -> None:
     """Emit ``SELB<b> = ~(EVAL & BPRE<b>)``, ``BPRE<b> = PRECHN & row_decode(b)``.
 
-    Only ``built_blocks`` get a chain. Each block's chain (its block-decode
-    NAND, ``BPRE<b>`` NOR2 and ``SELB<b>`` NAND2) is emitted back to back:
-    the bank's fallback placement keeps device order, and emitting each stage
-    as its own run across all blocks makes every block's two internal nets
-    cross rows, each needing an M5 column (256x30 m1: 381 vs 533 um2).
+    Only ``built_blocks`` get a chain. Above two row bits, ``PRECHN`` is folded
+    into the low predecoder, ``BLK_LB<i> = ~(PRECHN & BLK_L<i>)``, and each
+    block's ``BPRE<b>`` is one ``NOR2(BLK_HB<hi>, BLK_LB<lo>)``. ``PRECHN`` thus
+    drives one gate per low line rather than one per block (a single inverter
+    for all 64 blocks of 256x30 stays near half-rail through the precharge
+    window), and the per-block decode NAND2 goes away.
+
+    The bank's fallback placement keeps device order, so each block's ``BPRE``
+    and ``SELB`` gates are emitted back to back, and each ``BLK_HB<hi>``
+    inverter just ahead of its run of blocks. Emitting a stage as one run across
+    all blocks makes every block's internal net cross rows, each needing an M5
+    column (256x30 m1: 381 vs 533 um2; with the ``BLK_HB`` run, 410 um2).
     """
-    prechn_b = c.node()
-    _add_sized_inv(c, "bpre_prechn_inv", "PRECHN", prechn_b, 1, 1, vt=off_vt)
     built_set = set(built_blocks)
     n = len(row_addr)
     half = n // 2
     lo_mask = (1 << half) - 1
+    if n <= 2:
+        _decode_small_block_bpre(c, row_addr, built_blocks, off_vt=off_vt)
+    else:
+        lo_needed = {b & lo_mask for b in built_set}
+        _decode_active_high(c, row_addr[:half], "BLK_L", lo_needed, vt=off_vt)
+        _decode_active_high(
+            c, row_addr[half:], "BLK_H", {b >> half for b in built_set}, vt=off_vt
+        )
+        # BLK_LB falls on the PRECHN edge and sets the BPRE rise: PRECHN sits on
+        # the NMOS next to the output, BLK_LB on the PMOS next to BPRE.
+        for i in sorted(lo_needed):
+            fanout = sum(1 for b in built_set if b & lo_mask == i)
+            _add_nand2(
+                c,
+                f"blk_lb_{i}",
+                "PRECHN",
+                f"BLK_L<{i}>",
+                f"BLK_LB<{i}>",
+                1,
+                3 if fanout > 4 else 2,
+                vt=off_vt,
+            )
+    hb_emitted: set[int] = set()
+    for b in built_blocks:
+        bpre = f"BPRE<{b}>"
+        if n > 2:
+            if b >> half not in hb_emitted:
+                hb_emitted.add(b >> half)
+                _add_sized_inv(
+                    c,
+                    f"blk_hb_{b >> half}",
+                    f"BLK_H<{b >> half}>",
+                    f"BLK_HB<{b >> half}>",
+                    1,
+                    1,
+                    vt=off_vt,
+                )
+            _add_nor2(
+                c,
+                f"bpre_{b}",
+                f"BLK_HB<{b >> half}>",
+                f"BLK_LB<{b & lo_mask}>",
+                bpre,
+                2,
+                1,
+                vt=off_vt,
+            )
+        _add_nand2(c, f"selb_{b}", eval_sig, bpre, f"SELB<{b}>", 2, 3, vt=fast_vt)
+
+
+def _decode_small_block_bpre(
+    c: Circuit, row_addr: list[str], built_blocks: Sequence[int], *, off_vt: str
+) -> None:
+    """``BPRE<b> = NOR2(~PRECHN, blockb<b>)`` for one or two row bits (at most 4 blocks)."""
+    built_set = set(built_blocks)
+    n = len(row_addr)
+    prechn_b = c.node()
+    _add_sized_inv(c, "bpre_prechn_inv", "PRECHN", prechn_b, 1, 1, vt=off_vt)
     blockb: dict[int, str] = {}
     if n == 1:
         if 0 in built_set:
@@ -396,7 +459,7 @@ def _decode_block_selb(
             b1 = c.node()
             _add_sized_inv(c, "blk_inv1", row_addr[0], b1, 1, 1, vt=off_vt)
             blockb[1] = b1
-    elif n == 2:
+    else:
         n0 = c.node() if (built_set & {0, 2, 3}) else ""
         n1 = c.node() if (built_set & {0, 1, 3}) else ""
         if n0:
@@ -421,30 +484,8 @@ def _decode_block_selb(
             _add_nor2(c, "blkb_3a", n1, n0, p3, 1, 1, vt=off_vt)
             _add_sized_inv(c, "blkb_3", p3, b3, 1, 1, vt=off_vt)
             blockb[3] = b3
-    else:
-        _decode_active_high(
-            c, row_addr[:half], "BLK_L", {b & lo_mask for b in built_set}, vt=off_vt
-        )
-        _decode_active_high(
-            c, row_addr[half:], "BLK_H", {b >> half for b in built_set}, vt=off_vt
-        )
-
     for b in built_blocks:
-        if n > 2:
-            blockb[b] = c.node()
-            _add_nand2(
-                c,
-                f"blkb_{b}",
-                f"BLK_L<{b & lo_mask}>",
-                f"BLK_H<{b >> half}>",
-                blockb[b],
-                1,
-                1,
-                vt=off_vt,
-            )
-        bpre = f"BPRE<{b}>"
-        _add_nor2(c, f"bpre_{b}", prechn_b, blockb[b], bpre, 2, 1, vt=off_vt)
-        _add_nand2(c, f"selb_{b}", eval_sig, bpre, f"SELB<{b}>", 2, 3, vt=fast_vt)
+        _add_nor2(c, f"bpre_{b}", prechn_b, blockb[b], f"BPRE<{b}>", 2, 1, vt=off_vt)
 
 
 def _add_gb_generator(
